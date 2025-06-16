@@ -1,12 +1,20 @@
 import google.generativeai as genai
 import json
 from typing import List, Dict, Any
+from pydantic import BaseModel, Field
 
 from src import config
 from src.tools.base_tool import BaseTool
 
+class ToolCall(BaseModel):
+    name: str = Field(description="The name of the tool to be called.")
+    args: Dict[str, Any] = Field(description="The arguments for the tool.")
+
+class PlannerResponse(BaseModel):
+    thought: str = Field(description="Your step-by-step reasoning for choosing the action based on the screenshot and history.")
+    tool_call: ToolCall = Field(description="The tool to be executed to progress towards the goal.")
+
 def _format_tools(tools: List[BaseTool]) -> str:
-    """Formats the list of tools into a string readable by the AI."""
     tool_strings = []
     for tool in tools:
         tool_strings.append(
@@ -32,10 +40,9 @@ You are DjenisAiAgent, an autonomous AI assistant that controls a Linux computer
 CURRENT GOAL: {user_goal}
 
 CONTEXT AND RULES:
-1. Analyze the past action history and the current screenshot to understand the system's state.
-2. Reason step-by-step to decide which single action gets you closer to the goal.
-3. Choose ONLY ONE tool from the provided list. Your main goal is to eventually call the "task_completed" tool.
-4. Your response MUST be a valid JSON code block and nothing else. Do not add any text or explanations outside the JSON.
+1. Analyze the recent action history and the current screenshot to understand the system's state.
+2. Reason step-by-step to decide which single action gets you closer to the goal. Your main objective is to eventually call the "task_completed" tool.
+3. Your response MUST be a valid JSON that adheres to the required schema. Do not add any text or explanations outside the JSON.
 
 AVAILABLE TOOLS:
 ---
@@ -44,18 +51,6 @@ AVAILABLE TOOLS:
 
 RECENT ACTION HISTORY:
 {memory_history}
-
-REQUIRED RESPONSE FORMAT (JSON ONLY):
-{{
-  "thought": "Write your step-by-step reasoning here. Explain why you are choosing a certain tool and what information you are using to decide.",
-  "tool": {{
-    "name": "chosen_tool_name",
-    "args": {{
-      "argument_name_1": "argument_value_1",
-      "argument_name_2": "argument_value_2"
-    }}
-  }}
-}}
 """
 
     request_payload = [
@@ -66,22 +61,27 @@ REQUIRED RESPONSE FORMAT (JSON ONLY):
         }
     ]
 
+    generation_config = genai.types.GenerationConfig(
+        response_mime_type="application/json",
+        response_schema=PlannerResponse
+    )
+
     try:
-        response = model.generate_content(request_payload)
-        response_text = response.text.strip()
+        response = model.generate_content(
+            request_payload,
+            generation_config=generation_config
+        )
 
-        # Clean the response from potential markdown code markers
-        if response_text.startswith("```json"):
-            response_text = response_text[7:-3].strip()
+        parsed_model_output = PlannerResponse.parse_raw(response.text)
 
-        parsed_json = json.loads(response_text)
-        return parsed_json
+        return json.loads(parsed_model_output.json())
 
-    except json.JSONDecodeError:
-        error_message = f"Error: The AI did not respond with valid JSON. Response received:\n{response_text}"
-        print(error_message)
-        return {"error": error_message}
     except Exception as e:
-        error_message = f"An unexpected error occurred during the call to Gemini: {e}"
+        error_message = f"An unexpected error occurred during the call to Gemini or during response parsing: {e}"
         print(error_message)
+        # Attempt to get more detailed error information if available
+        try:
+            print(f"Gemini API Response: {response.text}")
+        except:
+            pass
         return {"error": error_message}
