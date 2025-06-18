@@ -10,8 +10,6 @@ class LinuxAgent:
         if not objective or not isinstance(objective, str):
             raise ValueError("The objective must be a non-empty string.")
 
-        print(f"--- Received objective: {objective} ---")
+        print(f"--- Received objective: '{objective}' ---")
 
-        # We refactor the agent's run method to accept the objective
-        # and execute the PRAV loop for it.
-        self.agent.run(user_goal=objective)
+        self.agent.run_task(user_goal=objective)

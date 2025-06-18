@@ -1,24 +1,16 @@
-import google.generativeai as genai
-import json
+import base64
+from google import genai
+from google.generativeai import types as genai_types
 from typing import List, Dict, Any
-from pydantic import BaseModel, Field
 
 from src import config
-from src.tools.base_tool import BaseTool
+from src.planning.schemas import PlannerResponse
 
-class ToolCall(BaseModel):
-    name: str = Field(description="The name of the tool to be called.")
-    args: Dict[str, Any] = Field(description="The arguments for the tool.")
-
-class PlannerResponse(BaseModel):
-    thought: str = Field(description="Your step-by-step reasoning for choosing the action based on the screenshot and history.")
-    tool_call: ToolCall = Field(description="The tool to be executed to progress towards the goal.")
-
-def _format_tools(tools: List[BaseTool]) -> str:
+def _format_tools(tools: List[Dict[str, str]]) -> str:
     tool_strings = []
     for tool in tools:
         tool_strings.append(
-            f"Tool Name: {tool.name}\nDescription: {tool.description}"
+            f"Tool Name: {tool['name']}\nDescription: {tool['description']}"
         )
     return "\n---\n".join(tool_strings)
 
@@ -26,13 +18,15 @@ def get_next_step(
     user_goal: str,
     memory_history: str,
     screen_b64: str,
-    available_tools: List[BaseTool]
+    available_tools: List[Dict[str, str]]
 ) -> Dict[str, Any]:
 
     print("--- Planner is thinking about the next step... ---")
 
-    genai.configure(api_key=config.GEMINI_API_KEY)
-    model = genai.GenerativeModel(config.GEMINI_MODEL)
+    try:
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
+    except Exception as e:
+        return {"error": f"Failed to initialize Gemini Client: {e}"}
 
     system_prompt = f"""
 You are DjenisAiAgent, an autonomous AI assistant that controls a Linux computer to achieve a goal.
@@ -53,35 +47,35 @@ RECENT ACTION HISTORY:
 {memory_history}
 """
 
-    request_payload = [
+    request_contents = [
         system_prompt,
-        {
-            "mime_type": "image/png",
-            "data": screen_b64
-        }
+        genai_types.Part(
+            inline_data=genai_types.Blob(
+                mime_type="image/jpeg",
+                data=base64.b64decode(screen_b64)
+            )
+        )
     ]
 
-    generation_config = genai.types.GenerationConfig(
+    generation_config = genai_types.GenerationConfig(
         response_mime_type="application/json",
         response_schema=PlannerResponse
     )
 
     try:
+        model = client.get_model(f"models/{config.GEMINI_MODEL}")
         response = model.generate_content(
-            request_payload,
+            contents=request_contents,
             generation_config=generation_config
         )
 
         parsed_model_output = PlannerResponse.parse_raw(response.text)
-
-        return json.loads(parsed_model_output.json())
+        return parsed_model_output.dict()
 
     except Exception as e:
         error_message = f"An unexpected error occurred during the call to Gemini or during response parsing: {e}"
         print(error_message)
-        # Attempt to get more detailed error information if available
-        try:
-            print(f"Gemini API Response: {response.text}")
-        except:
-            pass
+        if 'response' in locals() and hasattr(response, 'text'):
+            print(f"Gemini API Response Text: {response.text}")
+
         return {"error": error_message}
