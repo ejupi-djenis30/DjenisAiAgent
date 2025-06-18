@@ -1,19 +1,59 @@
 import os
+import base64
+import io
+from PIL import Image
 
+from src.perception import screen_analyzer
+from src.perception.wayland_capture import WaylandScreenCapture as WaylandCaptureBackend
 from src.tools.gui_tool import X11InputController
-from src.perception.screen_analyzer import analyze_screen
+from src.tools.wayland_input import WaylandInputController as WaylandInputBackend
+from src.abstractions.screen_capture import ScreenCapture
+from src.abstractions.input_controller import InputController
 
-class X11ScreenCapture:
+class X11ScreenCaptureAdapter(ScreenCapture):
+    def capture(self, region: tuple[int, int, int, int] | None = None) -> Image.Image | None:
+        try:
+            return screen_analyzer.analyze_screen(return_pil=True)
+        except Exception as e:
+            print(f"Error in X11 Capture Adapter: {e}")
+            return None
+
     def capture_and_process(self) -> str | None:
-        return analyze_screen()
+        try:
+            screenshot_pil = self.capture()
+            if screenshot_pil:
+                processed_bytes = self.preprocess(screenshot_pil)
+                return base64.b64encode(processed_bytes).decode('utf-8')
+            return None
+        except Exception as e:
+            print(f"Error processing X11 capture: {e}")
+            return None
 
-class WaylandInputController:
+class WaylandScreenCaptureAdapter(ScreenCapture):
     def __init__(self):
-        raise NotImplementedError("The Wayland input controller backend is not yet implemented.")
+        try:
+            self.backend = WaylandCaptureBackend()
+        except EnvironmentError as e:
+            print(f"Wayland Capture Backend Error: {e}")
+            raise
 
-class WaylandScreenCapture:
+    def capture(self, region: tuple[int, int, int, int] | None = None) -> Image.Image | None:
+        try:
+            return self.backend.capture(region)
+        except Exception as e:
+            print(f"Error in Wayland Capture Adapter: {e}")
+            return None
+
     def capture_and_process(self) -> str | None:
-        raise NotImplementedError("The Wayland screen capture backend is not yet implemented.")
+        try:
+            screenshot_pil = self.capture()
+            if screenshot_pil:
+                processed_bytes = self.preprocess(screenshot_pil)
+                return base64.b64encode(processed_bytes).decode('utf-8')
+            return None
+        except Exception as e:
+            print(f"Error processing Wayland capture: {e}")
+            return None
 
 class DisplayAdapter:
     def __init__(self):
@@ -29,16 +69,8 @@ class DisplayAdapter:
 
     def _initialize_controllers(self):
         if self.session_type == "wayland":
-            self.input_controller = WaylandInputController()
-            self.screen_capture_controller = WaylandScreenCapture()
-        else:
-            self.input_controller = X11InputController()
-            self.screen_capture_controller = X11ScreenCapture()
-
-    @property
-    def screen(self):
-        return self.screen_capture_controller
-
-    @property
-    def input(self):
-        return self.input_controller
+            self.input: InputController = WaylandInputBackend()
+            self.screen: ScreenCapture = WaylandScreenCaptureAdapter()
+        else: # Default to x11
+            self.input: InputController = X11InputController()
+            self.screen: ScreenCapture = X11ScreenCaptureAdapter()

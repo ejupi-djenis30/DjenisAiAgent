@@ -1,9 +1,9 @@
-google-genai[aiohttp]
-pydantic
-Pillow
-pyautogui
-python-mss
-python-evdev
 dbus-fast
-robotframework
+google-genai[aiohttp]
+Pillow
+pydantic
+pyautogui
 python-dotenv
+evdev
+mss
+robotframework
