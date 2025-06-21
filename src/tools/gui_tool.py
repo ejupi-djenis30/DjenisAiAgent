@@ -1,14 +1,15 @@
-import pyautogui
 from typing import List
 
 class X11InputController:
     def __init__(self):
+        import pyautogui
         pyautogui.FAILSAFE = True
         pyautogui.PAUSE = 0.1
+        self.pyautogui = pyautogui
 
     def mouse_move(self, x: int, y: int) -> str:
         try:
-            pyautogui.moveTo(x, y)
+            self.pyautogui.moveTo(x, y)
             return f"Mouse moved to (x={x}, y={y})."
         except Exception as e:
             return f"Error moving mouse: {e}"
@@ -19,11 +20,11 @@ class X11InputController:
             if not isinstance(x, int) or not isinstance(y, int):
                 return "Error: x and y coordinates must be integers."
 
-            screen_width, screen_height = pyautogui.size()
+            screen_width, screen_height = self.pyautogui.size()
             if not (0 <= x < screen_width and 0 <= y < screen_height):
                 return f"Error: coordinates (x={x}, y={y}) are outside the screen bounds ({screen_width}x{screen_height})."
 
-            pyautogui.click(x=x, y=y, button=button)
+            self.pyautogui.click(x=x, y=y, button=button)
             return f"Click successfully executed at coordinates (x={x}, y={y})."
         except Exception as e:
             return f"An unexpected error occurred during the click: {e}"
@@ -34,7 +35,7 @@ class X11InputController:
             if not isinstance(text, str):
                 return "Error: the provided input is not a text string."
 
-            pyautogui.write(text, interval=0.05)
+            self.pyautogui.write(text, interval=0.05)
             return "Text successfully typed."
         except Exception as e:
             return f"An unexpected error occurred while typing: {e}"
@@ -42,7 +43,7 @@ class X11InputController:
     def press_hotkey(self, keys: List[str]) -> str:
         print(f"--- Executing X11 Input: Pressing hotkey '{'+'.join(keys)}' ---")
         try:
-            pyautogui.hotkey(*keys)
+            self.pyautogui.hotkey(*keys)
             return f"Hotkey '{'+'.join(keys)}' successfully pressed."
         except Exception as e:
             return f"An unexpected error occurred while pressing hotkey: {e}"

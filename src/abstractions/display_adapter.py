@@ -3,15 +3,12 @@ import base64
 import io
 from PIL import Image
 
-from src.perception import screen_analyzer
-from src.perception.wayland_capture import WaylandScreenCapture as WaylandCaptureBackend
-from src.tools.gui_tool import X11InputController
-from src.tools.wayland_input import WaylandInputController as WaylandInputBackend
 from src.abstractions.screen_capture import ScreenCapture
 from src.abstractions.input_controller import InputController
 
 class X11ScreenCaptureAdapter(ScreenCapture):
     def capture(self, region: tuple[int, int, int, int] | None = None) -> Image.Image | None:
+        from src.perception import screen_analyzer
         try:
             return screen_analyzer.analyze_screen(return_pil=True)
         except Exception as e:
@@ -31,6 +28,7 @@ class X11ScreenCaptureAdapter(ScreenCapture):
 
 class WaylandScreenCaptureAdapter(ScreenCapture):
     def __init__(self):
+        from src.perception.wayland_capture import WaylandScreenCapture as WaylandCaptureBackend
         try:
             self.backend = WaylandCaptureBackend()
         except EnvironmentError as e:
@@ -69,8 +67,10 @@ class DisplayAdapter:
 
     def _initialize_controllers(self):
         if self.session_type == "wayland":
+            from src.tools.wayland_input import WaylandInputController as WaylandInputBackend
             self.input: InputController = WaylandInputBackend()
             self.screen: ScreenCapture = WaylandScreenCaptureAdapter()
-        else: # Default to x11
+        else:
+            from src.tools.gui_tool import X11InputController
             self.input: InputController = X11InputController()
             self.screen: ScreenCapture = X11ScreenCaptureAdapter()

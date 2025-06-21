@@ -73,23 +73,22 @@ class AgentCore:
         for step in range(1, max_steps + 1):
             print(f"\n===== Starting Step {step}/{max_steps} for objective: '{user_goal}' =====")
 
-            # Perception
             screen_b64 = self.display_adapter.screen.capture_and_process()
             if not screen_b64:
-                print("Critical Error: Could not capture or process the screen. Aborting task.")
-                break
+                error_message = "Critical Error: Could not capture or process the screen. Aborting task."
+                print(error_message)
+                raise RuntimeError(error_message)
 
-            # Memory / Context
             history = self.memory.get_formatted_history()
 
-            # Reasoning
             planner_response = planner.get_next_step(
                 user_goal, history, screen_b64, self.tool_definitions
             )
 
             if "error" in planner_response:
-                print(f"Planner Error: {planner_response['error']}. Aborting task.")
-                break
+                error_message = f"Planner Error: {planner_response['error']}. Aborting task."
+                print(error_message)
+                raise RuntimeError(error_message)
 
             thought = planner_response.get("thought", "No thought recorded.")
             tool_call = planner_response.get("tool_call")
@@ -107,11 +106,9 @@ class AgentCore:
                 print("The Planner did not choose a tool name. The task may be finished or stuck.")
                 break
 
-            # Action
             result = self._execute_action(tool_name, tool_args)
             print(f"Action Result: {result}")
 
-            # Memory Update
             self.memory.add_turn(thought, tool_name, tool_args, result)
 
             if tool_name == "task_completed":

@@ -1,11 +1,11 @@
 from typing import Optional, Union
 from PIL import Image
-import pyautogui
 import base64
 import io
 
 def analyze_screen(return_pil: bool = False) -> Union[str, Image.Image, None]:
     try:
+        import pyautogui
         screenshot = pyautogui.screenshot()
         if not screenshot:
             return None
