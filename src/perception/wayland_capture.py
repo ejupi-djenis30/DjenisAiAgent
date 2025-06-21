@@ -1,68 +1,55 @@
 import subprocess
-import shutil
-import io
+import tempfile
 import os
-from PIL import Image
 from typing import Optional
+from PIL import Image
 
 from src.abstractions.screen_capture import ScreenCapture
 
 class WaylandScreenCapture(ScreenCapture):
     def __init__(self):
-        self.use_grim = self._check_grim()
-        if not self.use_grim:
-            # As per the documentation, grim is the primary implemented method.
-            # A D-Bus implementation would be an alternative, not a replacement.
-            raise EnvironmentError("The 'grim' command is not found. Please install it to use screen capture on Wayland.")
-        print("--- Wayland Capture Initialized using 'grim' backend ---")
+        print("--- Wayland Capture Initialized using 'gnome-screenshot' backend ---")
 
-    def _check_grim(self) -> bool:
-        return shutil.which("grim") is not None
+    def capture(self, region: Optional[tuple[int, int, int, int]] = None) -> Optional[Image.Image]:
+        print("--- Capturing screen via gnome-screenshot ---")
+        if region:
+            print("Warning: Region capture is not implemented for this backend. Capturing full screen.")
 
-    def capture(self, region: Optional[tuple[int, int, int, int]] = None) -> Image.Image:
-        print("--- Capturing screen via grim ---")
         try:
-            command = ["grim"]
-            if region:
-                x, y, width, height = region
-                geometry = f"{x},{y} {width}x{height}"
-                command.extend(["-g", geometry, "-"])
-            else:
-                command.append("-")
+            # Create a temporary file to save the screenshot
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
+                temp_file_path = tmpfile.name
 
-            # The portal needs a valid DISPLAY and XDG_RUNTIME_DIR
-            env = os.environ.copy()
-            if 'DISPLAY' not in env:
-                env['DISPLAY'] = ':0'
-            if 'XDG_RUNTIME_DIR' not in env:
-                 # Attempt to find a sensible default if not set
-                user_id = os.getuid()
-                runtime_dir = f"/run/user/{user_id}"
-                if os.path.isdir(runtime_dir):
-                    env['XDG_RUNTIME_DIR'] = runtime_dir
+            # Command to take a screenshot and save it to the temp file
+            command = ["gnome-screenshot", "-f", temp_file_path]
 
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                check=True,
-                env=env,
-                timeout=10
-            )
+            # Execute the command
+            subprocess.run(command, check=True, timeout=10)
 
-            image_bytes = result.stdout
-            if not image_bytes:
-                raise RuntimeError("grim command executed but produced no output.")
+            if not os.path.exists(temp_file_path):
+                print("Error: gnome-screenshot ran but the output file was not created.")
+                return None
 
-            img = Image.open(io.BytesIO(image_bytes))
-            return img
+            # Open the image from the temp file
+            with Image.open(temp_file_path) as img:
+                # We need a copy in memory because the original file will be deleted.
+                img_copy = img.copy()
+
+            return img_copy
 
         except FileNotFoundError:
-            raise EnvironmentError("The 'grim' command is not installed or not in the system's PATH.")
+            print("Error: 'gnome-screenshot' command not found. Please ensure it is installed.")
+            return None
         except subprocess.TimeoutExpired:
-            raise RuntimeError("The 'grim' command timed out after 10 seconds.")
+            print("Error: 'gnome-screenshot' command timed out.")
+            return None
         except subprocess.CalledProcessError as e:
-            error_message = f"The 'grim' command failed with exit code {e.returncode}.\n"
-            error_message += f"Stderr: {e.stderr.decode('utf-8', 'ignore')}"
-            raise RuntimeError(error_message)
+            print(f"Error: 'gnome-screenshot' failed with exit code {e.returncode}.")
+            return None
         except Exception as e:
-            raise RuntimeError(f"An unexpected error occurred during Wayland screen capture: {e}")
+            print(f"An unexpected error occurred during capture: {e}")
+            return None
+        finally:
+            # Clean up the temporary file
+            if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
