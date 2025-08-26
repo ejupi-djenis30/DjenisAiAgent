@@ -75,15 +75,30 @@ Current context:
 
 I'm showing you a screenshot of the current state of the screen.
 
-Your task:
-1. Describe what you see on the screen
-2. Identify UI elements (buttons, text fields, menus, etc.)
-3. Suggest possible actions based on the user's request: "{user_request}"
+USER REQUEST: "{user_request}"
 
-Important: Format actions using [ACTION: action_type param1=value1, param2=value2] syntax.
-Available actions: click, type_text, key_press, scroll, wait
+INSTRUCTIONS:
+1. Analyze what you see on the screen and identify relevant UI elements
+2. Create a step-by-step plan to fulfill the user's request
+3. For EACH step, provide EXACTLY ONE action command in the format shown below
 
-Provide your reasoning and then suggest specific actions to take.
+ACTION COMMANDS MUST BE FORMATTED EXACTLY AS FOLLOWS:
+[ACTION: action_type param1=value1, param2=value2]
+
+AVAILABLE ACTIONS:
+- click x=number, y=number, button="left"|"right" (default: left)
+- type_text text="exact text to type", interval=seconds_between_keystrokes (default: 0.1)
+- key_press key="key_name" (Examples: enter, tab, escape, ctrl+c, alt+tab)
+- scroll amount=number, x=number, y=number (amount: positive to scroll down, negative to scroll up)
+- wait seconds=number (wait for the specified number of seconds)
+
+RESPONSE FORMAT:
+1. Brief screen analysis (1-2 sentences)
+2. Step-by-step plan (numbered list)
+3. Action commands (each step MUST have an action command in the exact format above)
+
+BE CONCRETE AND SPECIFIC WITH COORDINATES AND VALUES. DO NOT USE PLACEHOLDERS.
+INCLUDE AT LEAST 3-5 ACTION COMMANDS TO ACCOMPLISH THE TASK.
 """
         )
         

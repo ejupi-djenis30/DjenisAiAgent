@@ -14,6 +14,7 @@ This project combines computer vision, AI decision making, and UI automation to 
 - **MCP Integration**: Implements the Model Context Protocol for standardized AI agent communication
 - **Modular Architecture**: Cleanly separated components for perception, memory, planning, and tools
 - **Extensible Tools**: Framework for adding new capabilities and integrations
+- **User Interface**: Simple GUI for sending commands and viewing agent status
 
 ## Project Structure
 
@@ -28,7 +29,8 @@ DjenisAiAgent/
 │   ├── memory/           # Agent memory components
 │   ├── perception/       # Screen analysis and UI detection
 │   ├── planning/         # Task planning and execution
-│   └── tools/            # Action tools (input, MCP, etc.)
+│   ├── tools/            # Action tools (input, MCP, etc.)
+│   └── ui/               # User interface components
 ├── tests/                # Unit and integration tests
 ├── config/               # Configuration files
 │   ├── default_config.json
@@ -157,11 +159,29 @@ python -m pytest tests/
 
 ## Usage
 
-To run the MCP Server Agent, execute the following command:
+To run the MCP Server Agent in headless mode:
 
 ```
 python src/main.py
 ```
+
+To run with the graphical user interface:
+
+```
+python launch_ui.py
+```
+
+### User Interface Commands
+
+The GUI provides an interactive way to control the agent:
+
+- Type any text command in the input field and press Enter to send a request to the agent
+- Use the "Pausa" button to pause/resume agent execution
+- Use the "Screenshot" button to take and analyze a screenshot
+- Special commands:
+  - `exit` or `quit`: Close the application
+  - `pause`: Toggle pause state
+  - `screenshot`: Take a screenshot
 
 ## Contributing
 

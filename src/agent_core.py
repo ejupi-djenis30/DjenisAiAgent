@@ -46,8 +46,8 @@ class AgentCore:
         """Initialize all agent components."""
         try:
             # Initialize memory components
-            from memory.short_term_memory import ShortTermMemory
-            from memory.task_memory import TaskMemory
+            from src.memory.short_term_memory import ShortTermMemory
+            from src.memory.task_memory import TaskMemory
             
             self.components["short_term_memory"] = ShortTermMemory(
                 max_items=self.config.get("memory", {}).get("max_items", 100),
@@ -59,8 +59,8 @@ class AgentCore:
             )
             
             # Initialize perception components
-            from perception.screen_analyzer import ScreenAnalyzer
-            from perception.win11_capture import Win11Capture
+            from src.perception.screen_analyzer import ScreenAnalyzer
+            from src.perception.win11_capture import Win11Capture
             
             self.components["screen_capture"] = Win11Capture(
                 screenshot_dir=self.config.get("perception", {}).get("screenshot_dir", "screenshots")
@@ -72,7 +72,7 @@ class AgentCore:
             )
             
             # Initialize planning components
-            from planning.planner import Planner
+            from src.planning.planner import Planner
             
             self.components["planner"] = Planner(
                 short_term_memory=self.components["short_term_memory"],
@@ -80,8 +80,8 @@ class AgentCore:
             )
             
             # Initialize tools
-            from tools.win11_input import Win11InputTool
-            from tools.mcp_tool import MCPTool
+            from src.tools.win11_input import Win11InputTool
+            from src.tools.mcp_tool import MCPTool
             
             self.components["input_tool"] = Win11InputTool(
                 safety_delay=self.config.get("tools", {}).get("input", {}).get("safety_delay", 0.1)
@@ -93,8 +93,8 @@ class AgentCore:
             )
             
             # Initialize AI components
-            from gemini.client import GeminiClient
-            from gemini.prompt_manager import PromptManager
+            from src.gemini.client import GeminiClient
+            from src.gemini.prompt_manager import PromptManager
             
             gemini_api_key = self.config.get("gemini", {}).get("api_key")
             if not gemini_api_key:
@@ -124,7 +124,7 @@ class AgentCore:
     
     def _register_actions(self):
         """Register available actions with the planner."""
-        from planning.schemas import ActionSchema
+        from src.planning.schemas import ActionSchema
         
         # Input actions
         self.components["planner"].register_action(
