@@ -1,0 +1,47 @@
+{
+  "general": {
+    "debug_mode": false,
+    "log_level": "INFO"
+  },
+  "memory": {
+    "max_items": 100,
+    "expiry_seconds": 3600,
+    "task_storage_dir": "data/task_memory",
+    "ui_memory_path": "data/ui_memory",
+    "ui_patterns_file": "data/ui_patterns.json",
+    "max_ui_memory_entries": 100,
+    "ui_memory_expiry_days": 30
+  },
+  "perception": {
+    "screenshot_dir": "data/screenshots",
+    "ocr_enabled": true,
+    "ui_detection_enabled": true,
+    "element_confidence_threshold": 0.7,
+    "use_advanced_ocr": true,
+    "use_ml_detection": true,
+    "cache_detected_elements": true,
+    "detection_methods": ["contour", "template", "ml"],
+    "reference_screenshots_dir": "data/reference_ui",
+    "use_enhanced_analyzer": true,
+    "min_element_area": 50,
+    "text_overlap_threshold": 0.6,
+    "ocr_config": "--oem 3 --psm 11"
+  },
+  "gemini": {
+    "api_key": "",
+    "model_name": "gemini-2.5-flash-lite",
+    "temperature": 0.2,
+    "top_k": 40,
+    "top_p": 0.95,
+    "templates_path": "config/prompt_templates.json"
+  },
+  "mcp": {
+    "host": "localhost",
+    "port": 8080
+  },
+  "tools": {
+    "input": {
+      "safety_delay": 0.1
+    }
+  }
+}

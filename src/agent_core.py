@@ -3,6 +3,7 @@ import time
 import json
 import threading
 import logging
+import importlib.util
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 
@@ -60,15 +61,33 @@ class AgentCore:
             
             # Initialize perception components
             from src.perception.screen_analyzer import ScreenAnalyzer
+            from src.perception.enhanced_screen_analyzer import EnhancedScreenAnalyzer
             from src.perception.win11_capture import Win11Capture
+            from src.memory.ui_memory import UIMemory
             
             self.components["screen_capture"] = Win11Capture(
                 screenshot_dir=self.config.get("perception", {}).get("screenshot_dir", "screenshots")
             )
             
-            self.components["screen_analyzer"] = ScreenAnalyzer(
-                ocr_enabled=self.config.get("perception", {}).get("ocr_enabled", True),
-                ui_detection_enabled=self.config.get("perception", {}).get("ui_detection_enabled", True)
+            # Initialize UI Memory
+            self.components["ui_memory"] = UIMemory(
+                config={
+                    'ui_memory_path': self.config.get("memory", {}).get("ui_memory_path", "data/ui_memory"),
+                    'ui_patterns_file': self.config.get("memory", {}).get("ui_patterns_file", "data/ui_patterns.json")
+                }
+            )
+            
+            # Use enhanced screen analyzer if configured, otherwise fall back to basic
+            use_enhanced_analyzer = self.config.get("perception", {}).get("use_enhanced_analyzer", True)
+            if use_enhanced_analyzer:
+                self.components["screen_analyzer"] = EnhancedScreenAnalyzer(
+                    ocr_enabled=self.config.get("perception", {}).get("ocr_enabled", True),
+                    ui_memory=self.components["ui_memory"]
+                )
+            else:
+                self.components["screen_analyzer"] = ScreenAnalyzer(
+                    ocr_enabled=self.config.get("perception", {}).get("ocr_enabled", True),
+                    ui_detection_enabled=self.config.get("perception", {}).get("ui_detection_enabled", True)
             )
             
             # Initialize planning components
@@ -104,7 +123,7 @@ class AgentCore:
                     logger.warning("Gemini API key not found in config or environment")
                 
             self.components["gemini_client"] = GeminiClient(
-                api_key=gemini_api_key,
+                api_key=gemini_api_key if gemini_api_key else None,
                 model_name=self.config.get("gemini", {}).get("model_name", "gemini-pro-vision")
             )
             
@@ -351,6 +370,7 @@ class AgentCore:
             }
             
             # Format prompt using template
+            context["screen_analysis_details"] = screen_analysis  # Add screen analysis details to context
             prompt = self.components["prompt_manager"].format_prompt(
                 "screen_analysis", 
                 context

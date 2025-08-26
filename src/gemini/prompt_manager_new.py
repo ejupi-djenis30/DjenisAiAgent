@@ -78,36 +78,15 @@ I'm showing you a screenshot of the current state of the screen.
 Detailed analysis of the screenshot:
 {screen_analysis_details}
 
-Current context:
-- Current application: {current_app}
-- Recent actions: {recent_actions}
+Your task:
+1. Describe what you see on the screen
+2. Identify UI elements (buttons, text fields, menus, etc.)
+3. Suggest possible actions based on the user's request: "{user_request}"
 
-I'm showing you a screenshot of the current state of the screen.
+Important: Format actions using [ACTION: action_type param1=value1, param2=value2] syntax.
+Available actions: click, type_text, key_press, scroll, wait
 
-USER REQUEST: "{user_request}"
-
-INSTRUCTIONS:
-1. Analyze what you see on the screen and identify relevant UI elements
-2. Create a step-by-step plan to fulfill the user's request
-3. For EACH step, provide EXACTLY ONE action command in the format shown below
-
-ACTION COMMANDS MUST BE FORMATTED EXACTLY AS FOLLOWS:
-[ACTION: action_type param1=value1, param2=value2]
-
-AVAILABLE ACTIONS:
-- click x=number, y=number, button="left"|"right" (default: left)
-- type_text text="exact text to type", interval=seconds_between_keystrokes (default: 0.1)
-- key_press key="key_name" (Examples: enter, tab, escape, ctrl+c, alt+tab)
-- scroll amount=number, x=number, y=number (amount: positive to scroll down, negative to scroll up)
-- wait seconds=number (wait for the specified number of seconds)
-
-RESPONSE FORMAT:
-1. Brief screen analysis (1-2 sentences)
-2. Step-by-step plan (numbered list)
-3. Action commands (each step MUST have an action command in the exact format above)
-
-BE CONCRETE AND SPECIFIC WITH COORDINATES AND VALUES. DO NOT USE PLACEHOLDERS.
-INCLUDE AT LEAST 3-5 ACTION COMMANDS TO ACCOMPLISH THE TASK.
+Provide your reasoning and then suggest specific actions to take.
 """
         )
         
@@ -124,6 +103,9 @@ Current context:
 - Action that caused error: {failed_action}
 
 I'm showing you a screenshot of the current error state.
+
+Detailed analysis of the error screen:
+{screen_analysis_details}
 
 Your task:
 1. Analyze the error shown on screen
@@ -150,6 +132,9 @@ Current context:
 - Target destination: {target_destination}
 
 I'm showing you a screenshot of the current screen.
+
+Detailed analysis of the screen:
+{screen_analysis_details}
 
 Your task:
 1. Determine where we are in the navigation process
@@ -179,6 +164,9 @@ Current context:
 
 I'm showing you a screenshot of the current form state.
 
+Detailed analysis of the form elements:
+{screen_analysis_details}
+
 Your task:
 1. Identify the form fields visible on screen
 2. Match them with the information that needs to be filled
@@ -187,6 +175,38 @@ Your task:
 
 Important: Format actions using [ACTION: action_type param1=value1, param2=value2] syntax.
 Available actions: click, type_text, key_press, tab, wait
+
+Provide your reasoning and then suggest specific actions to take.
+"""
+        )
+        
+        # Template for pattern recognition
+        self.add_template(
+            name="pattern_recognition",
+            template="""
+You are an AI assistant controlling a Windows 11 computer.
+
+User wants to: {user_request}
+
+Current context:
+- Current application: {current_app}
+- Recent actions: {recent_actions}
+
+I'm showing you a screenshot of the current screen.
+
+Detailed analysis of UI elements with recognized patterns:
+{recognized_patterns_details}
+
+Screen hierarchy information:
+{window_hierarchy_details}
+
+Your task:
+1. Identify familiar UI patterns from the screen (e.g., standard buttons, menus, dialogs)
+2. Use pattern recognition to suggest the most efficient way to accomplish the user's request
+3. Suggest specific actions based on recognized patterns
+
+Important: Format actions using [ACTION: action_type param1=value1, param2=value2] syntax.
+Available actions: click, type_text, key_press, scroll, wait
 
 Provide your reasoning and then suggest specific actions to take.
 """
@@ -210,20 +230,16 @@ Provide your reasoning and then suggest specific actions to take.
             name: Name of the template
             
         Returns:
-            The template or None if not found
+            PromptTemplate object or None if not found
         """
         return self.templates.get(name)
-    
-    def format_prompt(self, 
-                     template_name: str, 
-                     context: Optional[Dict[str, Any]] = None, 
-                     **kwargs) -> str:
+        
+    def format_prompt(self, template_name: str, **kwargs) -> str:
         """
-        Format a prompt using a template and additional variables.
+        Format a prompt using a named template.
         
         Args:
-            template_name: Name of the template to use
-            context: Additional context to include in the prompt
+            template_name: Name of the template
             **kwargs: Variables to fill in the template
             
         Returns:
@@ -233,119 +249,132 @@ Provide your reasoning and then suggest specific actions to take.
         if not template:
             raise ValueError(f"Template '{template_name}' not found")
             
-        # Combine context with kwargs
-        variables = kwargs
-        if context:
-            variables.update(context)
-            
-        # Format the template with variables
-        formatted_prompt = template.format(**variables)
+        prompt_text = template.format(**kwargs)
         
-        # Add to history
-        self._add_to_history(template_name, variables, formatted_prompt)
+        # Record prompt in history
+        self._add_to_history(template_name, kwargs, prompt_text)
         
-        return formatted_prompt
+        return prompt_text
     
-    def create_custom_prompt(self, 
-                            base_text: str, 
-                            context: Optional[Dict[str, Any]] = None, 
-                            **kwargs) -> str:
-        """
-        Create a custom prompt without using a template.
-        
-        Args:
-            base_text: The base text for the prompt
-            context: Additional context to include
-            **kwargs: Additional variables to include
-            
-        Returns:
-            Formatted prompt text
-        """
-        prompt_parts = [base_text]
-        
-        # Add context if provided
-        if context:
-            prompt_parts.append("\nContext:")
-            for key, value in context.items():
-                prompt_parts.append(f"- {key}: {value}")
-        
-        # Add additional variables
-        for key, value in kwargs.items():
-            if isinstance(value, str):
-                prompt_parts.append(f"\n{key.replace('_', ' ').title()}: {value}")
-        
-        formatted_prompt = "\n".join(prompt_parts)
-        
-        # Add to history
-        self._add_to_history("custom_prompt", {**kwargs, **(context or {})}, formatted_prompt)
-        
-        return formatted_prompt
-    
-    def _add_to_history(self, template_name: str, variables: Dict[str, Any], formatted_prompt: str):
-        """
-        Add a prompt to the history.
-        
-        Args:
-            template_name: Name of the template used
-            variables: Variables used in the template
-            formatted_prompt: The final formatted prompt
-        """
+    def _add_to_history(self, template_name: str, variables: Dict[str, Any], result: str):
+        """Add a prompt to the history."""
         self.prompt_history.append({
+            "timestamp": datetime.now().isoformat(),
             "template": template_name,
-            "variables": {k: str(v) for k, v in variables.items()},
-            "prompt": formatted_prompt,
-            "timestamp": datetime.now().isoformat()
+            "variables": variables,
+            "result": result
         })
         
-        # Trim history if too large
+        # Trim history if it gets too long
         if len(self.prompt_history) > self.max_history_size:
             self.prompt_history = self.prompt_history[-self.max_history_size:]
     
-    def load_templates(self, templates_path: str):
+    def load_templates(self, file_path: str):
         """
         Load templates from a JSON file.
         
         Args:
-            templates_path: Path to the JSON file with templates
+            file_path: Path to the JSON file containing templates
         """
         try:
-            with open(templates_path, 'r') as file:
-                templates_data = json.load(file)
+            with open(file_path, 'r', encoding='utf-8') as f:
+                templates_dict = json.load(f)
                 
-            for name, template_text in templates_data.items():
+            for name, template_text in templates_dict.items():
                 self.add_template(name, template_text)
                 
         except Exception as e:
-            print(f"Error loading templates: {str(e)}")
+            print(f"Error loading templates from {file_path}: {str(e)}")
     
-    def save_templates(self, templates_path: str):
+    def save_templates(self, file_path: str):
         """
         Save current templates to a JSON file.
         
         Args:
-            templates_path: Path where to save templates
+            file_path: Path to save the templates
         """
         try:
-            templates_data = {name: template.template_text for name, template in self.templates.items()}
+            templates_dict = {name: template.template_text 
+                             for name, template in self.templates.items()}
             
-            with open(templates_path, 'w') as file:
-                json.dump(templates_data, file, indent=2)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(templates_dict, f, indent=2)
                 
         except Exception as e:
-            print(f"Error saving templates: {str(e)}")
+            print(f"Error saving templates to {file_path}: {str(e)}")
     
-    def get_recent_prompts(self, count: int = 5) -> List[Dict[str, Any]]:
+    def get_formatted_history(self, limit: int = 5) -> str:
         """
-        Get the most recent prompts from history.
+        Get a formatted string of recent prompt history.
         
         Args:
-            count: Number of recent prompts to return
+            limit: Maximum number of history items to include
             
         Returns:
-            List of recent prompts
+            Formatted history text
         """
-        return self.prompt_history[-count:]
+        recent_history = self.prompt_history[-limit:] if self.prompt_history else []
+        
+        if not recent_history:
+            return "No prompt history available."
+            
+        history_text = "Recent prompt history:\n\n"
+        
+        for idx, item in enumerate(recent_history):
+            timestamp = datetime.fromisoformat(item["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+            history_text += f"[{idx+1}] {timestamp} - Template: {item['template']}\n"
+            
+            # Add truncated result
+            result = item["result"]
+            if len(result) > 100:
+                result = result[:100] + "..."
+            history_text += f"Result: {result}\n\n"
+            
+        return history_text
     
-    def clear_history(self):
-        """Clear the prompt history."""
-        self.prompt_history.clear()
+    def generate_structured_prompt(self, 
+                                 template_name: str, 
+                                 user_request: str,
+                                 screenshot_path: Optional[str] = None,
+                                 context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Generate a structured prompt for the Gemini API.
+        
+        Args:
+            template_name: Name of the template to use
+            user_request: The user's request
+            screenshot_path: Optional path to a screenshot image
+            context: Additional context variables
+            
+        Returns:
+            Structured prompt dictionary for Gemini API
+        """
+        if context is None:
+            context = {}
+            
+        # Common context variables
+        common_context = {
+            "user_request": user_request,
+            "current_app": context.get("current_app", "Unknown"),
+            "recent_actions": context.get("recent_actions", "None"),
+            "screen_analysis_details": context.get("screen_analysis_details", "No detailed analysis available"),
+            "recognized_patterns_details": context.get("recognized_patterns", "No patterns recognized"),
+            "window_hierarchy_details": context.get("window_hierarchy", "No hierarchy information available")
+        }
+        
+        # Merge with template-specific context
+        template_context = {**common_context, **context}
+        
+        # Format the prompt text
+        prompt_text = self.format_prompt(template_name, **template_context)
+        
+        # Create the structured prompt
+        structured_prompt = {
+            "text": prompt_text
+        }
+        
+        # Add screenshot if provided
+        if screenshot_path and os.path.exists(screenshot_path):
+            structured_prompt["image"] = screenshot_path
+            
+        return structured_prompt
