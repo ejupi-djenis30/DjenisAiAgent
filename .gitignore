@@ -37,7 +37,10 @@ ENV/
 # Project specific
 data/screenshots/
 data/task_memory/
+data/ui_memory/
+analysis_cache/
 config/credentials.json
+config/default_config.json
 *.log
 agent.log
 

@@ -48,6 +48,39 @@ DjenisAiAgent/
 - Python 3.9+
 - Windows 11 (for Windows UI automation)
 - Google Gemini API key
+- Tesseract OCR (for text recognition in screenshots)
+
+## Setup Instructions
+
+### 1. Configure API Keys
+
+For security reasons, API keys are stored in a separate `credentials.json` file that is not committed to the repository:
+
+1. Copy `config/credentials.json.template` to `config/credentials.json`
+2. Edit `config/credentials.json` and add your Gemini API key:
+   ```json
+   {
+     "username": "",
+     "password": "",
+     "api_key": "YOUR_GEMINI_API_KEY_HERE",
+     "token": ""
+   }
+   ```
+3. Alternatively, set the GEMINI_API_KEY environment variable:
+   ```
+   $env:GEMINI_API_KEY="YOUR_GEMINI_API_KEY_HERE"  # PowerShell
+   # OR
+   set GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE  # Command Prompt
+   ```
+
+### 2. Install Tesseract OCR
+
+For OCR functionality (text recognition from screenshots):
+
+1. Download and install Tesseract OCR from https://github.com/UB-Mannheim/tesseract/wiki
+2. Add Tesseract to your system PATH
+3. Verify installation by running `tesseract --version` in your terminal
+
 - Tesseract OCR (optional, for text recognition)
 - Dependencies listed in requirements.txt
 

@@ -17,7 +17,7 @@ class GeminiClient:
     Client for interacting with Google's Gemini API.
     Provides methods to send prompts and images to the Gemini model and process responses.
     """
-    def __init__(self, api_key: str, model_name: str = "gemini-pro-vision"):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-pro-vision"):
         """
         Initialize the Gemini client.
         
@@ -25,7 +25,9 @@ class GeminiClient:
             api_key: The API key for accessing Gemini API
             model_name: The name of the Gemini model to use
         """
-        self.api_key = api_key
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        if not self.api_key:
+            print("Warning: No Gemini API key provided. Please set GEMINI_API_KEY environment variable.")
         self.model_name = model_name
         self.history = []
         self.retry_attempts = 3
