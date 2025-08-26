@@ -1,20 +1,24 @@
+import json
 import os
-from dotenv import load_dotenv
 
-dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-load_dotenv(dotenv_path=dotenv_path)
+class Config:
+    def __init__(self, config_file='config/default_config.json'):
+        self.config_file = config_file
+        self.settings = self.load_config()
 
-# --- Gemini API Configuration ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    def load_config(self):
+        if not os.path.exists(self.config_file):
+            raise FileNotFoundError(f"Configuration file not found: {self.config_file}")
+        
+        with open(self.config_file, 'r') as file:
+            return json.load(file)
 
-# --- Agent Behavior Configuration ---
-try:
-    MAX_STEPS = int(os.getenv("MAX_STEPS", 15))
-except (ValueError, TypeError):
-    print("Warning: MAX_STEPS in .env is not a valid integer. Defaulting to 15.")
-    MAX_STEPS = 15
+    def get(self, key, default=None):
+        return self.settings.get(key, default)
 
-# --- Sanity Checks ---
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY not found. Make sure you have created a .env file in the root folder and added your API key.")
+    def set(self, key, value):
+        self.settings[key] = value
+
+    def save(self):
+        with open(self.config_file, 'w') as file:
+            json.dump(self.settings, file, indent=4)

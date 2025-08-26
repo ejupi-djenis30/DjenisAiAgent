@@ -1,29 +1,15 @@
-from .base_tool import BaseTool
+class TaskCompletedTool:
+    def __init__(self):
+        self.completed_tasks = []
 
-class TaskCompletedTool(BaseTool):
-    """
-    A tool to be called when the main objective has been successfully completed.
-    """
+    def mark_task_completed(self, task_id):
+        if task_id not in self.completed_tasks:
+            self.completed_tasks.append(task_id)
+            return True
+        return False
 
-    @property
-    def name(self) -> str:
-        """The name of the tool."""
-        return "task_completed"
+    def get_completed_tasks(self):
+        return self.completed_tasks
 
-    @property
-    def description(self) -> str:
-        """A description of the tool's purpose and arguments."""
-        return "Call this tool when the main objective has been successfully completed. The 'reason' argument should explain why you consider the task finished."
-
-    def execute(self, reason: str) -> str:
-        """
-        Marks the task as completed.
-
-        Args:
-            reason: A string explaining why the task is considered complete.
-
-        Returns:
-            A confirmation string indicating the task is complete.
-        """
-        print(f"--- Executing Task Completed Tool ---")
-        return f"Task marked as completed. Reason: {reason}"
+    def clear_completed_tasks(self):
+        self.completed_tasks.clear()
