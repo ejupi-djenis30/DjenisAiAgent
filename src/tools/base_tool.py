@@ -1,17 +1,12 @@
-from abc import ABC, abstractmethod
-
-class BaseTool(ABC):
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
+class BaseTool:
+    def __init__(self):
         pass
 
-    @property
-    @abstractmethod
-    def description(self) -> str:
+    def execute(self):
+        raise NotImplementedError("Subclasses should implement this method.")
+
+    def configure(self, **kwargs):
         pass
 
-    @abstractmethod
-    def execute(self, *args, **kwargs) -> str:
+    def cleanup(self):
         pass

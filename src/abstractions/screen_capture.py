@@ -1,18 +1,27 @@
-from abc import ABC, abstractmethod
-from PIL.Image import Image
-import io
-
-class ScreenCapture(ABC):
-
-    @abstractmethod
-    def capture(self, region: tuple[int, int, int, int] | None = None) -> Image:
+class ScreenCapture:
+    def __init__(self):
         pass
 
-    def preprocess(self, img: Image) -> bytes:
-        processed_img = img.convert("L")
-        processed_img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+    def take_screenshot(self):
+        """
+        Captures the current screen and returns the image data.
+        """
+        pass
 
-        buffer = io.BytesIO()
-        processed_img.save(buffer, format="JPEG", quality=85, optimize=True)
+    def process_screenshot(self, image_data):
+        """
+        Processes the captured screenshot image data.
+        
+        :param image_data: The data of the captured image.
+        :return: Processed data from the image.
+        """
+        pass
 
-        return buffer.getvalue()
+    def save_screenshot(self, image_data, file_path):
+        """
+        Saves the captured screenshot to a specified file path.
+        
+        :param image_data: The data of the captured image.
+        :param file_path: The path where the image will be saved.
+        """
+        pass

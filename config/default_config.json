@@ -1,0 +1,30 @@
+{
+  "general": {
+    "debug_mode": false,
+    "log_level": "INFO"
+  },
+  "memory": {
+    "max_items": 100,
+    "expiry_seconds": 3600,
+    "task_storage_dir": "data/task_memory"
+  },
+  "perception": {
+    "screenshot_dir": "data/screenshots",
+    "ocr_enabled": true,
+    "ui_detection_enabled": true
+  },
+  "gemini": {
+    "api_key": "",
+    "model_name": "gemini-pro-vision",
+    "templates_path": "config/prompt_templates.json"
+  },
+  "mcp": {
+    "host": "localhost",
+    "port": 8080
+  },
+  "tools": {
+    "input": {
+      "safety_delay": 0.1
+    }
+  }
+}
