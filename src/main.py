@@ -3,6 +3,9 @@ import os
 import argparse
 import json
 import logging
+import time
+# Aggiungiamo la directory principale al path per permettere l'importazione di src
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent_core import AgentCore
 from config import Config
 
@@ -142,7 +145,35 @@ def main():
         agent = AgentCore(config)
         
         logger.info("Starting agent...")
+        
+        # Create a demo task to showcase agent functionality
+        test_task_id = agent.components["task_memory"].create_task(
+            description="Demo task: Take a screenshot and analyze it",
+            metadata={
+                "action_type": "capture_screen",
+                "parameters": {},
+                "user_request": "Analyze what's on my screen"
+            }
+        )
+        logger.info(f"Created demo task with ID: {test_task_id}")
+        
+        # Start the agent with a timeout
+        import threading
+        stop_event = threading.Event()
+        
+        def stop_after_timeout():
+            time.sleep(30)  # Run for 30 seconds
+            logger.info("Stopping agent after demo timeout")
+            agent.stop()
+            stop_event.set()
+        
+        timer_thread = threading.Thread(target=stop_after_timeout)
+        timer_thread.daemon = True
+        timer_thread.start()
+        
+        # Start the agent
         agent.start()
+        
     except KeyboardInterrupt:
         logger.info("Agent stopped by user")
     except Exception as e:

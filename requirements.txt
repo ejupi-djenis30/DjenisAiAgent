@@ -25,6 +25,9 @@ python-dotenv>=1.0.0
 tqdm>=4.66.0
 pyyaml>=6.0.0
 
+# UI (tkinter è generalmente incluso con Python)
+# Se stai usando una distribuzione Python che non include tkinter, potrebbe essere necessario installarlo separatamente
+
 # Testing
 pytest>=7.4.0
 pytest-mock>=3.11.0

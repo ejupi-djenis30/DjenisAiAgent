@@ -233,16 +233,20 @@ class GeminiClient:
             # Try to parse parameters
             params = {}
             
-            # Look for parameter patterns like param=value
-            param_matches = re.finditer(r'(\w+)=([^,\]]+)', action_params_text)
+            # Look for parameter patterns like param=value or param="quoted value"
+            param_matches = re.finditer(r'(\w+)=([^,\]]+|"[^"]*")', action_params_text)
             for param_match in param_matches:
                 param_name = param_match.group(1).strip()
                 param_value = param_match.group(2).strip()
                 
+                # Remove quotes if the value is quoted
+                if param_value.startswith('"') and param_value.endswith('"'):
+                    param_value = param_value[1:-1]
+                
                 # Try to convert to appropriate types
                 if param_value.isdigit():
                     param_value = int(param_value)
-                elif param_value.replace('.', '', 1).isdigit():
+                elif param_value.replace('.', '', 1).isdigit() and param_value.count('.') == 1:
                     param_value = float(param_value)
                 
                 params[param_name] = param_value
