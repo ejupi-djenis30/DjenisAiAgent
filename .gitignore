@@ -19,25 +19,31 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual Environment
 venv/
 env/
 ENV/
+.venv
 
 # IDE files
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 .project
 .pydevproject
 .settings/
+*.sublime-project
+*.sublime-workspace
 
 # Project specific
 data/screenshots/
 data/task_memory/
 data/ui_memory/
+screenshots/
 analysis_cache/
 config/credentials.json
 config/default_config.json
@@ -48,8 +54,35 @@ agent.log
 .DS_Store
 Thumbs.db
 desktop.ini
+*.bak
+*.tmp
 
 # Test coverage
 .coverage
+.coverage.*
 htmlcov/
 .pytest_cache/
+.tox/
+.hypothesis/
+
+# Documentation
+docs/_build/
+site/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# pytype
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+

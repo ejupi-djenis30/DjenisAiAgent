@@ -18,15 +18,15 @@ pywinauto>=0.6.8
 # Optional dependencies for advanced features
 torch>=2.0.0; platform_system != "Darwin" or platform_machine != "arm64"
 torchvision>=0.15.0; platform_system != "Darwin" or platform_machine != "arm64"
-# For Apple Silicon, users need to install torch and torchvision separately
+# Note: For Apple Silicon, users need to install torch and torchvision separately
 
 # Logging and utilities
 python-dotenv>=1.0.0
 tqdm>=4.66.0
 pyyaml>=6.0.0
 
-# UI (tkinter è generalmente incluso con Python)
-# Se stai usando una distribuzione Python che non include tkinter, potrebbe essere necessario installarlo separatamente
+# UI (tkinter is generally included with Python)
+# If using a Python distribution without tkinter, you may need to install it separately
 
 # Testing
 pytest>=7.4.0

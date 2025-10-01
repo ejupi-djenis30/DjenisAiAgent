@@ -15,7 +15,7 @@
   },
   "gemini": {
     "api_key": "[REVOKED_GOOGLE_API_KEY]",
-    "model_name": "gemini-2.5-flash",
+    "model_name": "gemma-3-27b-it",
     "templates_path": "config/prompt_templates.json"
   },
   "mcp": {
