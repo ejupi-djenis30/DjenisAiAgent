@@ -94,20 +94,20 @@ class AgentUI:
         self.queue = queue.Queue()
         self.stop_event = threading.Event()
         
-        # Configura la finestra
-        self.root.title("DjenisAiAgent - Interfaccia di Controllo")
-        self.root.geometry("1400x900")  # Finestra ancora più grande
-        self.root.minsize(1200, 800)    # Dimensione minima maggiore
+        # Configure the window
+        self.root.title("DjenisAiAgent - Control Interface")
+        self.root.geometry("1400x900")  # Large window size
+        self.root.minsize(1200, 800)    # Minimum size
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
-        # Aggiungi un'icona e personalizza l'aspetto
+        # Add an icon and customize appearance
         self.root.configure(bg="#f0f0f0")
         
-        # Configura il font di base molto più grande
-        default_font = ('Segoe UI', 14)  # Font ancora più grande
+        # Configure the base font with larger size
+        default_font = ('Segoe UI', 14)  # Large font for better readability
         self.root.option_add('*Font', default_font)
         
-        # Crea i frame
+        # Create frames
         self.create_frames()
         
         # Inizializza l'agente

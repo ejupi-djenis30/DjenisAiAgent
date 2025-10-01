@@ -14,8 +14,8 @@
     "ui_detection_enabled": true
   },
   "gemini": {
-    "api_key": "AIzaSyBDxgoTiZZoVyTQamlnJGU3m6ZMlCKxfDA",
-    "model_name": "gemini-2.5-flash",
+    "api_key": "AIzaSyARNubHcPgJH9H5YO3nzvqos1cJzU06_hk",
+    "model_name": "gemma-3-27b-it",
     "templates_path": "config/prompt_templates.json"
   },
   "mcp": {

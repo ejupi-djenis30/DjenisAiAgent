@@ -1,10 +1,16 @@
+"""
+Main entry point for the DjenisAiAgent application.
+
+This module initializes the agent, loads configuration, and handles command-line arguments.
+"""
 import sys
 import os
 import argparse
 import json
 import logging
 import time
-# Aggiungiamo la directory principale al path per permettere l'importazione di src
+
+# Add the parent directory to the path to allow importing src modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent_core import AgentCore
 from config import Config

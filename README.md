@@ -1,225 +1,307 @@
-# DjenisAiAgent - MCP Server Agent
+# DjenisAiAgent - Intelligent UI Automation Agent
+
+[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-blue.svg)](https://www.microsoft.com/windows)
 
 ## Overview
 
-DjenisAiAgent is a Model Context Protocol (MCP) server agent designed to automate UI tasks on Windows 11 (with Linux support planned) using Google's Gemini AI. The agent can capture the screen, analyze UI elements, and execute actions based on AI-powered decisions.
+DjenisAiAgent is an advanced automation assistant that uses Google's Gemini AI to interact with user interfaces on Windows 11. The agent captures screenshots, analyzes UI elements using computer vision, and performs actions based on AI-driven decisions.
 
-This project combines computer vision, AI decision making, and UI automation to create an intelligent assistant that can perform various tasks on your computer by "seeing" the screen and controlling the mouse and keyboard.
+By combining computer vision, artificial intelligence, and UI automation, DjenisAiAgent can navigate applications, recognize interface elements, and execute tasks autonomously - essentially "seeing" your screen and controlling the mouse and keyboard like a human would.
 
-## Features
+## Key Features
 
-- **Screen Analysis**: Captures and analyzes screen content using computer vision techniques
-- **AI Decision Making**: Uses Gemini AI to interpret screen content and decide actions
-- **UI Automation**: Controls mouse and keyboard to interact with applications
-- **MCP Integration**: Implements the Model Context Protocol for standardized AI agent communication
-- **Modular Architecture**: Cleanly separated components for perception, memory, planning, and tools
-- **Extensible Tools**: Framework for adding new capabilities and integrations
-- **User Interface**: Simple GUI for sending commands and viewing agent status
+- **AI-Powered Interface Analysis**: Uses Gemini AI models to understand screen content and context
+- **Computer Vision**: Detects buttons, text fields, and other UI elements using advanced image processing
+- **Optical Character Recognition (OCR)**: Reads text from screen elements using Tesseract
+- **UI Pattern Recognition**: Identifies common UI components using visual pattern matching
+- **Task Memory**: Remembers previous actions and context for better decision making
+- **Graphical User Interface**: Easy-to-use control panel for monitoring and commanding the agent
+- **Extensible Architecture**: Modular design allows for adding new capabilities and integrations
 
 ## Project Structure
 
 ```
 DjenisAiAgent/
-├── src/                  # Source code
-│   ├── agent_core.py     # Main agent implementation
-│   ├── config.py         # Configuration management
-│   ├── main.py           # Application entry point
-│   ├── abstractions/     # Abstract interfaces
-│   ├── gemini/           # Gemini AI integration
-│   ├── memory/           # Agent memory components
-│   ├── perception/       # Screen analysis and UI detection
-│   ├── planning/         # Task planning and execution
-│   ├── tools/            # Action tools (input, MCP, etc.)
-│   └── ui/               # User interface components
-├── tests/                # Unit and integration tests
-├── config/               # Configuration files
-│   ├── default_config.json
-│   ├── credentials.json.template
-│   └── prompt_templates.json
-├── data/                 # Runtime data (created on first run)
-│   ├── screenshots/      # Captured screenshots
-│   └── task_memory/      # Persisted task data
-├── requirements.txt      # Dependencies
-└── README.md             # This file
+├── src/                      # Source code
+│   ├── agent_core.py         # Main agent implementation
+│   ├── config.py             # Configuration management
+│   ├── main.py               # Application entry point
+│   ├── abstractions/         # Abstract interfaces
+│   ├── gemini/               # Gemini AI integration
+│   ├── memory/               # Memory management components
+│   ├── perception/           # Screen analysis and UI detection
+│   ├── planning/             # Task planning and execution
+│   ├── tools/                # Action tools (input, automation)
+│   └── ui/                   # User interface components
+├── tests/                    # Unit and integration tests
+├── config/                   # Configuration files
+│   ├── default_config.json         # Main configuration (without sensitive data)
+│   ├── default_config.json.template # Template for configuration
+│   ├── credentials.json           # User's private API keys (git-ignored)
+│   ├── credentials.json.template  # Template for credentials
+│   └── prompt_templates.json      # AI prompt structures
+├── data/                     # Runtime data (created on first run)
+│   ├── screenshots/          # Captured screenshots
+│   ├── task_memory/          # Persisted task data
+│   ├── ui_memory/            # UI interaction history
+│   └── ui_patterns.json      # UI element pattern definitions
+├── launch_ui.py              # Start the graphical interface
+├── requirements.txt          # Python dependencies
+└── README.md                 # This documentation
 ```
 
 ## Requirements
 
-- Python 3.9+
-- Windows 11 (for Windows UI automation)
-- Google Gemini API key
-- Tesseract OCR (for text recognition in screenshots)
+- **Python 3.9+**
+- **Windows 11** (required for Windows UI automation features)
+- **Google Gemini API Key** (for AI capabilities)
+- **Tesseract OCR** (optional, for text recognition in screenshots)
 
-## Setup Instructions
+## Installation
 
-### 1. Configure API Keys
+### 1. Set Up Python Environment
 
-For security reasons, API keys are stored in a separate `credentials.json` file that is not committed to the repository:
+```powershell
+# Clone the repository
+git clone https://github.com/ejupi-djenis30/DjenisAiAgent.git
+cd DjenisAiAgent
 
-1. Copy `config/credentials.json.template` to `config/credentials.json`
-2. Edit `config/credentials.json` and add your Gemini API key:
-   ```json
-   {
-     "username": "",
-     "password": "",
-     "api_key": "YOUR_GEMINI_API_KEY_HERE",
-     "token": ""
-   }
+# Create and activate a virtual environment
+python -m venv venv
+.\venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 2. Configure API Keys
+
+For security reasons, API keys are not stored in the main configuration files that might be committed to the repository. You have two options:
+
+**Option A: Using credentials.json**
+
+```powershell
+# Copy the template
+Copy-Item config/credentials.json.template config/credentials.json
+
+# Edit the file and add your API key
+# The file should look like:
+# {
+#   "username": "",
+#   "password": "",
+#   "api_key": "YOUR_GEMINI_API_KEY_HERE",
+#   "token": ""
+# }
+```
+
+**Option B: Using Environment Variables**
+
+```powershell
+# PowerShell
+$env:GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"
+
+# Command Prompt
+set GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
+```
+
+### 3. Install Tesseract OCR (Optional)
+
+For text recognition capabilities:
+
+1. Download Tesseract OCR from [GitHub](https://github.com/UB-Mannheim/tesseract/wiki)
+2. During installation, ensure "Add to PATH" is selected
+3. Verify installation:
+   ```powershell
+   tesseract --version
    ```
-3. Alternatively, set the GEMINI_API_KEY environment variable:
-   ```
-   $env:GEMINI_API_KEY="YOUR_GEMINI_API_KEY_HERE"  # PowerShell
-   # OR
-   set GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE  # Command Prompt
-   ```
-
-### 2. Install Tesseract OCR
-
-For OCR functionality (text recognition from screenshots):
-
-1. Download and install Tesseract OCR from https://github.com/UB-Mannheim/tesseract/wiki
-2. Add Tesseract to your system PATH
-3. Verify installation by running `tesseract --version` in your terminal
-
-- Tesseract OCR (optional, for text recognition)
-- Dependencies listed in requirements.txt
-
-## Setup Instructions
-
-1. Clone the repository:
-
-   ```
-   git clone https://github.com/ejupi-djenis30/DjenisAiAgent.git
-   cd DjenisAiAgent
-   ```
-
-2. Create and activate a virtual environment:
-
-   ```
-   python -m venv venv
-   .\venv\Scripts\activate  # Windows
-   source venv/bin/activate  # Linux/Mac
-   ```
-
-3. Install dependencies:
-
-   ```
-   pip install -r requirements.txt
-   ```
-
-4. Set up your Gemini API key:
-
-   - Copy `config/credentials.json.template` to `config/credentials.json`
-   - Add your Gemini API key to the file
-   - Alternatively, set the `GEMINI_API_KEY` environment variable
-
-5. (Optional) Install Tesseract OCR for text recognition:
-   - Download and install from https://github.com/UB-Mannheim/tesseract/wiki
-   - Add Tesseract to your PATH
 
 ## Usage
 
-1. Start the agent:
+### Running the Agent
 
-   ```
-   python -m src.main
-   ```
+There are two main ways to run the DjenisAiAgent:
 
-2. For debugging mode:
+#### 1. With the Graphical User Interface (Recommended)
 
-   ```
-   python -m src.main --debug
-   ```
-
-3. To use a custom configuration:
-   ```
-   python -m src.main --config path/to/config.json
-   ```
-
-## Configuration
-
-The agent can be configured via JSON files in the `config` directory:
-
-- `default_config.json`: Default settings
-- `credentials.json`: API keys and other secrets
-- `prompt_templates.json`: Templates for AI prompts
-
-Key configuration options:
-
-- `general.debug_mode`: Enable debug logging
-- `gemini.api_key`: Gemini API key (if not using environment variable)
-- `gemini.model_name`: Gemini model to use
-- `tools.input.safety_delay`: Delay between input actions for safety
-
-## Development
-
-### Running Tests
-
-```
-python -m pytest tests/
-```
-
-### Adding New Tools
-
-1. Create a new tool class in `src/tools/`
-2. Register action handlers in `AgentCore._register_actions()`
-3. Update prompt templates to include new actions
-
-## License
-
-[MIT License](LICENSE)
-
-## Acknowledgments
-
-- Google Gemini for AI capabilities
-- OpenCV for computer vision functionality
-- PyAutoGUI for UI automation
-
-## Future Plans
-
-- Linux support
-- More sophisticated task planning
-- Advanced UI element detection
-- Custom action tools
-- Web browser integration
-
-2. Navigate to the project directory.
-3. Install the required dependencies using the command:
-   ```
-   pip install -r requirements.txt
-   ```
-4. Configure the agent by editing the `config/default_config.json` file and filling in the necessary credentials in `config/credentials.json.template`.
-
-## Usage
-
-To run the MCP Server Agent in headless mode:
-
-```
-python src/main.py
-```
-
-To run with the graphical user interface:
-
-```
+```powershell
+# Run the UI version
 python launch_ui.py
 ```
 
-### User Interface Commands
+This launches a user-friendly interface where you can:
 
-The GUI provides an interactive way to control the agent:
+- Monitor the agent's status and activities
+- Send commands via the text input
+- Take screenshots for analysis
+- Pause/resume agent operations
 
-- Type any text command in the input field and press Enter to send a request to the agent
-- Use the "Pausa" button to pause/resume agent execution
-- Use the "Screenshot" button to take and analyze a screenshot
-- Special commands:
-  - `exit` or `quit`: Close the application
-  - `pause`: Toggle pause state
-  - `screenshot`: Take a screenshot
+#### 2. Command Line Mode
 
-## Contributing
+```powershell
+# Basic usage
+python src/main.py
 
-Contributions are welcome! Please submit a pull request or open an issue for any enhancements or bug fixes.
+# With debug mode enabled
+python src/main.py --debug
+
+# With a custom configuration file
+python src/main.py --config path/to/custom/config.json
+```
+
+### Special Commands
+
+When using the UI, you can type these commands:
+
+- `screenshot` - Capture the screen and analyze it
+- `pause` - Toggle pause/resume of the agent
+- `exit` or `quit` - Close the application
+
+### Common Error Solutions
+
+- **"Gemini API key not found"**: Check your credentials.json file or environment variable
+- **"OCR initialization failed"**: Make sure Tesseract is installed and in your PATH
+- **"UI patterns could not be loaded"**: Verify data/ui_patterns.json exists and is valid JSON
+
+## Configuration System
+
+The agent uses a multi-layered configuration system for flexibility and security:
+
+### Core Configuration Files
+
+- **default_config.json**: Contains non-sensitive settings
+  - UI parameters
+  - Memory settings
+  - Detection thresholds
+  - Model parameters
+- **credentials.json**: Contains sensitive data (git-ignored)
+  - API keys
+  - Usernames/passwords
+  - Access tokens
+- **prompt_templates.json**: Contains AI prompt structures
+  - Task instructions
+  - System prompts
+  - Response formatting
+
+### Key Configuration Options
+
+| Setting                           | Description                    | Default              |
+| --------------------------------- | ------------------------------ | -------------------- |
+| `general.debug_mode`              | Enable detailed logging        | `false`              |
+| `general.log_level`               | Log verbosity level            | `"INFO"`             |
+| `perception.ocr_enabled`          | Enable text recognition        | `true`               |
+| `perception.ui_detection_enabled` | Enable UI element detection    | `true`               |
+| `gemini.model_name`               | Gemini AI model to use         | `"gemini-2.5-flash"` |
+| `memory.max_items`                | Maximum memory items to retain | `100`                |
+
+## Advanced Topics
+
+### Running Tests
+
+```powershell
+# Run all tests
+python -m pytest tests/
+
+# Run specific test file
+python -m pytest tests/test_perception.py
+```
+
+### Extending the Agent
+
+The modular architecture makes it easy to extend functionality:
+
+1. **Add UI Patterns**: Extend data/ui_patterns.json with new element definitions
+2. **Create Custom Tools**: Implement new tools in src/tools/
+3. **Enhance Perception**: Add detection methods in src/perception/
+
+## Troubleshooting
+
+### Common Issues
+
+- **Agent not finding UI elements**: Try adjusting `perception.element_confidence_threshold`
+- **Slow performance**: Reduce screenshot frequency or disable advanced OCR
+- **Memory leaks**: Adjust `memory.max_items` and `memory.expiry_seconds`
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for more details.
+This project is licensed under the MIT License.
+
+## Acknowledgments
+
+- Google Gemini for AI models
+- OpenCV for computer vision capabilities
+- PyAutoGUI and PyWinAuto for UI automation
+- Tesseract for OCR capabilities
+
+## Roadmap
+
+- Linux support (currently Windows-only)
+- Advanced task planning with multi-step reasoning
+- Web browser integration
+- Custom action tool framework
+- Neural network-based UI element recognition
+
+## Security Notes
+
+This project uses API keys and potentially sensitive data. To maintain security:
+
+1. **Never commit API keys to version control**
+
+   - The `.gitignore` file excludes `credentials.json` and `default_config.json`
+   - Use environment variables in CI/CD pipelines
+
+2. **Use the template system properly**
+
+   - Copy `credentials.json.template` → `credentials.json` and add your keys
+   - Copy `default_config.json.template` → `default_config.json` if needed
+
+3. **Check configuration files before commits**
+   - Run `git diff --staged` before committing to ensure no keys are included
+
+## Contributing
+
+Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for details on how to submit pull requests, report issues, and contribute to the project.
+
+### Quick Contribution Steps
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes following our coding standards
+4. Run tests (`pytest tests/`)
+5. Commit changes (`git commit -m 'Add amazing feature'`)
+6. Push to branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+For more details, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Documentation
+
+- 📚 [Quick Start Guide](QUICKSTART.md) - Get running in 5 minutes
+- 📖 [Full Documentation](docs/README.md) - Comprehensive guides
+- 🏗️ [Architecture Overview](docs/architecture.md) - System design
+- 📝 [Changelog](CHANGELOG.md) - Version history
+
+## Project Status
+
+This project has been recently cleaned up and improved! See [IMPROVEMENTS.md](IMPROVEMENTS.md) for a complete list of enhancements.
+
+### Recent Improvements
+
+- ✅ Standardized codebase to English
+- ✅ Added comprehensive documentation
+- ✅ Implemented CI/CD workflows
+- ✅ Added automated setup and cleanup scripts
+- ✅ Enhanced project structure and configuration
+- ✅ Added development tools and pre-commit hooks
+
+## Contact
+
+- Project Owner: [ejupi-djenis30](https://github.com/ejupi-djenis30)
+- Repository: [DjenisAiAgent](https://github.com/ejupi-djenis30/DjenisAiAgent)
+- Issues: [GitHub Issues](https://github.com/ejupi-djenis30/DjenisAiAgent/issues)
+
+## Disclaimer
+
+This software is provided as-is. Always test automation in a safe environment before using in production systems.
