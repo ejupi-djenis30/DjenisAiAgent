@@ -2,15 +2,16 @@
 
 Welcome to the DjenisAiAgent documentation!
 
-## Table of Contents
+## 📚 Table of Contents
 
-1. [Getting Started](getting-started.md)
-2. [Configuration Guide](configuration.md)
-3. [API Reference](api-reference.md)
-4. [Architecture Overview](architecture.md)
-5. [Development Guide](development.md)
-6. [Troubleshooting](troubleshooting.md)
-7. [FAQ](faq.md)
+1. [Getting Started](getting-started.md) - Complete setup and installation guide
+2. [Quick Start](../QUICKSTART.md) - Get running in 5 minutes
+3. [Configuration Guide](../CONTRIBUTING.md#configuration) - Customize agent behavior
+4. [API Reference](api-reference.md) - Complete API documentation
+5. [Architecture Overview](architecture.md) - System design and components
+6. [Development Guide](../CONTRIBUTING.md#development-setup) - Contributing to the project
+7. [FAQ](faq.md) - Frequently asked questions
+8. [Troubleshooting](faq.md#troubleshooting) - Common issues and solutions
 
 ## Quick Links
 
