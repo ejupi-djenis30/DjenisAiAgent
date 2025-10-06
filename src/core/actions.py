@@ -221,6 +221,205 @@ class ActionRegistry:
             examples=["find button", "locate text field"],
             aliases=["locate", "search_for", "find"]
         ))
+        
+        # Advanced Actions
+        self.register(ActionDefinition(
+            name="copy",
+            category=ActionCategory.KEYBOARD,
+            description="Copy selected content to clipboard",
+            parameters=[],
+            examples=["copy selected text", "copy"],
+            aliases=["copy_text", "ctrl_c"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="paste",
+            category=ActionCategory.KEYBOARD,
+            description="Paste clipboard content",
+            parameters=[],
+            examples=["paste text", "paste"],
+            aliases=["paste_text", "ctrl_v"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="cut",
+            category=ActionCategory.KEYBOARD,
+            description="Cut selected content to clipboard",
+            parameters=[],
+            examples=["cut selected text", "cut"],
+            aliases=["cut_text", "ctrl_x"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="select_all",
+            category=ActionCategory.KEYBOARD,
+            description="Select all content",
+            parameters=[],
+            examples=["select all", "select everything"],
+            aliases=["ctrl_a", "select_everything"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="undo",
+            category=ActionCategory.KEYBOARD,
+            description="Undo last action",
+            parameters=[],
+            examples=["undo", "undo last action"],
+            aliases=["ctrl_z"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="redo",
+            category=ActionCategory.KEYBOARD,
+            description="Redo last undone action",
+            parameters=[],
+            examples=["redo", "redo action"],
+            aliases=["ctrl_y"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="save",
+            category=ActionCategory.KEYBOARD,
+            description="Save current file or document",
+            parameters=[],
+            examples=["save file", "save document"],
+            aliases=["save_file", "ctrl_s"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="find_text",
+            category=ActionCategory.KEYBOARD,
+            description="Open find dialog",
+            parameters=[],
+            examples=["find text", "open search"],
+            aliases=["search", "ctrl_f"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="new_tab",
+            category=ActionCategory.KEYBOARD,
+            description="Open new tab (in browsers)",
+            parameters=[],
+            examples=["new tab", "open new tab"],
+            aliases=["ctrl_t", "create_tab"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="close_tab",
+            category=ActionCategory.KEYBOARD,
+            description="Close current tab",
+            parameters=[],
+            examples=["close tab", "close current tab"],
+            aliases=["ctrl_w"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="switch_tab",
+            category=ActionCategory.KEYBOARD,
+            description="Switch to next or previous tab",
+            parameters=["direction"],
+            examples=["switch tab next", "switch tab previous"],
+            aliases=["next_tab", "previous_tab", "ctrl_tab"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="refresh",
+            category=ActionCategory.KEYBOARD,
+            description="Refresh or reload page",
+            parameters=[],
+            examples=["refresh page", "reload"],
+            aliases=["reload", "f5", "ctrl_r"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="zoom_in",
+            category=ActionCategory.KEYBOARD,
+            description="Zoom in",
+            parameters=[],
+            examples=["zoom in", "increase zoom"],
+            aliases=["ctrl_plus", "increase_zoom"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="zoom_out",
+            category=ActionCategory.KEYBOARD,
+            description="Zoom out",
+            parameters=[],
+            examples=["zoom out", "decrease zoom"],
+            aliases=["ctrl_minus", "decrease_zoom"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="fullscreen",
+            category=ActionCategory.KEYBOARD,
+            description="Toggle fullscreen mode",
+            parameters=[],
+            examples=["fullscreen", "toggle fullscreen"],
+            aliases=["f11", "toggle_fullscreen"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="read_text",
+            category=ActionCategory.VERIFICATION,
+            description="Read text from screen or element",
+            parameters=["location"],
+            examples=["read text from screen", "read selected text"],
+            aliases=["get_text", "extract_text", "ocr"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="get_clipboard",
+            category=ActionCategory.SYSTEM,
+            description="Get current clipboard content",
+            parameters=[],
+            examples=["get clipboard", "read clipboard"],
+            aliases=["read_clipboard", "clipboard_content"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="set_clipboard",
+            category=ActionCategory.SYSTEM,
+            description="Set clipboard content",
+            parameters=["text"],
+            examples=["set clipboard to hello", "copy to clipboard"],
+            aliases=["write_clipboard", "clipboard_write"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="run_command",
+            category=ActionCategory.SYSTEM,
+            description="Run a system command",
+            parameters=["command"],
+            examples=["run command ipconfig", "execute dir"],
+            aliases=["execute", "shell", "cmd"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="move_mouse",
+            category=ActionCategory.MOUSE,
+            description="Move mouse to specific position",
+            parameters=["x", "y"],
+            examples=["move mouse to 100,200", "move cursor to center"],
+            aliases=["move_cursor", "mouse_move"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="get_mouse_position",
+            category=ActionCategory.MOUSE,
+            description="Get current mouse position",
+            parameters=[],
+            examples=["get mouse position", "where is cursor"],
+            aliases=["cursor_position", "mouse_location"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="take_screenshot_region",
+            category=ActionCategory.SYSTEM,
+            description="Take screenshot of specific region",
+            parameters=["x", "y", "width", "height"],
+            examples=["screenshot region 0,0,500,500"],
+            aliases=["capture_region", "screenshot_area"]
+        ))
     
     def register(self, action: ActionDefinition):
         """Register a new action."""
