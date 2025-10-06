@@ -56,6 +56,12 @@ Emergency Stop: Press Ctrl+Shift+Q during execution
         help="Show execution statistics"
     )
     
+    parser.add_argument(
+        "--no-ui",
+        action="store_true",
+        help="Disable overlay UI"
+    )
+    
     args = parser.parse_args()
     
     if args.debug:
@@ -70,13 +76,14 @@ Emergency Stop: Press Ctrl+Shift+Q during execution
 ║                                                           ║
 ║              Powered by Google Gemini                     ║
 ║                    Version 2.0                            ║
+║{f"           UI Overlay: {'Disabled' if args.no_ui else 'Enabled'}".center(59)}║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝{Style.RESET_ALL}
     """)
     
     try:
-        # Initialize enhanced agent
-        agent = EnhancedAIAgent()
+        # Initialize enhanced agent with UI preference
+        agent = EnhancedAIAgent(use_ui=not args.no_ui)
         
         if args.interactive or not args.request:
             # Interactive mode

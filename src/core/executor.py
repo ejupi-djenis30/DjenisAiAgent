@@ -261,6 +261,154 @@ class ActionExecutor:
             "location": location
         }
     
+    # Advanced Action Handlers
+    
+    def _execute_copy(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Copy selected content."""
+        self.ui.hotkey('ctrl', 'c')
+        return {"success": True}
+    
+    def _execute_paste(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Paste clipboard content."""
+        self.ui.hotkey('ctrl', 'v')
+        return {"success": True}
+    
+    def _execute_cut(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Cut selected content."""
+        self.ui.hotkey('ctrl', 'x')
+        return {"success": True}
+    
+    def _execute_select_all(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Select all content."""
+        self.ui.hotkey('ctrl', 'a')
+        return {"success": True}
+    
+    def _execute_undo(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Undo last action."""
+        self.ui.hotkey('ctrl', 'z')
+        return {"success": True}
+    
+    def _execute_redo(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Redo last action."""
+        self.ui.hotkey('ctrl', 'y')
+        return {"success": True}
+    
+    def _execute_save(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Save file/document."""
+        self.ui.hotkey('ctrl', 's')
+        return {"success": True}
+    
+    def _execute_find_text(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Open find dialog."""
+        self.ui.hotkey('ctrl', 'f')
+        return {"success": True}
+    
+    def _execute_new_tab(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Open new tab."""
+        self.ui.hotkey('ctrl', 't')
+        return {"success": True}
+    
+    def _execute_close_tab(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Close current tab."""
+        self.ui.hotkey('ctrl', 'w')
+        return {"success": True}
+    
+    def _execute_switch_tab(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Switch tabs."""
+        direction = target.lower() if target else "next"
+        if "prev" in direction or "back" in direction:
+            self.ui.hotkey('ctrl', 'shift', 'tab')
+        else:
+            self.ui.hotkey('ctrl', 'tab')
+        return {"success": True}
+    
+    def _execute_refresh(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Refresh/reload page."""
+        self.ui.press_key('f5')
+        return {"success": True}
+    
+    def _execute_zoom_in(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Zoom in."""
+        self.ui.hotkey('ctrl', 'plus')
+        return {"success": True}
+    
+    def _execute_zoom_out(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Zoom out."""
+        self.ui.hotkey('ctrl', 'minus')
+        return {"success": True}
+    
+    def _execute_fullscreen(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Toggle fullscreen."""
+        self.ui.press_key('f11')
+        return {"success": True}
+    
+    def _execute_read_text(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Read text from screen."""
+        text = self.ui.find_text_on_screen(target)
+        return {"success": text is not None, "text": text}
+    
+    def _execute_get_clipboard(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Get clipboard content."""
+        import pyperclip
+        try:
+            content = pyperclip.paste()
+            return {"success": True, "content": content}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _execute_set_clipboard(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Set clipboard content."""
+        import pyperclip
+        try:
+            text = target or params.get("text", "")
+            pyperclip.copy(text)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _execute_run_command(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Run system command."""
+        import subprocess
+        try:
+            command = target or params.get("command", "")
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=10)
+            return {
+                "success": result.returncode == 0,
+                "output": result.stdout,
+                "error": result.stderr
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _execute_move_mouse(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Move mouse to position."""
+        coords = self._parse_coordinates(target)
+        if coords:
+            x, y = coords
+            self.ui.move_to(x, y)
+            return {"success": True, "position": (x, y)}
+        return {"success": False, "error": "Invalid coordinates"}
+    
+    def _execute_get_mouse_position(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Get current mouse position."""
+        pos = self.ui.get_mouse_position()
+        return {"success": True, "position": pos}
+    
+    def _execute_take_screenshot_region(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Take screenshot of specific region."""
+        try:
+            x = params.get("x", 0)
+            y = params.get("y", 0)
+            width = params.get("width", 500)
+            height = params.get("height", 500)
+            
+            import pyautogui
+            screenshot = pyautogui.screenshot(region=(x, y, width, height))
+            path = self.ui.save_screenshot(screenshot)
+            return {"success": True, "path": str(path)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
     # Generic execution for unmapped actions
     
     def _execute_generic(self, action: str, target: str, params: Dict) -> Dict[str, Any]:

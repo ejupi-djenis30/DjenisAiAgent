@@ -1,4 +1,4 @@
-"""Enhanced AI Agent with improved architecture."""
+"""Enhanced AI Agent with improved architecture and UI overlay."""
 
 import time
 from typing import Dict, Any, List, Optional
@@ -9,6 +9,7 @@ from logger import setup_logger
 from config import config
 from src.core.gemini_client import EnhancedGeminiClient
 from src.core.executor import ActionExecutor
+from src.core.ui_overlay import get_overlay
 from ui_automation import UIAutomationEngine
 
 logger = setup_logger("EnhancedAgent")
@@ -17,8 +18,12 @@ logger = setup_logger("EnhancedAgent")
 class EnhancedAIAgent:
     """Enhanced AI Agent for Windows UI automation with improved architecture."""
     
-    def __init__(self):
-        """Initialize the enhanced AI agent."""
+    def __init__(self, use_ui: bool = True):
+        """Initialize the enhanced AI agent.
+        
+        Args:
+            use_ui: Whether to show the overlay UI
+        """
         logger.info("Initializing Enhanced AI Agent...")
         
         try:
@@ -31,6 +36,16 @@ class EnhancedAIAgent:
         self.gemini = EnhancedGeminiClient()
         self.ui = UIAutomationEngine()
         self.executor = ActionExecutor(self.ui)
+        
+        # UI Overlay
+        self.use_ui = use_ui
+        self.overlay = None
+        if use_ui:
+            self.overlay = get_overlay()
+            self.overlay.start()
+            time.sleep(0.5)  # Give UI time to initialize
+            self.overlay.add_log("Agent initialized", "INFO")
+            self.overlay.update_status("🟢 Ready")
         
         # State management
         self.current_task: Optional[str] = None
@@ -71,6 +86,12 @@ class EnhancedAIAgent:
         self.task_start_time = time.time()
         self.execution_history = []
         
+        # Update UI
+        if self.overlay:
+            self.overlay.update_status("🔄 Working...", "#0078d4")
+            self.overlay.update_task(user_request)
+            self.overlay.add_log(f"Starting task: {user_request}", "INFO")
+        
         logger.info(f"🎯 Starting task: {user_request}")
         self._print_task_header(user_request)
         
@@ -79,12 +100,18 @@ class EnhancedAIAgent:
             logger.info("📋 Generating task plan...")
             print("📋 Analyzing request and generating detailed plan...\n")
             
+            if self.overlay:
+                self.overlay.add_log("Generating task plan...", "INFO")
+            
             context = self._get_current_context()
             self.task_plan = self.gemini.generate_task_plan(user_request, context)
             
             # Check for clarification
             if self.task_plan.get("clarification_needed"):
                 logger.warning(f"❓ Clarification needed: {self.task_plan['clarification_needed']}")
+                if self.overlay:
+                    self.overlay.add_log("Clarification needed", "WARNING")
+                    self.overlay.update_status("❓ Needs clarification")
                 return {
                     "success": False,
                     "needs_clarification": True,
@@ -92,6 +119,9 @@ class EnhancedAIAgent:
                 }
             
             if not self.task_plan.get("understood", False):
+                if self.overlay:
+                    self.overlay.add_log("Could not understand request", "ERROR")
+                    self.overlay.update_status("❌ Failed")
                 return {
                     "success": False,
                     "error": "Could not understand the request",
@@ -101,12 +131,36 @@ class EnhancedAIAgent:
             # Display comprehensive plan
             self._display_plan(self.task_plan)
             
+            # Update UI with plan
+            if self.overlay:
+                steps = self.task_plan.get("steps", [])
+                self.overlay.update_progress(0, len(steps))
+                self.overlay.add_log(f"Plan generated: {len(steps)} steps", "INFO")
+            
             # Step 2: Execute the plan with enhanced monitoring
             logger.info(f"⚡ Executing plan...")
             result = self._execute_plan(self.task_plan.get("steps", []))
             
             # Calculate metrics
             execution_time = time.time() - self.task_start_time
+            
+            # Record task in history
+            self.execution_history.append({
+                "type": "task",
+                "task": user_request,
+                "success": result["success"],
+                "duration": execution_time,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Update UI with result
+            if self.overlay:
+                if result["success"]:
+                    self.overlay.update_status("✅ Completed", "#4ec9b0")
+                    self.overlay.add_log(f"Task completed in {execution_time:.2f}s", "INFO")
+                else:
+                    self.overlay.update_status("❌ Failed", "#f48771")
+                    self.overlay.add_log(f"Task failed: {result.get('error', 'Unknown')}", "ERROR")
             
             # Final reporting
             if result["success"]:
@@ -126,6 +180,9 @@ class EnhancedAIAgent:
             
         except Exception as e:
             logger.error(f"❌ Task execution error: {e}", exc_info=True)
+            if self.overlay:
+                self.overlay.update_status("❌ Error", "#f48771")
+                self.overlay.add_log(f"Error: {str(e)}", "ERROR")
             return {
                 "success": False,
                 "error": str(e),
@@ -134,6 +191,8 @@ class EnhancedAIAgent:
         finally:
             self.is_running = False
             self.current_task = None
+            if self.overlay:
+                self.overlay.reset()
     
     def _get_current_context(self) -> Dict[str, Any]:
         """Get comprehensive current system context."""
@@ -178,8 +237,18 @@ class EnhancedAIAgent:
             print(f"⚡ Step {step_num}/{total_steps}: {action}")
             print(f"   Target: {target}")
             
+            # Update UI
+            if self.overlay:
+                self.overlay.update_progress(step_num, total_steps, action)
+                self.overlay.add_log(f"Step {step_num}/{total_steps}: {action} - {target}", "INFO")
+            
             if parameters and parameters != {}:
                 print(f"   Parameters: {parameters}")
+            
+            # Hide UI for screenshot
+            if self.overlay and action in ["screenshot", "take_screenshot", "take_screenshot_region"]:
+                self.overlay.hide()
+                time.sleep(0.2)  # Brief pause to ensure UI is hidden
             
             # Take screenshot before action (for verification)
             before_screenshot = None
@@ -189,6 +258,10 @@ class EnhancedAIAgent:
             # Execute the action using the executor
             result = self.executor.execute(action, target, parameters)
             
+            # Show UI again if it was hidden
+            if self.overlay and action in ["screenshot", "take_screenshot", "take_screenshot_region"]:
+                self.overlay.show()
+            
             # Record in history
             self.execution_history.append({
                 "step": step_num,
@@ -196,18 +269,25 @@ class EnhancedAIAgent:
                 "target": target,
                 "parameters": parameters,
                 "result": result,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "type": "action"
             })
             
             if not result.get("success", False):
                 # Log failure details
                 logger.warning(f"   ⚠️  Step failed: {result.get('error', 'Unknown error')}")
                 
+                # Update UI
+                if self.overlay:
+                    self.overlay.add_log(f"Step failed: {result.get('error', 'Unknown error')}", "ERROR")
+                
                 # Try fallback if specified
                 fallback = step.get("fallback")
                 if fallback:
                     logger.info(f"   🔄 Trying fallback: {fallback}")
                     print(f"   🔄 Attempting fallback strategy...")
+                    if self.overlay:
+                        self.overlay.add_log("Trying fallback strategy...", "WARNING")
                 
                 # Retry logic with exponential backoff
                 retry_count = 0
