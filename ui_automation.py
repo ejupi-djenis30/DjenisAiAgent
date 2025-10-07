@@ -300,12 +300,195 @@ class UIAutomationEngine:
             except Exception as e:
                 logger.debug(f"Win32 focus attempt failed: {e}")
             
+            # FINAL FALLBACK: Use AI to identify correct window from all open windows
+            logger.info(f"Attempting AI-powered window identification for: {title_pattern}")
+            ai_result = self._ai_identify_window(title_pattern)
+            if ai_result:
+                return ai_result
+            
             logger.warning(f"Window not found: {title_pattern}")
             return False
             
         except Exception as e:
             logger.error(f"Failed to focus window: {e}")
             return False
+    
+    def _ai_identify_window(self, target_pattern: str) -> bool:
+        """Use AI to identify the correct window from all open windows.
+        
+        Args:
+            target_pattern: The window title pattern we're looking for
+            
+        Returns:
+            True if a window was identified and focused, False otherwise
+        """
+        try:
+            # Get all open windows
+            all_windows = self.get_all_open_windows()
+            
+            if not all_windows:
+                logger.debug("No open windows found for AI identification")
+                return False
+            
+            # Filter out empty titles and system windows
+            candidate_windows = [
+                (title, hwnd) for title, hwnd in all_windows 
+                if title and len(title) > 0 and not self._is_system_window(title)
+            ]
+            
+            if not candidate_windows:
+                logger.debug("No candidate windows after filtering")
+                return False
+            
+            logger.info(f"Found {len(candidate_windows)} candidate windows")
+            logger.debug(f"Candidates: {[title for title, _ in candidate_windows[:10]]}")
+            
+            # Try to identify using Gemini AI
+            try:
+                from src.core.gemini_client import EnhancedGeminiClient
+                import config
+                
+                gemini = EnhancedGeminiClient()
+                
+                # Create a prompt for AI to identify the correct window
+                window_list = "\n".join([f"{i+1}. {title}" for i, (title, _) in enumerate(candidate_windows[:20])])
+                
+                prompt = f"""You are helping identify which window title matches the user's request.
+
+TARGET: The user wants to focus a window matching: "{target_pattern}"
+
+AVAILABLE WINDOWS (currently open):
+{window_list}
+
+TASK: Identify which window number (1-{min(20, len(candidate_windows))}) best matches the target.
+Consider:
+- Exact matches (highest priority)
+- Partial matches
+- Application name matches (e.g., "Calculator" matches "Rechner", "Calculadora", "Calculatrice")
+- Language variations (EN/DE/ES/FR/IT/etc.)
+
+RESPONSE FORMAT (JSON):
+{{
+    "match_found": true/false,
+    "window_number": <number 1-{min(20, len(candidate_windows))} or null>,
+    "confidence": "high/medium/low",
+    "reasoning": "brief explanation"
+}}
+
+If no good match exists, set match_found to false.
+"""
+                
+                response = gemini.model.generate_content(prompt)
+                result_text = response.text.strip()
+                
+                # Parse JSON response
+                import json
+                import re
+                
+                # Extract JSON from response (might be wrapped in markdown)
+                json_match = re.search(r'\{[\s\S]*\}', result_text)
+                if json_match:
+                    result = json.loads(json_match.group())
+                    
+                    if result.get('match_found') and result.get('window_number'):
+                        window_idx = result['window_number'] - 1
+                        
+                        if 0 <= window_idx < len(candidate_windows):
+                            title, hwnd = candidate_windows[window_idx]
+                            confidence = result.get('confidence', 'unknown')
+                            reasoning = result.get('reasoning', 'No reason provided')
+                            
+                            logger.info(f"AI identified window: '{title}' (confidence: {confidence})")
+                            logger.info(f"Reasoning: {reasoning}")
+                            
+                            # Focus the identified window
+                            try:
+                                import win32gui
+                                import win32con
+                                
+                                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                                win32gui.SetForegroundWindow(hwnd)
+                                logger.info(f"✅ Successfully focused AI-identified window: {title}")
+                                return True
+                                
+                            except Exception as e:
+                                logger.error(f"Failed to focus AI-identified window: {e}")
+                                return False
+                        else:
+                            logger.warning(f"AI returned invalid window number: {result['window_number']}")
+                    else:
+                        logger.info(f"AI could not identify matching window: {result.get('reasoning', 'No match found')}")
+                        
+            except ImportError:
+                logger.debug("Gemini client not available for AI window identification")
+            except Exception as e:
+                logger.debug(f"AI window identification failed: {e}")
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error in AI window identification: {e}")
+            return False
+    
+    def get_all_open_windows(self) -> List[tuple]:
+        """Get all open windows with their titles and handles.
+        
+        Returns:
+            List of tuples (title, hwnd)
+        """
+        try:
+            import win32gui
+            
+            windows = []
+            
+            def callback(hwnd, window_list):
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd)
+                    window_list.append((title, hwnd))
+                return True
+            
+            win32gui.EnumWindows(callback, windows)
+            return windows
+            
+        except ImportError:
+            # Fallback to pygetwindow
+            try:
+                import pygetwindow as gw
+                all_titles = gw.getAllTitles()
+                return [(title, 0) for title in all_titles if title]
+            except:
+                logger.warning("Could not enumerate windows (win32gui not available)")
+                return []
+    
+    def _is_system_window(self, title: str) -> bool:
+        """Check if a window title is a system window that should be ignored.
+        
+        Args:
+            title: Window title to check
+            
+        Returns:
+            True if it's a system window, False otherwise
+        """
+        # System window patterns to ignore
+        system_patterns = [
+            'Program Manager',
+            'Microsoft Text Input Application',
+            'Windows Input Experience',
+            'MSCTFIME UI',
+            'Default IME',
+            'Task Switching',
+            '',  # Empty titles
+        ]
+        
+        title_lower = title.lower()
+        
+        # Exact matches
+        if title in system_patterns:
+            return True
+        
+        # Pattern matches
+        system_keywords = ['ime ui', 'input experience', 'progman', 'dde server']
+        return any(keyword in title_lower for keyword in system_keywords)
     
     def get_running_processes(self) -> List[str]:
         """Get list of running process names."""

@@ -12,7 +12,8 @@ An intelligent AI agent powered by Google Gemini that automates Windows UI tasks
 - 🧠 **AI-Powered Planning**: Gemini generates intelligent, multi-step execution plans
 - 👁️ **Computer Vision**: Screenshots and visual feedback for adaptive execution
 - 🖥️ **Real-Time UI Overlay**: Transparent, always-on-top monitoring interface
-- 🔄 **Advanced Error Handling**: 3-tier fallback system with exponential backoff
+- 🔄 **Advanced Error Handling**: 5-tier fallback system with exponential backoff
+- 🌍 **AI Window Identification**: Finds windows across languages (Calculator→Rechner/Calculadora/Calculatrice)
 - ⚡ **38+ Built-in Actions**: Mouse, keyboard, window management, clipboard, and more
 - 🛡️ **Safety Features**: Emergency stop (Ctrl+Shift+Q), timeouts, and screenshot-aware UI
 - 📊 **Comprehensive Logging**: Activity logs, step-by-step progress, and error reporting
@@ -162,7 +163,31 @@ enable_ocr = False  # Requires Tesseract
 - **Task Timeout**: Automatic timeout after 300 seconds (configurable)
 - **Fail-safe**: Move mouse to screen corners to trigger PyAutoGUI failsafe
 - **Exponential Backoff**: Intelligent retry delays (1s, 1.5s, 2.25s)
-- **3-Tier Window Focus**: Exact match → Regex → Process name fallback
+- **5-Tier Window Focus**: Exact → Regex → Process → Win32 → AI identification
+
+## 🌍 AI-Powered Window Identification
+
+The agent uses Gemini AI as a final fallback to identify windows even when their titles don't match due to language differences:
+
+```
+User Request: "focus calculator window"
+System Language: German
+
+Standard Methods Fail:
+  ❌ Exact Match: "Calculator" ≠ "Rechner"
+  ❌ Regex: ".*Calculator.*" doesn't match
+  ❌ Process: Multiple instances found
+  ❌ Win32 Substring: "calculator" not in "rechner"
+
+AI Fallback Activates:
+  🤖 Analyzes all open windows
+  🧠 Recognizes "Rechner" = "Calculator" (German)
+  ✅ Successfully focuses window!
+```
+
+**Supported:** All languages (DE, ES, FR, IT, PT, RU, ZH, JA, KO, etc.)
+
+See [AI Window Identification Documentation](docs/AI_WINDOW_IDENTIFICATION.md) for details.
 
 ## 🏗️ Architecture
 
