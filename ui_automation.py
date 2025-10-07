@@ -121,6 +121,14 @@ class UIAutomationEngine:
             logger.error(f"Mouse move failed: {e}")
             return False
     
+    def move_to(self, x: int, y: int, duration: float = 0.5) -> bool:
+        """Alias for move_mouse."""
+        return self.move_mouse(x, y, duration)
+    
+    def get_mouse_position(self) -> Tuple[int, int]:
+        """Get current mouse position."""
+        return pyautogui.position()
+    
     def type_text(self, text: str, interval: float = 0.05) -> bool:
         """Type text at current cursor position."""
         try:
@@ -196,15 +204,105 @@ class UIAutomationEngine:
                 return None
     
     def focus_window(self, title_pattern: str) -> bool:
-        """Focus a window by title pattern."""
+        """Focus a window by title pattern.
+        
+        If title is a known application name (like 'calculator', 'notepad'), 
+        it will also try to find windows by process name.
+        """
         try:
-            app = Application(backend="uia").connect(title_re=f".*{title_pattern}.*", timeout=5)
-            app.top_window().set_focus()
-            logger.info(f"Focused window matching: {title_pattern}")
-            return True
-        except ElementNotFoundError:
+            # Map common app names to process names
+            process_map = {
+                'calculator': 'calculatorapp.exe',
+                'calc': 'calculatorapp.exe',
+                'notepad': 'notepad.exe',
+                'paint': 'mspaint.exe',
+                'edge': 'msedge.exe',
+                'chrome': 'chrome.exe',
+                'firefox': 'firefox.exe'
+            }
+            
+            # Try exact match first
+            try:
+                app = Application(backend="uia").connect(title=title_pattern, timeout=2)
+                app.top_window().set_focus()
+                logger.info(f"Focused window (exact match): {title_pattern}")
+                return True
+            except:
+                pass
+            
+            # Try regex match with most recently created
+            try:
+                app = Application(backend="uia").connect(title_re=f".*{title_pattern}.*", timeout=3)
+                windows = app.windows()
+                
+                if len(windows) == 1:
+                    windows[0].set_focus()
+                    logger.info(f"Focused window (regex match): {title_pattern}")
+                    return True
+                elif len(windows) > 1:
+                    # Focus the first visible window
+                    for win in windows:
+                        if win.is_visible():
+                            win.set_focus()
+                            logger.info(f"Focused visible window from {len(windows)} matches: {title_pattern}")
+                            return True
+                    # If no visible, just focus first
+                    windows[0].set_focus()
+                    logger.info(f"Focused first of {len(windows)} windows: {title_pattern}")
+                    return True
+            except:
+                pass
+            
+            # Try process name if title matches a known app
+            lower_title = title_pattern.lower()
+            if any(app_name in lower_title for app_name in process_map.keys()):
+                for app_name, process_name in process_map.items():
+                    if app_name in lower_title:
+                        try:
+                            app = Application(backend="uia").connect(process=process_name, timeout=2)
+                            windows = app.windows()
+                            if windows:
+                                # Focus first visible window
+                                for win in windows:
+                                    if win.is_visible():
+                                        win.set_focus()
+                                        logger.info(f"Focused window by process: {process_name}")
+                                        return True
+                                # If no visible, focus first
+                                windows[0].set_focus()
+                                logger.info(f"Focused first window by process: {process_name}")
+                                return True
+                        except Exception as e:
+                            logger.debug(f"Process focus attempt failed for {process_name}: {e}")
+                            continue
+            
+            # Try using Win32 API as fallback
+            try:
+                import win32gui
+                import win32con
+                
+                def callback(hwnd, windows):
+                    if win32gui.IsWindowVisible(hwnd):
+                        title = win32gui.GetWindowText(hwnd)
+                        if title_pattern.lower() in title.lower():
+                            windows.append((hwnd, title))
+                    return True
+                
+                windows = []
+                win32gui.EnumWindows(callback, windows)
+                
+                if windows:
+                    hwnd = windows[0][0]
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                    win32gui.SetForegroundWindow(hwnd)
+                    logger.info(f"Focused window via Win32: {windows[0][1]}")
+                    return True
+            except Exception as e:
+                logger.debug(f"Win32 focus attempt failed: {e}")
+            
             logger.warning(f"Window not found: {title_pattern}")
             return False
+            
         except Exception as e:
             logger.error(f"Failed to focus window: {e}")
             return False
@@ -226,7 +324,10 @@ class UIAutomationEngine:
     def get_pixel_color(self, x: int, y: int) -> Tuple[int, int, int]:
         """Get RGB color of pixel at coordinates."""
         screenshot = self.take_screenshot()
-        return screenshot.getpixel((x, y))
+        pixel = screenshot.getpixel((x, y))
+        if isinstance(pixel, tuple) and len(pixel) >= 3:
+            return (int(pixel[0]), int(pixel[1]), int(pixel[2]))
+        return (0, 0, 0)  # Default black if error
     
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 1.0) -> bool:
         """Drag from start to end coordinates."""
@@ -251,10 +352,13 @@ class UIAutomationEngine:
         """Get text from clipboard."""
         try:
             import win32clipboard
+            import win32con
             win32clipboard.OpenClipboard()
-            text = win32clipboard.GetClipboardData()
+            text = win32clipboard.GetClipboardData(win32con.CF_TEXT)
             win32clipboard.CloseClipboard()
-            return text
+            if isinstance(text, bytes):
+                return text.decode('utf-8', errors='ignore')
+            return str(text) if text else None
         except:
             return None
     
@@ -262,9 +366,10 @@ class UIAutomationEngine:
         """Set clipboard text."""
         try:
             import win32clipboard
+            import win32con
             win32clipboard.OpenClipboard()
             win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardText(text)
+            win32clipboard.SetClipboardData(win32con.CF_TEXT, text.encode('utf-8'))
             win32clipboard.CloseClipboard()
             return True
         except:

@@ -23,7 +23,7 @@ class EnhancedGeminiClient:
         if not self.api_key:
             raise ValueError("Gemini API key is required")
         
-        genai.configure(api_key=self.api_key)
+        genai.configure(api_key=self.api_key)  # type: ignore
         
         # Configure generation settings for better outputs
         generation_config = {
@@ -33,9 +33,9 @@ class EnhancedGeminiClient:
             "max_output_tokens": 8192,
         }
         
-        self.model = genai.GenerativeModel(
+        self.model = genai.GenerativeModel(  # type: ignore
             model_name=self.model_name,
-            generation_config=generation_config
+            generation_config=generation_config  # type: ignore
         )
         
         logger.info(f"Initialized Enhanced Gemini client with model: {self.model_name}")
@@ -45,6 +45,7 @@ class EnhancedGeminiClient:
         
         prompt = prompt_builder.build_task_planning_prompt(user_request, context)
         
+        text = ""  # Initialize to avoid unbound variable
         try:
             response = self.model.generate_content(prompt)
             text = response.text.strip()
@@ -67,8 +68,8 @@ class EnhancedGeminiClient:
             
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {e}")
-            if 'response' in locals():
-                logger.debug(f"Raw response: {text[:500]}...")
+            text_to_log = text if 'text' in locals() else "N/A"
+            logger.debug(f"Raw response: {text_to_log[:500]}...")
             return self._create_fallback_plan(user_request, error=str(e))
             
         except Exception as e:
@@ -211,7 +212,7 @@ class EnhancedGeminiClient:
         
         return True
     
-    def _create_fallback_plan(self, user_request: str, error: str = None) -> Dict[str, Any]:
+    def _create_fallback_plan(self, user_request: str, error: Optional[str] = None) -> Dict[str, Any]:
         """Create a fallback plan when API fails."""
         
         clarification = "I couldn't understand your request properly."

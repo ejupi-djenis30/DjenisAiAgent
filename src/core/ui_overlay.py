@@ -6,21 +6,23 @@ from typing import Optional, List, Dict, Any
 import threading
 from datetime import datetime
 from collections import deque
+import time
 
 
 class AgentOverlayUI:
     """Always-on-top transparent overlay UI for monitoring agent activity."""
     
-    def __init__(self, opacity: float = 0.85):
+    def __init__(self, opacity: float = 0.90):
         """Initialize the overlay UI.
         
         Args:
             opacity: Window opacity (0.0 to 1.0)
         """
-        self.root: Optional[tk.Tk] = None
+        self.root: Optional[tk.Tk] = None  # Will be initialized in thread
         self.opacity = opacity
         self.is_visible = True
         self.is_minimized = False
+        self._initialized = False
         
         # UI components
         self.status_label: Optional[tk.Label] = None
@@ -28,6 +30,7 @@ class AgentOverlayUI:
         self.step_label: Optional[tk.Label] = None
         self.log_text: Optional[scrolledtext.ScrolledText] = None
         self.progress_bar: Optional[ttk.Progressbar] = None
+        self.content_frame: Optional[tk.Frame] = None
         
         # State
         self.current_task: str = "Idle"
@@ -65,19 +68,27 @@ class AgentOverlayUI:
     
     def _run_ui(self):
         """Run the UI main loop."""
-        self.root = tk.Tk()
-        self.root.title("AI Agent Monitor")
-        
-        # Configure window
-        self._setup_window()
-        self._create_widgets()
-        self._setup_bindings()
-        
-        # Start main loop
-        self.root.mainloop()
+        try:
+            self.root = tk.Tk()
+            self.root.title("AI Agent Monitor")
+            
+            # Configure window
+            self._setup_window()
+            self._create_widgets()
+            self._setup_bindings()
+            
+            self._initialized = True
+            
+            # Start main loop
+            self.root.mainloop()
+        except Exception as e:
+            print(f"UI Error: {e}")
+            self._initialized = False
     
     def _setup_window(self):
         """Configure window properties."""
+        assert self.root is not None, "Root window must be initialized"
+        
         # Set size and position (top-right corner)
         screen_width = self.root.winfo_screenwidth()
         x_position = screen_width - self.window_width - 20
@@ -157,64 +168,93 @@ class AgentOverlayUI:
         self.content_frame = tk.Frame(self.root, bg=self.bg_color)
         self.content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Status section
-        status_frame = tk.Frame(self.content_frame, bg=self.bg_color)
-        status_frame.pack(fill=tk.X, pady=(0, 10))
+        # Status section with better visual
+        status_frame = tk.Frame(self.content_frame, bg="#2d2d2d", relief=tk.RAISED, bd=1)
+        status_frame.pack(fill=tk.X, pady=(0, 10), padx=2)
+        
+        # Status header with icon
+        status_header = tk.Frame(status_frame, bg="#2d2d2d")
+        status_header.pack(fill=tk.X, padx=8, pady=(8, 4))
         
         tk.Label(
-            status_frame,
-            text="Status:",
-            bg=self.bg_color,
+            status_header,
+            text="⚡ Status",
+            bg="#2d2d2d",
             fg=self.warning_color,
-            font=("Segoe UI", 9, "bold")
-        ).pack(anchor=tk.W)
+            font=("Segoe UI", 10, "bold")
+        ).pack(side=tk.LEFT)
         
         self.status_label = tk.Label(
             status_frame,
-            text="🟢 Idle",
-            bg=self.bg_color,
+            text="🟢 Ready",
+            bg="#2d2d2d",
             fg=self.success_color,
-            font=("Segoe UI", 10),
-            anchor=tk.W
+            font=("Segoe UI", 11, "bold"),
+            anchor=tk.W,
+            padx=8,
+            pady=4
         )
-        self.status_label.pack(fill=tk.X, pady=(2, 0))
+        self.status_label.pack(fill=tk.X, pady=(0, 8))
         
-        # Current task section
-        task_frame = tk.Frame(self.content_frame, bg=self.bg_color)
-        task_frame.pack(fill=tk.X, pady=(0, 10))
+        # Current task section with better wrapping
+        task_frame = tk.Frame(self.content_frame, bg="#2d2d2d", relief=tk.RAISED, bd=1)
+        task_frame.pack(fill=tk.X, pady=(0, 10), padx=2)
+        
+        # Task header
+        task_header = tk.Frame(task_frame, bg="#2d2d2d")
+        task_header.pack(fill=tk.X, padx=8, pady=(8, 4))
         
         tk.Label(
-            task_frame,
-            text="Current Task:",
-            bg=self.bg_color,
+            task_header,
+            text="📋 Current Task",
+            bg="#2d2d2d",
             fg=self.warning_color,
-            font=("Segoe UI", 9, "bold")
-        ).pack(anchor=tk.W)
+            font=("Segoe UI", 10, "bold")
+        ).pack(side=tk.LEFT)
         
         self.task_label = tk.Label(
             task_frame,
             text="None",
-            bg=self.bg_color,
+            bg="#2d2d2d",
             fg=self.fg_color,
             font=("Segoe UI", 9),
             anchor=tk.W,
-            wraplength=self.window_width - 40,
-            justify=tk.LEFT
+            wraplength=self.window_width - 50,
+            justify=tk.LEFT,
+            padx=8,
+            pady=4
         )
-        self.task_label.pack(fill=tk.X, pady=(2, 0))
+        self.task_label.pack(fill=tk.X, pady=(0, 8))
         
-        # Progress section
-        progress_frame = tk.Frame(self.content_frame, bg=self.bg_color)
+        # Progress section with bordered frame
+        progress_frame = tk.Frame(self.content_frame, bg="#2d2d2d", relief=tk.RAISED, bd=1)
         progress_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Progress header
+        progress_header = tk.Frame(progress_frame, bg="#2d2d2d")
+        progress_header.pack(fill=tk.X, padx=8, pady=(8, 4))
+        
+        tk.Label(
+            progress_header,
+            text="⚡ Progress",
+            bg="#2d2d2d",
+            fg=self.success_color,
+            font=("Segoe UI", 10, "bold")
+        ).pack(side=tk.LEFT)
         
         self.step_label = tk.Label(
             progress_frame,
             text="Step: 0/0",
-            bg=self.bg_color,
-            fg=self.warning_color,
-            font=("Segoe UI", 9, "bold")
+            bg="#2d2d2d",
+            fg=self.fg_color,
+            font=("Segoe UI", 9),
+            padx=8
         )
-        self.step_label.pack(anchor=tk.W)
+        self.step_label.pack(anchor=tk.W, pady=(0, 4))
+        
+        # Progress bar with padding
+        progress_bar_container = tk.Frame(progress_frame, bg="#2d2d2d")
+        progress_bar_container.pack(fill=tk.X, padx=8, pady=(0, 8))
         
         # Progress bar
         style = ttk.Style()
@@ -222,36 +262,43 @@ class AgentOverlayUI:
         style.configure(
             "Custom.Horizontal.TProgressbar",
             background=self.accent_color,
-            troughcolor=self.bg_color,
-            bordercolor=self.bg_color,
+            troughcolor="#1a1a1a",
+            bordercolor="#2d2d2d",
             lightcolor=self.accent_color,
-            darkcolor=self.accent_color
+            darkcolor=self.accent_color,
+            thickness=20
         )
         
         self.progress_bar = ttk.Progressbar(
-            progress_frame,
+            progress_bar_container,
             style="Custom.Horizontal.TProgressbar",
-            mode='determinate',
-            length=self.window_width - 40
+            mode='determinate'
         )
-        self.progress_bar.pack(fill=tk.X, pady=(5, 0))
+        self.progress_bar.pack(fill=tk.X)
         
-        # Logs section
-        logs_frame = tk.Frame(self.content_frame, bg=self.bg_color)
+        # Logs section with bordered frame
+        logs_frame = tk.Frame(self.content_frame, bg="#2d2d2d", relief=tk.RAISED, bd=1)
         logs_frame.pack(fill=tk.BOTH, expand=True)
         
-        tk.Label(
-            logs_frame,
-            text="Activity Log:",
-            bg=self.bg_color,
-            fg=self.warning_color,
-            font=("Segoe UI", 9, "bold")
-        ).pack(anchor=tk.W)
+        # Logs header
+        logs_header = tk.Frame(logs_frame, bg="#2d2d2d")
+        logs_header.pack(fill=tk.X, padx=8, pady=(8, 4))
         
-        # Log text area
-        self.log_text = scrolledtext.ScrolledText(
-            logs_frame,
+        tk.Label(
+            logs_header,
+            text="📜 Activity Log",
             bg="#2d2d2d",
+            fg=self.accent_color,
+            font=("Segoe UI", 10, "bold")
+        ).pack(side=tk.LEFT)
+        
+        # Log text area with padding
+        log_container = tk.Frame(logs_frame, bg="#2d2d2d")
+        log_container.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        
+        self.log_text = scrolledtext.ScrolledText(
+            log_container,
+            bg="#1a1a1a",
             fg=self.fg_color,
             font=("Consolas", 8),
             height=15,
@@ -273,6 +320,8 @@ class AgentOverlayUI:
     
     def _setup_bindings(self):
         """Setup keyboard and mouse bindings."""
+        assert self.root is not None, "Root window must be initialized"
+        
         # Drag to move window
         self.root.bind('<Button-1>', self._start_drag)
         self.root.bind('<B1-Motion>', self._drag_window)
@@ -290,12 +339,15 @@ class AgentOverlayUI:
     
     def _drag_window(self, event):
         """Drag window to new position."""
+        assert self.root is not None
         x = self.root.winfo_x() + event.x - self.drag_x
         y = self.root.winfo_y() + event.y - self.drag_y
         self.root.geometry(f"+{x}+{y}")
     
     def _toggle_minimize(self):
         """Toggle minimize state."""
+        assert self.root is not None and self.content_frame is not None
+        
         if self.is_minimized:
             # Restore
             self.root.geometry(f"{self.window_width}x{self.window_height}")
@@ -316,44 +368,56 @@ class AgentOverlayUI:
     
     def hide(self):
         """Hide the UI window."""
-        if self.root:
-            self.root.withdraw()
-            self.is_visible = False
+        if self._initialized and self.root:
+            try:
+                self.root.withdraw()
+                self.is_visible = False
+            except Exception as e:
+                print(f"Hide error: {e}")
     
     def show(self):
         """Show the UI window."""
-        if self.root:
-            self.root.deiconify()
-            self.is_visible = True
+        if self._initialized and self.root:
+            try:
+                self.root.deiconify()
+                self.is_visible = True
+            except Exception as e:
+                print(f"Show error: {e}")
     
-    def update_status(self, status: str, color: str = None):
+    def update_status(self, status: str, color: Optional[str] = None):
         """Update status display.
         
         Args:
             status: Status text
             color: Optional color for status
         """
-        if not self.root or not self.status_label:
+        if not self._initialized or not self.root or not self.status_label:
             return
         
         try:
             self.root.after(0, lambda: self._do_update_status(status, color))
-        except:
-            pass
+        except Exception as e:
+            print(f"Update status error: {e}")
     
-    def _do_update_status(self, status: str, color: str = None):
+    def _do_update_status(self, status: str, color: Optional[str] = None):
         """Internal status update."""
-        if color is None:
-            if "running" in status.lower() or "executing" in status.lower():
-                color = self.success_color
-            elif "error" in status.lower() or "failed" in status.lower():
-                color = self.error_color
-            elif "idle" in status.lower():
-                color = self.warning_color
-            else:
-                color = self.fg_color
-        
-        self.status_label.config(text=status, fg=color)
+        try:
+            # Determine color if not provided
+            if color is None:
+                if "running" in status.lower() or "executing" in status.lower() or "working" in status.lower():
+                    color = self.success_color
+                elif "error" in status.lower() or "failed" in status.lower():
+                    color = self.error_color
+                elif "idle" in status.lower() or "ready" in status.lower():
+                    color = self.warning_color
+                else:
+                    color = self.fg_color
+            
+            # Update label
+            if self.status_label:
+                self.status_label.config(text=status, fg=color)
+        except Exception as e:
+            print(f"[UI ERROR] Status update failed: {e}")
     
     def update_task(self, task: str):
         """Update current task display.
@@ -361,14 +425,22 @@ class AgentOverlayUI:
         Args:
             task: Task description
         """
-        if not self.root or not self.task_label:
+        if not self._initialized or not self.root or not self.task_label:
             return
         
         self.current_task = task
         try:
-            self.root.after(0, lambda: self.task_label.config(text=task))
-        except:
-            pass
+            self.root.after(0, lambda: self._do_update_task(task))
+        except Exception as e:
+            print(f"Update task error: {e}")
+    
+    def _do_update_task(self, task: str):
+        """Internal task update."""
+        try:
+            if self.task_label:
+                self.task_label.config(text=task)
+        except Exception as e:
+            print(f"[UI ERROR] Task update failed: {e}")
     
     def update_progress(self, step: int, total: int, step_name: str = ""):
         """Update progress display.
@@ -378,7 +450,7 @@ class AgentOverlayUI:
             total: Total steps
             step_name: Optional step name
         """
-        if not self.root:
+        if not self._initialized or not self.root:
             return
         
         self.completed_steps = step
@@ -386,23 +458,28 @@ class AgentOverlayUI:
         
         try:
             self.root.after(0, lambda: self._do_update_progress(step, total, step_name))
-        except:
-            pass
+        except Exception as e:
+            print(f"Update progress error: {e}")
     
     def _do_update_progress(self, step: int, total: int, step_name: str):
         """Internal progress update."""
-        # Update step label
-        step_text = f"Step: {step}/{total}"
-        if step_name:
-            step_text += f" - {step_name}"
-        self.step_label.config(text=step_text)
-        
-        # Update progress bar
-        if total > 0:
-            progress = (step / total) * 100
-            self.progress_bar['value'] = progress
-        else:
-            self.progress_bar['value'] = 0
+        try:
+            # Update step label
+            step_text = f"Step: {step}/{total}"
+            if step_name:
+                step_text += f" - {step_name}"
+            
+            if self.step_label:
+                self.step_label.config(text=step_text)
+            
+            # Update progress bar
+            if self.progress_bar and total > 0:
+                progress = (step / total) * 100
+                self.progress_bar['value'] = progress
+            elif self.progress_bar:
+                self.progress_bar['value'] = 0
+        except Exception as e:
+            print(f"[UI ERROR] Progress update failed: {e}")
     
     def add_log(self, message: str, level: str = "INFO"):
         """Add a log entry.
@@ -411,7 +488,7 @@ class AgentOverlayUI:
             message: Log message
             level: Log level (INFO, WARNING, ERROR, DEBUG)
         """
-        if not self.root or not self.log_text:
+        if not self._initialized or not self.root or not self.log_text:
             return
         
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -421,32 +498,40 @@ class AgentOverlayUI:
         
         try:
             self.root.after(0, lambda: self._do_add_log(log_entry, level))
-        except:
-            pass
+        except Exception as e:
+            print(f"Add log error: {e}")
     
     def _do_add_log(self, log_entry: str, level: str):
         """Internal log addition."""
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.insert(tk.END, log_entry, level)
-        self.log_text.see(tk.END)  # Auto-scroll to bottom
-        self.log_text.config(state=tk.DISABLED)
+        try:
+            if self.log_text:
+                self.log_text.config(state=tk.NORMAL)
+                self.log_text.insert(tk.END, log_entry, level)
+                self.log_text.see(tk.END)  # Auto-scroll to bottom
+                self.log_text.config(state=tk.DISABLED)
+        except Exception as e:
+            print(f"[UI ERROR] Log addition failed: {e}")
     
     def clear_logs(self):
         """Clear all log entries."""
-        if not self.root or not self.log_text:
+        if not self._initialized or not self.root or not self.log_text:
             return
         
         try:
             self.root.after(0, self._do_clear_logs)
-        except:
-            pass
+        except Exception as e:
+            print(f"Clear logs error: {e}")
     
     def _do_clear_logs(self):
         """Internal log clearing."""
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.delete(1.0, tk.END)
-        self.log_text.config(state=tk.DISABLED)
-        self.logs.clear()
+        try:
+            if self.log_text:
+                self.log_text.config(state=tk.NORMAL)
+                self.log_text.delete(1.0, tk.END)
+                self.log_text.config(state=tk.DISABLED)
+                self.logs.clear()
+        except Exception as e:
+            print(f"Log clearing error: {e}")
     
     def reset(self):
         """Reset UI to idle state."""
@@ -460,11 +545,12 @@ class AgentOverlayUI:
         Args:
             opacity: Opacity value (0.0 to 1.0)
         """
-        if self.root:
+        if self._initialized and self.root:
             try:
-                self.root.after(0, lambda: self.root.attributes('-alpha', opacity))
-            except:
-                pass
+                root = self.root  # Capture for lambda
+                self.root.after(0, lambda: root.attributes('-alpha', opacity))
+            except Exception as e:
+                print(f"Set opacity error: {e}")
 
 
 # Global instance
