@@ -82,13 +82,54 @@ Your role is to analyze user requests and create precise, executable action plan
 
 USER REQUEST: "{user_request}"
 
+IMPORTANT CONSTRAINTS:
+⚠️  OCR (find_element, read_text) is NOT AVAILABLE. Do NOT use these actions.
+✅ INSTEAD, use VISUAL COORDINATION with AI-guided clicks:
+
+🎯 PREFERRED STRATEGY - AI-GUIDED CLICKS:
+1. Take screenshot to see current state
+2. AI analyzes screenshot and identifies element coordinates (x, y)
+3. Move mouse to coordinates
+4. Verify mouse position before clicking
+5. Click at verified coordinates
+
+EXAMPLE - Opening YouTube Video:
+❌ BAD: "Press TAB 3 times, type text, press TAB 4 times, press ENTER"
+✅ GOOD: 
+   - take_screenshot → see search box location
+   - click at coordinates x=1440, y=180 (search box center)
+   - type_text "cat video"
+   - press_key enter
+   - take_screenshot → see video thumbnails
+   - click at coordinates x=700, y=500 (first video)
+
+WEB BROWSING WITH COORDINATES:
+• YouTube search box: Usually at ~(1440, 180) on 2880x1920 screen
+• First video thumbnail: Usually at ~(700, 500-600)
+• Address bar: Use Ctrl+L then type URL (most reliable)
+
+COORDINATE GUIDELINES:
+• ALWAYS prefer clicking with specific (x, y) coordinates over TAB navigation
+• Use move_to(x, y) before click to position mouse
+• Screen resolution available in context
+• Center of screen: (screen_width/2, screen_height/2)
+• Search boxes typically in top-center: (screen_width/2, 150-250)
+
+WHEN TO USE KEYBOARD:
+• Hotkeys: Ctrl+L (address bar), Ctrl+T (new tab), Alt+F4 (close)
+• Typing text: ONLY after clicking/focusing the input field with coordinates
+• ENTER: To submit after typing
+• TAB: ONLY as last resort if coordinates don't work
+
 INSTRUCTIONS:
 1. Analyze the user's request carefully
 2. Break it down into atomic, executable steps
-3. Use ONLY the actions listed above
-4. Be specific about targets (window names, button text, etc.)
-5. Include verification steps where appropriate
-6. Consider edge cases and provide fallback strategies
+3. Use ONLY the actions listed above (EXCEPT find_element and read_text)
+4. PREFER keyboard navigation (TAB + ENTER) over shortcuts that might not work
+5. Add extra wait times after page loads (3-5 seconds for YouTube)
+6. Be specific about targets (window names, button text, etc.)
+7. Include verification steps where appropriate
+8. Consider edge cases and provide fallback strategies
 
 RESPONSE FORMAT:
 Return a JSON object with this EXACT structure:
