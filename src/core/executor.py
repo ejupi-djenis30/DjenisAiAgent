@@ -112,21 +112,96 @@ class ActionExecutor:
         return None
     
     def _execute_click(self, target: str, params: Dict) -> Dict[str, Any]:
-        """Click on an element or at coordinates."""
-        # Check if target is coordinates
-        coords = self._parse_coordinates(target)
-        if coords:
-            x, y = coords
-            success = self.ui.click(x, y)
-            return {"success": success}
+        """Click on an element or at coordinates with position verification."""
+        # Get coordinates from params or target
+        x = params.get("x")
+        y = params.get("y")
         
-        # Find element and click
-        location = self._find_element(target)
-        if location:
-            success = self.ui.click(location[0], location[1])
-            return {"success": success}
+        if x is not None and y is not None:
+            # Coordinates provided in params
+            x, y = int(x), int(y)
         else:
-            return {"success": False, "error": f"Could not find element: {target}"}
+            # Check if target is coordinates
+            coords = self._parse_coordinates(target)
+            if coords:
+                x, y = coords
+            else:
+                # Try to find element
+                location = self._find_element(target)
+                if location:
+                    x, y = location
+                else:
+                    return {"success": False, "error": f"Could not find element: {target}"}
+        
+        # Move mouse to target position first
+        logger.info(f"Moving mouse to ({x}, {y})")
+        self.ui.move_to(x, y)
+        time.sleep(0.3)  # Brief pause for mouse to move
+        
+        # Verify mouse is at expected position
+        current_pos = self.ui.get_mouse_position()
+        if current_pos:
+            actual_x, actual_y = current_pos
+            # Allow small tolerance (±5 pixels)
+            if abs(actual_x - x) > 5 or abs(actual_y - y) > 5:
+                logger.warning(f"Mouse position mismatch! Expected ({x}, {y}), got ({actual_x}, {actual_y})")
+                logger.warning(f"Offset: ({actual_x - x}, {actual_y - y})")
+                print(f"   ⚠️  Mouse position verification:")
+                print(f"      Expected: ({x}, {y})")
+                print(f"      Actual: ({actual_x}, {actual_y})")
+                print(f"      Offset: ({actual_x - x}, {actual_y - y})")
+                
+                # Return position info for AI to adjust
+                return {
+                    "success": False,
+                    "error": "Mouse position mismatch",
+                    "expected": (x, y),
+                    "actual": (actual_x, actual_y),
+                    "offset": (actual_x - x, actual_y - y)
+                }
+            else:
+                logger.info(f"✓ Mouse position verified at ({actual_x}, {actual_y})")
+                print(f"   ✓ Mouse position verified")
+        
+        # Click at current position
+        success = self.ui.click(x, y)
+        return {"success": success}
+    
+    def _execute_move_to(self, target: str, params: Dict) -> Dict[str, Any]:
+        """Move mouse to coordinates with position verification."""
+        # Get coordinates from params or target
+        x = params.get("x")
+        y = params.get("y")
+        
+        if x is not None and y is not None:
+            x, y = int(x), int(y)
+        else:
+            # Check if target is coordinates
+            coords = self._parse_coordinates(target)
+            if coords:
+                x, y = coords
+            else:
+                return {"success": False, "error": f"Invalid coordinates: {target}"}
+        
+        # Move mouse
+        logger.info(f"Moving mouse to ({x}, {y})")
+        success = self.ui.move_to(x, y)
+        time.sleep(0.2)
+        
+        # Verify position
+        current_pos = self.ui.get_mouse_position()
+        if current_pos:
+            actual_x, actual_y = current_pos
+            logger.info(f"Mouse moved to ({actual_x}, {actual_y})")
+            print(f"   📍 Mouse at ({actual_x}, {actual_y})")
+            
+            return {
+                "success": success,
+                "position": (actual_x, actual_y),
+                "target": (x, y)
+            }
+        
+        return {"success": success}
     
     def _execute_double_click(self, target: str, params: Dict) -> Dict[str, Any]:
         """Double-click on an element."""
