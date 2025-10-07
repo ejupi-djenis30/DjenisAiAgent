@@ -2,8 +2,10 @@
 
 from typing import Dict, Any, Optional, Tuple
 import time
+from datetime import datetime
 
 from logger import setup_logger
+from config import config
 from ui_automation import UIAutomationEngine
 from src.core.actions import action_registry
 
@@ -99,16 +101,24 @@ class ActionExecutor:
     
     # Mouse Actions
     
+    def _parse_coordinates(self, coord_str: str) -> Optional[Tuple[int, int]]:
+        """Parse coordinate string like '100,200' into tuple."""
+        try:
+            if "," in coord_str:
+                x, y = map(int, coord_str.split(","))
+                return (x, y)
+        except (ValueError, AttributeError):
+            pass
+        return None
+    
     def _execute_click(self, target: str, params: Dict) -> Dict[str, Any]:
         """Click on an element or at coordinates."""
         # Check if target is coordinates
-        if "," in target:
-            try:
-                x, y = map(int, target.split(","))
-                success = self.ui.click(x, y)
-                return {"success": success}
-            except ValueError:
-                pass
+        coords = self._parse_coordinates(target)
+        if coords:
+            x, y = coords
+            success = self.ui.click(x, y)
+            return {"success": success}
         
         # Find element and click
         location = self._find_element(target)
@@ -403,9 +413,14 @@ class ActionExecutor:
             height = params.get("height", 500)
             
             import pyautogui
+            from pathlib import Path
             screenshot = pyautogui.screenshot(region=(x, y, width, height))
-            path = self.ui.save_screenshot(screenshot)
-            return {"success": True, "path": str(path)}
+            
+            # Save screenshot
+            screenshot_path = config.screenshots_dir / f"region_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            screenshot.save(screenshot_path)
+            
+            return {"success": True, "path": str(screenshot_path)}
         except Exception as e:
             return {"success": False, "error": str(e)}
     

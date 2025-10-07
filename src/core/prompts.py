@@ -13,6 +13,51 @@ class PromptBuilder:
     def build_task_planning_prompt(user_request: str, context: Optional[Dict[str, Any]] = None) -> str:
         """Build a comprehensive task planning prompt."""
         
+        # Get system language
+        import locale
+        try:
+            system_lang = locale.getlocale()[0] or "en_US"
+            
+            # Map Windows locale names to language codes
+            lang_map = {
+                "german": "de",
+                "deutsch": "de",
+                "spanish": "es",
+                "french": "fr",
+                "italian": "it",
+                "portuguese": "pt",
+                "russian": "ru",
+                "chinese": "zh",
+                "japanese": "ja",
+                "korean": "ko",
+                "english": "en"
+            }
+            
+            # Try to extract language code
+            lang_lower = system_lang.lower()
+            lang_code = "en"  # default
+            
+            for key, code in lang_map.items():
+                if key in lang_lower:
+                    lang_code = code
+                    break
+            
+            # Or try standard locale format (en_US, de_DE, etc.)
+            if '_' in system_lang:
+                lang_code = system_lang.split('_')[0]
+            
+            language_info = f"- System Language: {system_lang} ({lang_code.upper()})"
+            
+            # Add language-aware note
+            if lang_code != "en":
+                language_note = f"\n⚠️ CRITICAL: System language is {lang_code.upper()}. ALL window titles, button labels, menu items, and UI text will be in {lang_code.upper()}, NOT English! Examples:\n   • Calculator = Rechner (DE), Calculadora (ES), Calculatrice (FR)\n   • File = Datei (DE), Archivo (ES), Fichier (FR)\n   • Open = Öffnen (DE), Abrir (ES), Ouvrir (FR)\n   Always use {lang_code.upper()} names for UI elements!"
+            else:
+                language_note = "\n✓ System language is English. Use standard English names for UI elements."
+                
+        except Exception as e:
+            language_info = "- System Language: Unknown"
+            language_note = "\n⚠️ Could not detect system language. Window titles may vary."
+        
         # Context section
         context_section = ""
         if context:
@@ -22,6 +67,7 @@ CURRENT SYSTEM CONTEXT:
 - Screen Resolution: {context.get('screen_size', 'Unknown')}
 - Running Applications: {', '.join(context.get('running_processes', [])[:10])}
 - Timestamp: {context.get('timestamp', 'Unknown')}
+{language_info}{language_note}
 """
         
         # Actions section
