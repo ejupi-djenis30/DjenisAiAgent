@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -107,6 +108,9 @@ class EnhancedAIAgent:
             time.sleep(0.5)  # Give UI time to initialize
             self.overlay.add_log("Agent initialized", "INFO")
             self.overlay.update_status("🟢 Ready")
+            if config.no_limit_mode:
+                self.overlay.add_log("No-limit mode active", "WARNING")
+                self.overlay.show_toast("No-limit mode active", level="warning")
         
         # State management
         self.current_task: Optional[str] = None
@@ -119,6 +123,8 @@ class EnhancedAIAgent:
         self._setup_emergency_stop()
         
         logger.info("Enhanced AI Agent initialized successfully")
+        if config.no_limit_mode:
+            logger.warning("Agent running in no-limit mode — monitors and safeguards reduced")
     
     def _setup_emergency_stop(self):
         """Setup emergency stop hotkey."""
@@ -501,6 +507,24 @@ class EnhancedAIAgent:
                 self.overlay.update_step_detail(self._format_step_detail(ctx))
             return FailureHandlingOutcome(resolved=True, added_steps=added)
 
+        recovery_plan = self._generate_recovery_plan(
+            ctx=ctx,
+            issue=enriched_issue,
+            screenshot=after_screenshot or before_screenshot,
+            overall_goal=self.current_task or ctx.raw.get("expected_outcome", ctx.target) or ctx.target,
+        )
+
+        if recovery_plan:
+            ctx.status = StepStatus.PENDING
+            remaining_steps.appendleft(ctx)
+            added = self._inject_steps(recovery_plan, remaining_steps, new_context)
+            ctx.add_note(f"Recovery mini-plan queued: {added} steps")
+            logger.info(f"   🧩 Injected recovery mini-plan with {added} step(s)")
+            if self.overlay:
+                self.overlay.update_step_detail(self._format_step_detail(ctx))
+                self.overlay.show_toast("Executing recovery plan", level="info")
+            return FailureHandlingOutcome(resolved=True, added_steps=added)
+
         # Fall back to Gemini next-action suggestion
         fallback_step = self._consult_ai_for_next_action(ctx)
         if fallback_step:
@@ -564,6 +588,24 @@ class EnhancedAIAgent:
             added = self._inject_steps(corrective_steps, remaining_steps, new_context)
             logger.info(f"   🔄 Verification injected {added} corrective step(s)")
             ctx.add_note(f"Verification corrective steps: {added}")
+            return
+
+        recovery_plan = self._generate_recovery_plan(
+            ctx=ctx,
+            issue=issue,
+            screenshot=after_screenshot,
+            overall_goal=self.current_task or ctx.raw.get("expected_outcome", ctx.target) or ctx.target,
+        )
+
+        if recovery_plan:
+            ctx.status = StepStatus.PENDING
+            remaining_steps.appendleft(ctx)
+            added = self._inject_steps(recovery_plan, remaining_steps, new_context)
+            ctx.add_note(f"Recovery mini-plan queued: {added} steps")
+            logger.info(f"   🧩 Recovery mini-plan injected with {added} step(s)")
+            if self.overlay:
+                self.overlay.update_step_detail(self._format_step_detail(ctx))
+                self.overlay.show_toast("Executing recovery plan before continuing", level="info")
             return
 
         # As last resort, re-run the original step
@@ -956,6 +998,91 @@ IMPORTANT:
                 
         except Exception as e:
             logger.error(f"Corrective steps generation error: {e}")
+            return []
+
+    def _generate_recovery_plan(
+        self,
+        ctx: StepContext,
+        issue: Optional[str],
+        screenshot: Optional[Any],
+        overall_goal: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        """Ask AI to craft a mini-plan that brings execution back on track."""
+
+        if not self.gemini:
+            return []
+
+        problem_statement = issue or "Unknown issue"
+        goal_text = overall_goal or self.current_task or ctx.target
+
+        # Collect recent actions for additional context
+        recent_actions: List[str] = []
+        for entry in reversed(self.execution_history[-8:]):
+            if entry.get("type") == "action":
+                result = entry.get("result", {})
+                marker = "✅" if result.get("success") else "❌"
+                recent_actions.append(f"{entry.get('action')} {marker} → {entry.get('target', '')}")
+        recent_actions = list(reversed(recent_actions))
+
+        prompt = f"""You are a RECOVERY PLANNER for an autonomous UI agent.
+
+PRIMARY TASK: {self.current_task or 'Unknown'}
+CURRENT SUB-GOAL: {goal_text}
+FAILED STEP PAYLOAD: {json.dumps(ctx.raw, ensure_ascii=False)}
+ISSUE OBSERVED: {problem_statement}
+RECENT ACTIONS:
+{json.dumps(recent_actions, ensure_ascii=False, indent=2)}
+
+Design a focused recovery mini-plan (2-6 steps) that brings the agent back on track **before** it continues with the original plan. The plan must:
+- Explicitly tackle the failure reason.
+- Use only available actions from the registry (click, move_to, type_text, press_key, hotkey, wait, focus_window, open_application, etc.).
+- Provide concrete parameters (especially coordinates or text).
+- Include verification steps or checks when helpful.
+- Conclude with a step that restores the conditions so the failed step can be retried successfully.
+
+RESPONSE FORMAT (valid JSON):
+{{
+  "analysis": "short reasoning",
+  "success_condition": "what confirms recovery",
+  "recovery_steps": [
+    {{
+      "action": "action_name",
+      "target": "target description",
+      "parameters": {{ }} ,
+      "expected_outcome": "what should happen",
+      "reason": "why this helps"
+    }}
+  ]
+}}
+
+IMPORTANT: The agent must NOT continue with remaining original steps until this recovery plan succeeds.
+"""
+
+        try:
+            if screenshot is not None:
+                response = self.gemini.model.generate_content([prompt, screenshot])
+            else:
+                response = self.gemini.model.generate_content(prompt)
+
+            raw_text = response.text.strip() if hasattr(response, "text") else str(response)
+
+            json_blob = raw_text
+            if "```json" in raw_text:
+                json_blob = raw_text.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif "```" in raw_text:
+                json_blob = raw_text.split("```", 1)[1].split("```", 1)[0].strip()
+
+            plan = json.loads(json_blob)
+            steps = plan.get("recovery_steps") or plan.get("steps") or []
+
+            if steps:
+                logger.info(f"Generated recovery plan with {len(steps)} step(s)")
+            else:
+                logger.debug("Recovery plan response contained no steps")
+
+            return steps[:6]
+        except Exception as exc:
+            logger.error(f"Recovery plan generation error: {exc}")
             return []
     
     def _print_task_header(self, request: str):
