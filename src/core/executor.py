@@ -1,15 +1,52 @@
 """Action Executor - Handles execution of all automation actions."""
 
-from typing import Dict, Any, Optional, Tuple
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, Tuple, List
 import time
 from datetime import datetime
+import difflib
 
-from logger import setup_logger
-from config import config
-from ui_automation import UIAutomationEngine
+from src.utils.logger import setup_logger
+from src.config.config import config
+from src.automation.ui_automation import UIAutomationEngine
 from src.core.actions import action_registry
 
 logger = setup_logger("ActionExecutor")
+
+
+@dataclass
+class ActionResult:
+    """Structured telemetry for a single automation action."""
+
+    action: str
+    target: str
+    parameters: Dict[str, Any]
+    success: bool
+    started_at: float
+    finished_at: float
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def duration(self) -> float:
+        """Return execution time in seconds."""
+        return max(0.0, self.finished_at - self.started_at)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize result for logs/history."""
+        return {
+            "action": self.action,
+            "target": self.target,
+            "parameters": self.parameters,
+            "success": self.success,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration": self.duration,
+            "error": self.error,
+            "metadata": self.metadata,
+        }
 
 
 class ActionExecutor:
@@ -20,7 +57,12 @@ class ActionExecutor:
         self.ui = ui_engine
         logger.info("Action executor initialized")
     
-    def execute(self, action: str, target: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def execute(
+        self,
+        action: str,
+        target: str,
+        parameters: Optional[Dict[str, Any]] = None
+    ) -> ActionResult:
         """
         Execute an action with the given parameters.
         
@@ -41,16 +83,74 @@ class ActionExecutor:
         
         # Get execution method
         method_name = f"_execute_{normalized_action}"
+        start_time = time.time()
+
         if hasattr(self, method_name):
             method = getattr(self, method_name)
             try:
-                return method(target, parameters)
+                raw_result = method(target, parameters)
             except Exception as e:
                 logger.error(f"Error executing {normalized_action}: {e}", exc_info=True)
-                return {"success": False, "error": str(e)}
-        
-        # Try generic execution
-        return self._execute_generic(normalized_action, target, parameters)
+                raw_result = {"success": False, "error": str(e)}
+        else:
+            raw_result = self._execute_generic(normalized_action, target, parameters)
+
+        finished_at = time.time()
+        return self._convert_result(
+            normalized_action,
+            target,
+            parameters,
+            raw_result,
+            start_time,
+            finished_at
+        )
+
+    # -- Internal helpers -------------------------------------------------
+
+    def _convert_result(
+        self,
+        action: str,
+        target: str,
+        parameters: Dict[str, Any],
+        raw_result: Any,
+        started_at: float,
+        finished_at: float
+    ) -> ActionResult:
+        """Normalize loose handler outputs into :class:`ActionResult`."""
+
+        success = False
+        error: Optional[str] = None
+        metadata: Dict[str, Any] = {}
+
+        if isinstance(raw_result, ActionResult):
+            return raw_result
+
+        if isinstance(raw_result, dict):
+            success = bool(raw_result.get("success", False))
+            error = raw_result.get("error")
+            metadata = {
+                k: v
+                for k, v in raw_result.items()
+                if k not in {"success", "error"}
+            }
+        else:
+            success = bool(raw_result)
+
+        result = ActionResult(
+            action=action,
+            target=target,
+            parameters=parameters,
+            success=success,
+            started_at=started_at,
+            finished_at=finished_at,
+            error=error,
+            metadata=metadata,
+        )
+
+        if not success and not error:
+            result.error = "Unknown execution failure"
+
+        return result
     
     # Application Actions
     
@@ -534,8 +634,13 @@ class ActionExecutor:
             return self._execute_scroll(target, params)
         
         else:
+            suggestions = self._suggest_actions(action)
+            error_msg = f"Unknown action: {action}"
+            metadata = {"suggestions": suggestions} if suggestions else {}
             logger.warning(f"Cannot infer execution for action: {action}")
-            return {"success": False, "error": f"Unknown action: {action}"}
+            if metadata:
+                logger.warning(f"Suggested alternatives: {', '.join(suggestions)}")
+            return {"success": False, "error": error_msg, **metadata}
     
     def _find_element(self, description: str) -> Optional[Tuple[int, int]]:
         """Find an element on screen (placeholder - uses OCR in real implementation)."""
@@ -548,3 +653,13 @@ class ActionExecutor:
         # In production, you'd use AI vision here
         logger.debug(f"Could not find element: {description}")
         return None
+
+    def _suggest_actions(self, action_name: str) -> List[str]:
+        """Suggest close action matches for unknown commands."""
+
+        available = [definition.name for definition in action_registry.get_all_actions()]
+        suggestions = difflib.get_close_matches(action_name, available, n=3, cutoff=0.4)
+        if not suggestions:
+            alias_candidates = list(action_registry.actions.keys())
+            suggestions = difflib.get_close_matches(action_name, alias_candidates, n=3, cutoff=0.5)
+        return suggestions

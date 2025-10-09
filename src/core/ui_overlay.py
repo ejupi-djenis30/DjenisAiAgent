@@ -31,6 +31,9 @@ class AgentOverlayUI:
         self.log_text: Optional[scrolledtext.ScrolledText] = None
         self.progress_bar: Optional[ttk.Progressbar] = None
         self.content_frame: Optional[tk.Frame] = None
+        self.step_detail_label: Optional[tk.Label] = None
+        self.toast_label: Optional[tk.Label] = None
+        self._toast_after_id: Optional[str] = None
         
         # State
         self.current_task: str = "Idle"
@@ -275,6 +278,35 @@ class AgentOverlayUI:
             mode='determinate'
         )
         self.progress_bar.pack(fill=tk.X)
+
+        # Step detail section
+        detail_frame = tk.Frame(self.content_frame, bg="#2d2d2d", relief=tk.RAISED, bd=1)
+        detail_frame.pack(fill=tk.X, pady=(0, 10), padx=2)
+
+        detail_header = tk.Frame(detail_frame, bg="#2d2d2d")
+        detail_header.pack(fill=tk.X, padx=8, pady=(8, 4))
+
+        tk.Label(
+            detail_header,
+            text="🧠 Step Insight",
+            bg="#2d2d2d",
+            fg=self.accent_color,
+            font=("Segoe UI", 10, "bold")
+        ).pack(side=tk.LEFT)
+
+        self.step_detail_label = tk.Label(
+            detail_frame,
+            text="Waiting for first action...",
+            bg="#2d2d2d",
+            fg=self.fg_color,
+            font=("Segoe UI", 9),
+            anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=self.window_width - 50,
+            padx=8,
+            pady=6
+        )
+        self.step_detail_label.pack(fill=tk.X)
         
         # Logs section with bordered frame
         logs_frame = tk.Frame(self.content_frame, bg="#2d2d2d", relief=tk.RAISED, bd=1)
@@ -317,6 +349,20 @@ class AgentOverlayUI:
         
         # Make read-only
         self.log_text.config(state=tk.DISABLED)
+
+        # Floating toast notifications
+        self.toast_label = tk.Label(
+            self.root,
+            text="",
+            bg="#2d2d2d",
+            fg=self.fg_color,
+            font=("Segoe UI", 9, "bold"),
+            padx=12,
+            pady=6,
+            relief=tk.RAISED,
+            bd=1
+        )
+        self.toast_label.place_forget()
     
     def _setup_bindings(self):
         """Setup keyboard and mouse bindings."""
@@ -480,6 +526,24 @@ class AgentOverlayUI:
                 self.progress_bar['value'] = 0
         except Exception as e:
             print(f"[UI ERROR] Progress update failed: {e}")
+
+    def update_step_detail(self, summary: str):
+        """Update contextual step insight text."""
+        if not self._initialized or not self.root:
+            return
+
+        try:
+            self.root.after(0, lambda: self._do_update_step_detail(summary))
+        except Exception as e:
+            print(f"Update step detail error: {e}")
+
+    def _do_update_step_detail(self, summary: str):
+        """Internal helper for step detail update."""
+        try:
+            if self.step_detail_label:
+                self.step_detail_label.config(text=summary)
+        except Exception as e:
+            print(f"[UI ERROR] Step detail update failed: {e}")
     
     def add_log(self, message: str, level: str = "INFO"):
         """Add a log entry.
@@ -538,6 +602,9 @@ class AgentOverlayUI:
         self.update_status("🟢 Idle")
         self.update_task("None")
         self.update_progress(0, 0, "")
+        self.update_step_detail("Waiting for first action...")
+        if self._initialized and self.root:
+            self.root.after(0, self._hide_toast)
     
     def set_opacity(self, opacity: float):
         """Set window opacity.
@@ -551,6 +618,58 @@ class AgentOverlayUI:
                 self.root.after(0, lambda: root.attributes('-alpha', opacity))
             except Exception as e:
                 print(f"Set opacity error: {e}")
+
+    def show_toast(self, message: str, level: str = "info", duration: float = 2.5):
+        """Display a transient toast notification."""
+        if not self._initialized or not self.root or not self.toast_label:
+            return
+
+        colors = {
+            "info": ("#2d2d2d", self.fg_color),
+            "success": ("#1f4f46", self.success_color),
+            "warning": ("#5a3c17", self.warning_color),
+            "error": ("#5a1f1f", self.error_color),
+        }
+        bg_color, fg_color = colors.get(level, colors["info"])
+        duration_ms = int(max(duration, 0.5) * 1000)
+
+        root = self.root
+        label = self.toast_label
+
+        def _show():
+            try:
+                if not label or not root:
+                    return
+
+                label.config(text=message, bg=bg_color, fg=fg_color)
+
+                width = label.winfo_reqwidth()
+                height = label.winfo_reqheight()
+
+                root_width = root.winfo_width()
+                x = root_width - width - 30
+                y = 20
+
+                label.place(x=x, y=y)
+
+                if self._toast_after_id:
+                    root.after_cancel(self._toast_after_id)
+                self._toast_after_id = root.after(duration_ms, self._hide_toast)
+            except Exception as exc:
+                print(f"Toast display error: {exc}")
+
+        root.after(0, _show)
+
+    def _hide_toast(self):
+        """Hide the toast notification."""
+        if not self._initialized or not self.root or not self.toast_label:
+            return
+
+        try:
+            self.toast_label.place_forget()
+            self._toast_after_id = None
+        except Exception as e:
+            print(f"Toast hide error: {e}")
 
 
 # Global instance

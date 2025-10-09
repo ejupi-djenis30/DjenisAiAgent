@@ -1,22 +1,69 @@
-# AI Agent for Windows UI Automation 🤖
+# 🤖 Djenis AI Agent - Intelligent Windows Automation
 
-An intelligent AI agent powered by Google Gemini that automates Windows UI tasks through natural language commands. Features real-time monitoring UI, advanced error handling, and 38+ built-in actions.
+> An advanced AI-powered automation agent for Windows that understands natural language commands and executes complex multi-step tasks using Google Gemini's vision and reasoning capabilities.
 
 ![Version](https://img.shields.io/badge/version-2.0-blue)
 ![Python](https://img.shields.io/badge/python-3.8+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
+![Platform](https://img.shields.io/badge/platform-Windows-blue)
+
+## 🎯 What is Djenis AI Agent?
+
+Djenis AI Agent is an intelligent automation system that bridges natural language and Windows UI control. Tell it what you want to do in plain English, and it will plan and execute the necessary steps using advanced AI reasoning, computer vision, and precise UI automation.
+
+### Key Capabilities
+
+- **🧠 Natural Language Understanding**: Converts plain English commands into executable automation plans
+- **👁️ Visual Intelligence**: Uses Gemini Vision API to analyze screenshots and locate UI elements
+- **🎯 Precision Control**: Executes actions using coordinate-based clicking, keyboard shortcuts, and window management
+- **🔄 Adaptive Execution**: Self-corrects failures, adjusts strategies, and uses AI feedback to stay on track
+- **🖥️ Real-Time Monitoring**: Optional overlay UI shows execution progress, logs, and step details
+- **🌍 Cross-Language Support**: Handles UI elements in any language (English, German, Spanish, French, etc.)
+- **⚡ 38+ Built-in Actions**: Comprehensive action library for mouse, keyboard, window, and system control
+
+## 🏗️ Architecture Overview
+
+```
+User Request (Natural Language)
+         ↓
+    [Agent Core]
+         ├─→ [Gemini Client] → Google Gemini API (Planning & Vision)
+         ├─→ [Action Executor] → Translates actions to automation
+         ├─→ [UI Engine] → pyautogui, pywinauto, Windows APIs
+         └─→ [Overlay UI] → Real-time monitoring (optional)
+         
+Execution Flow:
+1. Parse user request
+2. Gemini generates step-by-step plan with reasoning
+3. Execute each step with verification
+4. If step fails → AI suggests corrections
+5. Adapt and continue until goal achieved
+```
+
+### Core Components
+
+| Component | Purpose | Technologies |
+|-----------|---------|--------------|
+| **Enhanced Agent** | Orchestrates execution, manages state, handles failures | Python, dataclasses |
+| **Gemini Client** | Interfaces with Google Gemini for planning and vision | google-generativeai, Pillow |
+| **Action Executor** | Executes 38+ actions with telemetry | ActionResult, structured logging |
+| **UI Automation Engine** | Low-level Windows UI control | pyautogui, pywinauto, win32api |
+| **Prompt Builder** | Crafts optimized prompts for Gemini | Chain-of-thought reasoning |
+| **Overlay UI** | Real-time monitoring interface | tkinter, transparent overlay |
 
 ## ✨ Features
 
 - 🎯 **Natural Language Control**: Execute complex tasks with simple English commands
-- 🧠 **AI-Powered Planning**: Gemini generates intelligent, multi-step execution plans
+- 🧠 **AI-Powered Planning**: Gemini generates intelligent, multi-step execution plans with agentic reasoning
 - 👁️ **Computer Vision**: Screenshots and visual feedback for adaptive execution
-- 🖥️ **Real-Time UI Overlay**: Transparent, always-on-top monitoring interface
-- 🔄 **Advanced Error Handling**: 5-tier fallback system with exponential backoff
+- 🖥️ **Real-Time UI Overlay**: Transparent, always-on-top monitoring interface with toast notifications and step details
+- 🔄 **Advanced Error Handling**: Adaptive failure handling with AI consultation and structured retry logic
+- 📊 **Structured Telemetry**: ActionResult dataclass with timing, metadata, and execution context
+- 🎭 **Agentic Prompting**: Multi-phase reasoning prompts that exploit Gemini's full capabilities
 - 🌍 **AI Window Identification**: Finds windows across languages (Calculator→Rechner/Calculadora/Calculatrice)
 - ⚡ **38+ Built-in Actions**: Mouse, keyboard, window management, clipboard, and more
 - 🛡️ **Safety Features**: Emergency stop (Ctrl+Shift+Q), timeouts, and screenshot-aware UI
-- 📊 **Comprehensive Logging**: Activity logs, step-by-step progress, and error reporting
+- � **Comprehensive Logging**: Activity logs, step-by-step progress, and error reporting
 
 ## 🎮 Demo
 
@@ -81,13 +128,42 @@ pip install -r requirements.txt
 
 4. **Configure your API key:**
 
-Edit `config.py` and set your Gemini API key:
+Create a `.env` file in the project root directory:
 
-```python
-GEMINI_API_KEY = "your_api_key_here"
+```bash
+# Create .env file
+cd DjenisAiAgent
+notepad .env
 ```
 
-Get your API key from: https://makersuite.google.com/app/apikey
+Add your configuration to the `.env` file:
+
+```env
+# Google Gemini API Configuration
+GEMINI_API_KEY=your_api_key_here
+GEMINI_MODEL=gemini-2.0-flash-exp
+
+# Debug and Logging
+DEBUG_MODE=false
+LOG_LEVEL=INFO
+
+# Performance Settings
+MAX_RETRIES=3
+ACTION_DELAY=0.5
+
+# Features
+ENABLE_SCREEN_RECORDING=false
+```
+
+**Get your Gemini API key:**
+1. Visit https://makersuite.google.com/app/apikey
+2. Sign in with your Google account
+3. Click "Create API Key"
+4. Copy the key and paste it in the `.env` file
+
+**Alternative: Direct configuration**
+
+If you prefer, you can edit `src/config/config.py` directly, but using `.env` is recommended for security.
 
 ### Usage
 
@@ -133,28 +209,91 @@ The transparent overlay window provides:
 
 - **Always-on-Top**: Monitors agent activity without interrupting work
 - **Screenshot-Aware**: Automatically hides during screenshot actions
+- **Toast Notifications**: Floating, auto-dismissing messages for quick feedback (success/info/warning/error)
+- **Step Detail Panel**: Shows current step reasoning and insights from AI
 - **Draggable**: Click and drag header to reposition
 - **Collapsible**: Double-click header to minimize
 - **Keyboard Control**: Press ESC to toggle visibility
 - **Beautiful Design**: Dark theme with color-coded status indicators
 
+### UI Components
+
+- 🔵 **Status Indicator**: Current status (Ready/Working/Completed/Failed)
+- 📋 **Task Description**: Active task being executed
+- ⚡ **Progress Bar**: Visual progress with step counter
+- 📜 **Activity Log**: Real-time log of actions performed
+- 💬 **Toast Messages**: Transient notifications for important events
+- 🔍 **Step Details**: Shows reasoning and context for current step
+
 ## ⚙️ Configuration
 
-Edit `config.py` to customize:
+### Configuration Options
 
-```python
-# Gemini API
-GEMINI_API_KEY = "your_key_here"
-GEMINI_MODEL = "gemini-flash-latest"
+The agent can be configured via `.env` file (recommended) or by editing `src/config/config.py`.
 
-# Performance
-max_retries = 3
-action_delay = 0.5
-max_task_duration = 300  # seconds
+**Configuration via .env file (Recommended):**
+
+Create a `.env` file in the project root with these settings:
+
+```env
+# Google Gemini API Configuration
+GEMINI_API_KEY=your_actual_api_key_here
+GEMINI_MODEL=gemini-2.0-flash-exp
+
+# Debug and Logging
+DEBUG_MODE=false          # Set to true for verbose logging
+LOG_LEVEL=INFO            # Options: DEBUG, INFO, WARNING, ERROR
+
+# Performance Settings
+MAX_RETRIES=3             # Number of retry attempts for failed actions
+ACTION_DELAY=0.5          # Delay between actions in seconds
 
 # Features
-enable_screen_recording = True
-enable_ocr = False  # Requires Tesseract
+ENABLE_SCREEN_RECORDING=false  # Save before/after screenshots for each action
+```
+
+### Available Gemini Models
+
+You can use different Gemini models by changing the `GEMINI_MODEL` setting:
+
+- **`gemini-2.0-flash-exp`** - Latest experimental flash model (fastest, recommended)
+- **`gemini-1.5-flash-latest`** - Stable flash model (good balance)
+- **`gemini-1.5-pro-latest`** - Most capable model (slower but best reasoning)
+- **`gemini-1.0-pro`** - Legacy pro model
+
+**Example:**
+```env
+GEMINI_MODEL=gemini-2.0-flash-exp
+```
+
+### Full Configuration Reference
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `GEMINI_API_KEY` | *(required)* | Your Google Gemini API key |
+| `GEMINI_MODEL` | `gemini-2.0-flash-exp` | Gemini model to use |
+| `DEBUG_MODE` | `false` | Enable verbose debug logging |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG/INFO/WARNING/ERROR) |
+| `MAX_RETRIES` | `3` | Max retry attempts for failed actions |
+| `ACTION_DELAY` | `0.5` | Delay between actions (seconds) |
+| `ENABLE_SCREEN_RECORDING` | `false` | Save screenshots before/after each action |
+
+### Advanced Configuration
+
+For advanced users, you can modify `src/config/config.py` directly:
+
+```python
+# API Configuration
+api_timeout: int = 30              # Gemini API timeout (seconds)
+screenshot_quality: int = 85        # Screenshot JPEG quality (0-100)
+
+# Safety
+emergency_stop_key: str = "ctrl+shift+esc"
+max_task_duration: int = 300        # Maximum task duration (seconds)
+
+# Paths
+logs_dir: Path = Path("logs")       # Directory for log files
+screenshots_dir: Path = Path("screenshots")  # Directory for screenshots
 ```
 
 ## 🛡️ Safety Features
@@ -228,22 +367,118 @@ The agent uses a modular, layered architecture:
 
 ```
 DjenisAiAgent/
-├── src/
-│   └── core/
-│       ├── agent.py              # Main orchestration
-│       ├── gemini_client.py      # AI planning & vision
-│       ├── executor.py           # Action execution
-│       ├── actions.py            # Action registry (38+ actions)
-│       ├── prompts.py            # Prompt templates
-│       └── ui_overlay.py         # Monitoring UI
-├── ui_automation.py              # Low-level automation
-├── config.py                     # Configuration
-├── logger.py                     # Logging system
 ├── main.py                       # Entry point
-└── requirements.txt              # Dependencies
+├── requirements.txt              # Dependencies
+├── setup.ps1                     # Automated setup script
+├── .env.example                  # Environment template
+├── README.md                     # This file
+├── LICENSE                       # MIT License
+├── CONTRIBUTING.md               # Contribution guidelines
+├── logs/                         # Log files
+├── screenshots/                  # Screenshot storage
+└── src/                          # Source code
+    ├── __init__.py
+    ├── config/                   # Configuration
+    │   ├── __init__.py
+    │   └── config.py            # Settings and API keys
+    ├── utils/                    # Utilities
+    │   ├── __init__.py
+    │   └── logger.py            # Logging system
+    ├── automation/               # Low-level automation
+    │   ├── __init__.py
+    │   └── ui_automation.py     # PyAutoGUI, PyWinAuto, Win32 API
+    ├── core/                     # Core agent logic
+    │   ├── __init__.py
+    │   ├── agent.py             # Main orchestration with telemetry
+    │   ├── gemini_client.py     # AI planning & vision
+    │   ├── executor.py          # Action execution with ActionResult
+    │   ├── actions.py           # Action registry (38+ actions)
+    │   ├── prompts.py           # Agentic prompt templates
+    │   └── ui_overlay.py        # Monitoring UI with toasts
+    └── tests/                    # Test suite
+        ├── __init__.py
+        ├── test_agent.py        # Agent tests
+        ├── test_ai_window_focus.py  # Window identification tests
+        └── test_setup.py        # Setup verification
 ```
 
-## 🎯 How It Works
+## �️ Architecture & Recent Improvements
+
+### Structured Telemetry System
+
+The agent now uses a structured telemetry system for better tracking and debugging:
+
+```python
+@dataclass
+class ActionResult:
+    """Complete execution result with timing and metadata."""
+    success: bool
+    message: str
+    started_at: datetime
+    finished_at: datetime
+    duration: float
+    metadata: Dict[str, Any]
+    action_suggestion: Optional[str] = None  # Suggests similar actions for unknown commands
+```
+
+### Execution Context Tracking
+
+Each step maintains its own execution context for adaptive behavior:
+
+```python
+@dataclass
+class StepContext:
+    """Tracks state and history for a single execution step."""
+    step: Dict[str, Any]
+    retry_count: int = 0
+    last_error: Optional[str] = None
+    reasoning_notes: List[str] = field(default_factory=list)
+    verification_result: Optional[Dict[str, Any]] = None
+    status: StepStatus = StepStatus.PENDING
+```
+
+### Adaptive Failure Handling
+
+The agent now features intelligent failure recovery:
+
+1. **Structured Retries**: Tracks attempts with exponential backoff
+2. **AI Consultation**: Asks Gemini for corrective strategies after failures
+3. **Corrective Steps**: Can inject new steps based on AI recommendations
+4. **Post-Success Verification**: Validates task completion after successful execution
+5. **Partial Success Detection**: Recognizes and reports partial completions
+
+### Enhanced Agentic Prompting
+
+All prompts now leverage multi-phase reasoning for better decision-making:
+
+#### Task Planning
+- **UNDERSTAND** → Analyze task requirements and constraints
+- **STRATEGIZE** → Plan action sequence with failure modes
+- **VALIDATE** → Verify plan completeness and alternatives
+- **REFLECT** → Self-critique and adjust
+
+#### Screen Analysis
+- **SYSTEMATIC SCAN** → Identify all UI elements methodically
+- **CONTEXT AWARENESS** → Understand element relationships
+- **ACTIONABLE INSIGHTS** → Extract automation-relevant information
+
+#### Element Location
+- **MULTI-STRATEGY** → Try multiple location methods
+- **SPATIAL REASONING** → Understand element positioning
+- **CONFIDENCE SCORING** → Rate location certainty
+
+#### Verification
+- **COMPREHENSIVE COMPARISON** → Before/after state analysis
+- **PARTIAL SUCCESS DETECTION** → Recognize incomplete outcomes
+- **NEXT-STEP RECOMMENDATIONS** → Suggest recovery actions
+
+#### Next Action Decision
+- **GOAL DECOMPOSITION** → Break down complex objectives
+- **STATE ASSESSMENT** → Evaluate current progress
+- **RISK EVALUATION** → Anticipate potential failures
+- **ALTERNATIVE PATHS** → Plan fallback strategies
+
+## �🎯 How It Works
 
 1. **📝 Understanding**: Gemini parses your natural language request
 2. **🧠 Planning**: AI generates a detailed, multi-step execution plan

@@ -5,10 +5,10 @@ import time
 from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from logger import setup_logger
-from config import config
+from src.utils.logger import setup_logger
+from src.config.config import config
 from src.core.agent import EnhancedAIAgent
 from src.core.actions import action_registry
 from src.core.gemini_client import EnhancedGeminiClient
