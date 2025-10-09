@@ -455,20 +455,80 @@ class ActionRegistry:
         """Get all actions in a category."""
         return [a for a in self.get_all_actions() if a.category == category]
     
-    def to_prompt_string(self) -> str:
-        """Generate a formatted string for prompting."""
-        lines = ["Available Actions:\n"]
-        
+    def to_prompt_string(
+        self,
+        *,
+        max_per_category: Optional[int] = None,
+        include_examples: bool = True,
+    ) -> str:
+        """Generate a formatted string describing supported actions."""
+
+        lines = ["Available Actions:"]
+
         for category in ActionCategory:
             actions = self.get_actions_by_category(category)
-            if actions:
-                lines.append(f"\n{category.value.upper()} ACTIONS:")
-                for action in actions:
-                    lines.append(f"  - {action.name}: {action.description}")
-                    if action.examples:
-                        lines.append(f"    Examples: {', '.join(action.examples[:2])}")
-        
+            if max_per_category is not None:
+                actions = actions[:max(0, max_per_category)]
+
+            if not actions:
+                continue
+
+            lines.append("")
+            lines.append(f"{category.value.upper()} ACTIONS:")
+
+            for action in actions:
+                parameter_text = ", ".join(action.parameters) if action.parameters else "None"
+                lines.append(f"  - {action.name}: {action.description}")
+                lines.append(f"    Parameters: {parameter_text}")
+
+                if include_examples and action.examples:
+                    example = action.examples[0]
+                    lines.append(f"    Example: {example}")
+
+        if include_examples:
+            example_block = self._build_example_block()
+            if example_block:
+                lines.append("")
+                lines.append(example_block)
+
         return "\n".join(lines)
+
+    def to_compact_prompt_string(self) -> str:
+        """Return a concise list of available action names."""
+
+        action_names = sorted(action.name for action in self.get_all_actions())
+        return "Available actions (use exact names):\n- " + ", ".join(action_names)
+
+    def _build_example_block(self, max_examples: int = 6) -> str:
+        """Build a detailed examples block demonstrating action usage."""
+
+        examples: List[str] = []
+        unique_actions = self.get_all_actions()
+
+        for action in unique_actions:
+            if not action.examples:
+                continue
+
+            example = action.examples[0]
+            parameter_text = ", ".join(action.parameters) if action.parameters else "None"
+            examples.append(
+                "- Action: {name}\n"
+                "  Parameters: {params}\n"
+                "  Example: {example}".format(
+                    name=action.name,
+                    params=parameter_text,
+                    example=example,
+                )
+            )
+
+            if len(examples) >= max_examples:
+                break
+
+        if not examples:
+            return ""
+
+        header = "Detailed Action Examples (JSON-friendly semantics):"
+        return "\n".join([header, *examples])
 
 
 # Global registry instance

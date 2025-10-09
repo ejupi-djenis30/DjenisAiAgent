@@ -7,9 +7,10 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Deque, Dict, Any, List, Optional
+from typing import Callable, Deque, Dict, Any, List, Optional, Tuple, cast
 from datetime import datetime
 import keyboard
+from PIL import Image
 
 from src.utils.logger import setup_logger
 from src.config.config import config
@@ -349,7 +350,8 @@ class EnhancedAIAgent:
 
             after_screenshot = None
             if config.enable_screen_recording:
-                time.sleep(0.5)
+                if config.screen_recording_delay > 0:
+                    time.sleep(config.screen_recording_delay)
                 after_screenshot = self.ui.take_screenshot()
 
             if hide_overlay and self.overlay:
@@ -496,7 +498,12 @@ class EnhancedAIAgent:
             failed_step=ctx.raw,
             issue=enriched_issue,
             screenshot=after_screenshot or before_screenshot,
-            original_goal=ctx.raw.get("expected_outcome", ctx.target)
+            original_goal=ctx.raw.get("expected_outcome", ctx.target),
+            mouse_metadata=mouse_meta if isinstance(mouse_meta, dict) else None,
+            focus_images=self._collect_focus_views(
+                mouse_meta if isinstance(mouse_meta, dict) else None,
+                after_screenshot or before_screenshot,
+            ),
         )
 
         if corrective_steps:
@@ -577,11 +584,20 @@ class EnhancedAIAgent:
             self.overlay.show_toast("Verification failed – adjusting plan", level="warning")
             self.overlay.update_step_detail(self._format_step_detail(ctx))
 
+        mouse_meta = None
+        if ctx.last_result and ctx.last_result.metadata:
+            mouse_meta = ctx.last_result.metadata.get("mouse")
+
         corrective_steps = self._generate_corrective_steps(
             failed_step=ctx.raw,
             issue=issue,
             screenshot=after_screenshot,
-            original_goal=ctx.raw.get("expected_outcome", ctx.target)
+            original_goal=ctx.raw.get("expected_outcome", ctx.target),
+            mouse_metadata=mouse_meta if isinstance(mouse_meta, dict) else None,
+            focus_images=self._collect_focus_views(
+                mouse_meta if isinstance(mouse_meta, dict) else None,
+                after_screenshot,
+            ),
         )
 
         if corrective_steps:
@@ -625,6 +641,68 @@ class EnhancedAIAgent:
         for ctx in reversed(contexts):
             remaining_steps.appendleft(ctx)
         return len(contexts)
+
+    def _collect_focus_views(
+        self,
+        mouse_metadata: Optional[Dict[str, Any]],
+        screenshot: Optional[Any],
+    ) -> List[Image.Image]:
+        """Derive focus-region crops from existing screenshots using telemetry centers."""
+
+        if not config.enable_screen_recording or not mouse_metadata:
+            return []
+
+        centers: List[Tuple[int, int]] = []
+
+        focus_centers = mouse_metadata.get("focus_centers")
+        if isinstance(focus_centers, list):
+            centers.extend(
+                [tuple(center) for center in focus_centers if isinstance(center, (list, tuple)) and len(center) == 2]
+            )
+
+        history = mouse_metadata.get("history")
+        if isinstance(history, list):
+            for record in history:
+                if not isinstance(record, dict):
+                    continue
+                center = record.get("focus_center")
+                if isinstance(center, (list, tuple)) and len(center) == 2:
+                    centers.append(tuple(center))
+
+        if not centers:
+            return []
+
+        # Deduplicate while preserving order and respect configured history limit
+        unique_centers: List[Tuple[int, int]] = []
+        for center in centers:
+            if center not in unique_centers:
+                unique_centers.append(center)
+        selected_centers = unique_centers[-config.screen_focus_history :]
+
+        base_image: Optional[Image.Image] = screenshot if isinstance(screenshot, Image.Image) else None
+        owns_base_image = False
+        if base_image is None:
+            try:
+                base_image = self.ui.take_screenshot()
+                owns_base_image = True
+            except Exception as exc:  # pragma: no cover - hardware dependent
+                logger.debug(f"Unable to capture fallback screenshot for focus views: {exc}")
+                return []
+
+        focus_views: List[Image.Image] = []
+        for center in selected_centers:
+            try:
+                focus_views.append(self.ui.crop_focus_region(base_image, center))
+            except Exception as exc:
+                logger.debug(f"Skipping focus crop at {center}: {exc}")
+
+        if owns_base_image and base_image:
+            try:
+                base_image.close()
+            except Exception:
+                pass
+
+        return focus_views
 
     def _consult_ai_for_next_action(self, ctx: StepContext) -> Optional[Dict[str, Any]]:
         """Ask Gemini for the next best action when stuck."""
@@ -883,7 +961,10 @@ BE HARSH - Only return success:true if you clearly see the expected result!"""
         failed_step: Dict[str, Any],
         issue: Optional[str],
         screenshot: Optional[Any],  # PIL Image
-        original_goal: str
+        original_goal: str,
+        *,
+        mouse_metadata: Optional[Dict[str, Any]] = None,
+        focus_images: Optional[List[Image.Image]] = None,
     ) -> List[Dict[str, Any]]:
         """Ask AI to generate corrective steps to fix a failed action.
         
@@ -897,8 +978,17 @@ BE HARSH - Only return success:true if you clearly see the expected result!"""
             List of new steps to try
         """
         try:
-            if not screenshot:
+            focus_images = focus_images or []
+
+            if not screenshot and not focus_images:
                 return []
+
+            if not screenshot and focus_images:
+                try:
+                    screenshot = focus_images[-1].copy()
+                except Exception as exc:
+                    logger.debug(f"Unable to reuse focus image as screenshot: {exc}")
+                    return []
             
             if not issue:
                 issue = "Unknown issue"
@@ -907,6 +997,23 @@ BE HARSH - Only return success:true if you clearly see the expected result!"""
             target = failed_step.get("target", "")
             parameters = failed_step.get("parameters", {})
             
+            # Limit mouse telemetry for prompt readability
+            mouse_context: Optional[str] = None
+            if mouse_metadata:
+                try:
+                    summary_payload = {
+                        "attempts": mouse_metadata.get("attempts"),
+                        "final_position": mouse_metadata.get("final_position"),
+                        "target": mouse_metadata.get("target"),
+                        "residual_offset": mouse_metadata.get("residual_offset"),
+                        "tolerance": mouse_metadata.get("tolerance"),
+                        "auto_correction": mouse_metadata.get("auto_correction"),
+                        "history_tail": (mouse_metadata.get("history", []) or [])[-3:],
+                    }
+                    mouse_context = json.dumps(summary_payload, ensure_ascii=False, indent=2)
+                except Exception as exc:
+                    logger.debug(f"Failed to serialize mouse metadata: {exc}")
+
             # Build correction prompt
             prompt = f"""A step in our automation plan failed. Analyze the screenshot and generate SPECIFIC corrective actions.
 
@@ -915,6 +1022,9 @@ TARGET: {target}
 PARAMETERS: {parameters}
 ORIGINAL GOAL: {original_goal}
 ISSUE DETECTED: {issue}
+
+MOUSE TELEMETRY SUMMARY:
+{mouse_context or 'No telemetry available'}
 
 🔍 ANALYZE THE SCREENSHOT:
 1. Locate the target element VISUALLY (search box, button, video, etc.)
@@ -967,12 +1077,31 @@ IMPORTANT:
 - ALWAYS include take_screenshot as first corrective step
 - Provide REAL coordinates by analyzing the screenshot
 - Maximum 5 corrective steps
-- NO TAB navigation - use coordinates!"""
+- NO TAB navigation - use coordinates!
+- Additional zoomed-in focus snapshots are provided when available to highlight recent mouse positions."""
 
-            response = self.gemini.analyze_screen(screenshot, prompt)
+            additional_images: List[Image.Image] = []
+            if focus_images:
+                for focus_img in focus_images[-config.screen_focus_history :]:
+                    try:
+                        additional_images.append(focus_img.copy())
+                    except Exception as exc:
+                        logger.debug(f"Skipping focus image due to error: {exc}")
+
+            primary_image = cast(Image.Image, screenshot)
+            response = self.gemini.analyze_screen(
+                primary_image,
+                prompt,
+                additional_images=additional_images or None,
+            )
+
+            for img in additional_images:
+                try:
+                    img.close()
+                except Exception:
+                    pass
             
             # Try to parse JSON response
-            import json
             try:
                 json_str = response
                 if "```json" in response:

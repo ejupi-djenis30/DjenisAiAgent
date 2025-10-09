@@ -197,8 +197,16 @@ class ActionExecutor:
             logger.debug("Gemini client unavailable – skipping auto mouse correction")
             return None
 
+        focus_image = None
+        focus_center: Optional[Tuple[int, int]] = telemetry.final_position or telemetry.target
+
         try:
             screenshot = self.ui.take_screenshot()
+            if focus_center:
+                try:
+                    focus_image = self.ui.crop_focus_region(screenshot, focus_center)
+                except Exception as exc:  # pragma: no cover - crop should rarely fail
+                    logger.debug(f"Unable to crop focus region for correction: {exc}")
         except Exception as exc:  # pragma: no cover - hardware dependent
             logger.debug(f"Failed to capture screenshot for auto correction: {exc}")
             return None
@@ -232,7 +240,12 @@ Respond with JSON only, using this schema:
 
 If the target cannot be identified, set "found" to false and explain in "reason"."""
 
-        response = self.gemini.analyze_screen(screenshot, prompt)
+        additional_images = [focus_image] if focus_image is not None else None
+        response = self.gemini.analyze_screen(
+            screenshot,
+            prompt,
+            additional_images=additional_images,
+        )
 
         import json
 
@@ -277,30 +290,37 @@ If the target cannot be identified, set "found" to false and explain in "reason"
             return_telemetry=True,
         )
 
+        result_payload: Dict[str, Any] = {
+            "suggestion": candidate,
+            "telemetry": refined_telemetry
+            if isinstance(refined_telemetry, MouseMoveTelemetry)
+            else telemetry,
+        }
+
+        if focus_center:
+            result_payload["focus_center"] = focus_center
+
         if isinstance(refined_telemetry, MouseMoveTelemetry):
-            return {
-                "suggestion": candidate,
-                "telemetry": refined_telemetry,
-            }
+            return result_payload
 
         # move_to returning bool indicates failure to fetch telemetry; wrap into dict for consistency
         current_pos = self.ui.get_mouse_position()
-        return {
-            "suggestion": candidate,
-            "telemetry": MouseMoveTelemetry(
-                success=bool(refined_telemetry),
-                attempts=telemetry.attempts,
-                target=(suggested_x, suggested_y),
-                final_position=current_pos,
-                residual_offset=(
-                    suggested_x - current_pos[0],
-                    suggested_y - current_pos[1],
-                ),
-                tolerance=params.get("tolerance", config.mouse_tolerance_px),
-                path=[],
-                corrections_applied=[],
+        fallback_telemetry = MouseMoveTelemetry(
+            success=bool(refined_telemetry),
+            attempts=telemetry.attempts,
+            target=(suggested_x, suggested_y),
+            final_position=current_pos,
+            residual_offset=(
+                suggested_x - current_pos[0],
+                suggested_y - current_pos[1],
             ),
-        }
+            tolerance=params.get("tolerance", config.mouse_tolerance_px),
+            path=[],
+            corrections_applied=[],
+        )
+
+        result_payload["telemetry"] = fallback_telemetry
+        return result_payload
 
     def _execute_open_application(self, target: str, params: Dict) -> Dict[str, Any]:
         """Open or launch an application."""
@@ -430,12 +450,38 @@ If the target cannot be identified, set "found" to false and explain in "reason"
                 else:
                     logger.debug("Auto correction did not return telemetry dataclass")
 
-        serialized_history = [self._serialize_mouse_telemetry(t) for t in telemetry_attempts]
-        current_metadata = self._serialize_mouse_telemetry(telemetry)
-        current_metadata["history"] = serialized_history
-        current_metadata["auto_correction"] = (
-            auto_correction_result.get("suggestion") if auto_correction_result else None
-        )
+        serialized_history: List[Dict[str, Any]] = []
+        focus_centers: List[Tuple[int, int]] = []
+
+        for attempt_index, attempt in enumerate(telemetry_attempts, start=1):
+            record = self._serialize_mouse_telemetry(attempt)
+
+            center = attempt.final_position or attempt.target
+            if center:
+                record["focus_center"] = center
+                if config.enable_screen_recording:
+                    focus_centers.append(center)
+
+            serialized_history.append(record)
+
+        if config.enable_screen_recording and focus_centers:
+            unique_focus = []
+            for center in focus_centers:
+                if center not in unique_focus:
+                    unique_focus.append(center)
+            focus_centers = unique_focus[-config.screen_focus_history :]
+
+        base_metadata = self._serialize_mouse_telemetry(telemetry)
+        current_metadata: Dict[str, Any] = {
+            **base_metadata,
+            "history": serialized_history,
+            "auto_correction": (
+                auto_correction_result.get("suggestion") if auto_correction_result else None
+            ),
+        }
+
+        if focus_centers:
+            current_metadata["focus_centers"] = focus_centers
 
         if telemetry.success:
             final_x, final_y = telemetry.final_position
@@ -502,7 +548,18 @@ If the target cannot be identified, set "found" to false and explain in "reason"
                 corrections_applied=[],
             )
 
-        metadata = self._serialize_mouse_telemetry(telemetry)
+        base_metadata = self._serialize_mouse_telemetry(telemetry)
+        metadata = dict(base_metadata)
+        history: List[Dict[str, Any]] = [dict(base_metadata)]
+
+        center = telemetry.final_position or telemetry.target
+        if center:
+            history[0]["focus_center"] = center
+            if config.enable_screen_recording:
+                metadata["focus_centers"] = [center]
+
+        metadata["history"] = history
+
         print(
             f"   📍 Mouse at {telemetry.final_position} (offset {telemetry.residual_offset}, tolerance ±{telemetry.tolerance}px)"
         )
