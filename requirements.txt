@@ -13,3 +13,8 @@ python-dotenv
 
 # Screen Capture and Basic Automation
 pyautogui
+
+# Web Server and WebSocket Support
+fastapi
+uvicorn
+python-websockets

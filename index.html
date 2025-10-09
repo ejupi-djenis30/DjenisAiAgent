@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DjenisAiAgent Control Center</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --bg-panel: rgba(15, 23, 42, 0.85);
+            --text: #e2e8f0;
+            --muted: #a5b4fc;
+            --accent: #6366f1;
+            --accent-dark: #4f46e5;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #22c55e;
+            --shadow: 0 20px 50px rgba(15, 23, 42, 0.45);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            min-height: 100vh;
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.25), transparent 55%),
+                        radial-gradient(circle at 80% 0%, rgba(236, 72, 153, 0.2), transparent 60%),
+                        linear-gradient(160deg, #0f172a 0%, #111827 55%, #1e293b 100%);
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2.5rem 1.5rem;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            display: grid;
+            gap: 1.75rem;
+        }
+
+        header {
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: clamp(2rem, 4vw, 3rem);
+            font-weight: 700;
+            letter-spacing: 0.03em;
+        }
+
+        header p {
+            margin-top: 0.75rem;
+            font-size: 1rem;
+            color: var(--muted);
+        }
+
+        .content {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+            gap: 1.5rem;
+        }
+
+        .stream-container {
+            position: relative;
+            background: rgba(15, 23, 42, 0.7);
+            border-radius: 1.25rem;
+            overflow: hidden;
+            padding: 1rem;
+            box-shadow: var(--shadow);
+        }
+
+        .stream-wrapper {
+            width: 100%;
+            position: relative;
+            aspect-ratio: 16 / 9;
+            border-radius: 1rem;
+            background: linear-gradient(145deg, rgba(99, 102, 241, 0.12), rgba(15, 23, 42, 0.85));
+            border: 1px solid rgba(99, 102, 241, 0.25);
+            overflow: hidden;
+        }
+
+        #stream {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            filter: saturate(1.05) contrast(1.05);
+        }
+
+        .stream-placeholder {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            gap: 0.75rem;
+            color: var(--muted);
+            font-size: 1.1rem;
+            text-align: center;
+            padding: 1.5rem;
+            background: linear-gradient(160deg, rgba(15, 23, 42, 0.75) 0%, rgba(15, 23, 42, 0.55) 100%);
+        }
+
+        .spinner {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            border: 4px solid rgba(99, 102, 241, 0.25);
+            border-top-color: var(--accent);
+            animation: spin 1s linear infinite;
+        }
+
+        .panels {
+            display: grid;
+            gap: 1.25rem;
+        }
+
+        .panel {
+            background: var(--bg-panel);
+            border-radius: 1.25rem;
+            padding: 1.5rem;
+            box-shadow: var(--shadow);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            backdrop-filter: blur(18px);
+        }
+
+        .panel h2 {
+            font-size: 1.15rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            letter-spacing: 0.03em;
+        }
+
+        .panel h2::before {
+            content: "";
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 12px rgba(99, 102, 241, 0.8);
+        }
+
+        pre {
+            max-height: 280px;
+            overflow-y: auto;
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            color: #cbd5f5;
+        }
+
+        .controls {
+            display: grid;
+            gap: 1.25rem;
+            place-items: center;
+        }
+
+        .control-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            width: 100%;
+            justify-content: center;
+        }
+
+        .control-buttons button {
+            flex: 1 1 220px;
+        }
+
+        #controlBtn {
+            width: min(100%, 320px);
+            padding: 1rem 1.5rem;
+            border-radius: 999px;
+            border: none;
+            font-size: 1.1rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+            cursor: pointer;
+            color: #0f172a;
+        }
+
+        #controlBtn.idle {
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
+            box-shadow: 0 10px 25px rgba(99, 102, 241, 0.35);
+        }
+
+        #controlBtn.idle:hover {
+            transform: translateY(-2px);
+        }
+
+        #controlBtn.listening {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.95) 0%, rgba(239, 68, 68, 0.8) 100%);
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.65);
+            color: #fff7f7;
+            animation: pulse 1.8s infinite;
+        }
+
+        #controlBtn.processing {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.95) 0%, rgba(245, 158, 11, 0.85) 100%);
+            box-shadow: 0 10px 30px rgba(245, 158, 11, 0.45);
+            cursor: not-allowed;
+            color: #fff9ec;
+        }
+
+        #controlBtn.disabled {
+            background: linear-gradient(135deg, rgba(148, 163, 184, 0.4) 0%, rgba(148, 163, 184, 0.6) 100%);
+            color: rgba(15, 23, 42, 0.65);
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .controls .danger {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.95), rgba(239, 68, 68, 0.85));
+            color: #fff5f5;
+            box-shadow: 0 10px 25px rgba(239, 68, 68, 0.35);
+        }
+
+        .controls .danger:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 32px rgba(239, 68, 68, 0.45);
+        }
+
+        .manual-command {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-top: 0.25rem;
+        }
+
+        .manual-command label {
+            font-size: 0.95rem;
+            color: var(--muted);
+            letter-spacing: 0.02em;
+        }
+
+        .manual-input {
+            display: flex;
+            gap: 0.75rem;
+            width: 100%;
+        }
+
+        .manual-input input {
+            flex: 1;
+            padding: 0.85rem 1rem;
+            border-radius: 0.9rem;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            background: rgba(15, 23, 42, 0.65);
+            color: var(--text);
+            font-size: 1rem;
+            transition: border 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.12);
+        }
+
+        .manual-input input:focus {
+            outline: none;
+            border-color: rgba(99, 102, 241, 0.6);
+            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+        }
+
+        #sendTextBtn {
+            padding: 0.85rem 1.5rem;
+            border-radius: 0.9rem;
+            background: linear-gradient(135deg, rgba(14, 165, 233, 0.95), rgba(59, 130, 246, 0.85));
+            color: #f8fafc;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+            border: none;
+            cursor: pointer;
+            transition: transform 0.18s ease, box-shadow 0.18s ease;
+            box-shadow: 0 10px 25px rgba(59, 130, 246, 0.35);
+        }
+
+        #sendTextBtn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 32px rgba(59, 130, 246, 0.45);
+        }
+
+        button:disabled {
+            opacity: 0.65;
+            cursor: not-allowed;
+            transform: none !important;
+            box-shadow: none !important;
+        }
+
+        .status-note {
+            font-size: 0.85rem;
+            color: rgba(226, 232, 240, 0.75);
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        .status-note strong {
+            color: #e0e7ff;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 22px rgba(239, 68, 68, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+
+        @media (max-width: 1024px) {
+            body {
+                padding: 2rem 1rem;
+            }
+
+            .content {
+                grid-template-columns: 1fr;
+            }
+
+            .stream-container {
+                order: -1;
+            }
+        }
+
+        @media (max-width: 640px) {
+            header p {
+                font-size: 0.95rem;
+            }
+
+            .panel {
+                padding: 1.25rem;
+            }
+
+            pre {
+                max-height: 220px;
+                font-size: 0.85rem;
+            }
+
+            .control-buttons {
+                flex-direction: column;
+            }
+
+            .manual-input {
+                flex-direction: column;
+            }
+
+            .manual-input button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>DjenisAiAgent Control Center</h1>
+            <p>Monitor, guide, and collaborate with your automation agent in real time.</p>
+        </header>
+        <main class="content">
+            <section class="stream-container">
+                <div class="stream-wrapper">
+                    <img id="stream" src="/stream" alt="Live desktop stream" />
+                    <div class="stream-placeholder" id="streamPlaceholder">
+                        <div class="spinner" aria-hidden="true"></div>
+                        <div>
+                            <strong>Connecting to live stream…</strong>
+                            <p>This window refreshes automatically when frames are available.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <section class="panels">
+                <div class="status-panel panel">
+                    <h2>Agent Status</h2>
+                    <pre id="agentStatus">Waiting for updates…</pre>
+                </div>
+                <div class="transcript-panel panel">
+                    <h2>Transcription</h2>
+                    <pre id="transcript">Start voice control to see live transcripts here.</pre>
+                </div>
+                <div class="controls panel">
+                    <div class="control-buttons">
+                        <button id="controlBtn" class="idle" data-state="idle" type="button">Start Voice Control</button>
+                        <button id="deleteTaskBtn" class="danger" type="button">Delete Current Task</button>
+                    </div>
+                    <div class="manual-command">
+                        <label for="textCommandInput">Manual Command</label>
+                        <div class="manual-input">
+                            <input id="textCommandInput" type="text" autocomplete="off" placeholder="Describe what the agent should do" />
+                            <button id="sendTextBtn" type="button">Send</button>
+                        </div>
+                    </div>
+                    <p class="status-note" id="controlHint">
+                        Voice commands are transcribed locally. You can also send manual instructions or cancel the current task.
+                    </p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const controlBtn = document.getElementById("controlBtn");
+        const deleteTaskBtn = document.getElementById("deleteTaskBtn");
+        const sendTextBtn = document.getElementById("sendTextBtn");
+        const textCommandInput = document.getElementById("textCommandInput");
+        const controlHint = document.getElementById("controlHint");
+        const agentStatus = document.getElementById("agentStatus");
+        const transcript = document.getElementById("transcript");
+        const stream = document.getElementById("stream");
+        const streamPlaceholder = document.getElementById("streamPlaceholder");
+
+        const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+        const wsEndpoint = `${wsProtocol}://${window.location.host}/ws`;
+        const streamUrl = new URL("/stream", window.location.origin);
+        const reconnectDelayMs = 3000;
+
+        let socket;
+        let reconnectTimer;
+        let recognition;
+        let isRecognizing = false;
+        let resumeAfterProcessing = false;
+        let processingTimeout;
+        let isWebSocketOpen = false;
+        const transcriptHistory = [];
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const PROCESSING_TIMEOUT_MS = 15000;
+        const TRANSCRIPT_HISTORY_LIMIT = 50;
+
+        const setConnectivity = (connected) => {
+            isWebSocketOpen = connected;
+            sendTextBtn.disabled = !connected;
+            deleteTaskBtn.disabled = !connected;
+
+            if (controlBtn.dataset.state !== "disabled") {
+                controlBtn.disabled = !connected || controlBtn.dataset.state === "processing";
+            }
+
+            if (!connected) {
+                resumeAfterProcessing = false;
+                if (recognition && isRecognizing) {
+                    isRecognizing = false;
+                    try {
+                        recognition.stop();
+                    } catch (error) {
+                        console.warn("Recognition stop failed during disconnect", error);
+                    }
+                }
+            }
+        };
+
+        const setButtonState = (state, label) => {
+            if (processingTimeout) {
+                clearTimeout(processingTimeout);
+                processingTimeout = undefined;
+            }
+            controlBtn.classList.remove("idle", "listening", "processing", "disabled");
+            controlBtn.classList.add(state);
+            controlBtn.dataset.state = state;
+            controlBtn.textContent = label;
+            controlBtn.disabled = state === "processing" || state === "disabled" || !isWebSocketOpen;
+
+            if (state === "processing") {
+                processingTimeout = setTimeout(() => {
+                    if (controlBtn.dataset.state === "processing") {
+                        setButtonState("idle", "Start Voice Control");
+                        logStatus("Processing timeout elapsed. Ready for next command.", "warn");
+                        resumeAfterProcessing = false;
+                    }
+                }, PROCESSING_TIMEOUT_MS);
+            }
+        };
+
+        const logStatus = (message, level = "info") => {
+            const prefix = level === "error" ? "[error]" : level === "warn" ? "[warn]" : "[info]";
+            const timestamp = new Date().toLocaleTimeString();
+            agentStatus.textContent = `${timestamp} ${prefix} ${message}`;
+        };
+
+        const updateTranscript = (interim = "") => {
+            const finalSection = transcriptHistory.join("\n");
+            const interimClean = interim.trim();
+            let output = finalSection;
+            if (interimClean) {
+                output += `${finalSection ? "\n\n" : ""}[Interim] ${interimClean}`;
+            }
+            transcript.textContent = output || "Start voice control to see live transcripts here.";
+        };
+
+        const sendCommand = (commandText, { source = "voice" } = {}) => {
+            const payload = (commandText || "").trim();
+            if (!payload) {
+                logStatus("Cannot send an empty command.", "warn");
+                return false;
+            }
+
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                logStatus("WebSocket offline. Unable to deliver command.", "error");
+                return false;
+            }
+
+            const envelope = {
+                type: "command",
+                payload,
+                source,
+                requestedAt: Date.now()
+            };
+
+            try {
+                socket.send(JSON.stringify(envelope));
+            } catch (error) {
+                console.error("Failed to send command", error);
+                logStatus("Network error while sending command.", "error");
+                return false;
+            }
+
+            logStatus(`Command sent (${source}): "${payload}"`);
+
+            if (source === "voice") {
+                resumeAfterProcessing = true;
+            } else {
+                resumeAfterProcessing = false;
+                transcriptHistory.push(`📝 Manual: ${payload}`);
+                if (transcriptHistory.length > TRANSCRIPT_HISTORY_LIMIT) {
+                    transcriptHistory.shift();
+                }
+                updateTranscript();
+            }
+
+            setButtonState("processing", source === "voice" ? "Processing…" : "Processing manual command…");
+            return true;
+        };
+
+        const scheduleReconnect = () => {
+            if (reconnectTimer) {
+                return;
+            }
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = undefined;
+                connectWebSocket();
+            }, reconnectDelayMs);
+        };
+
+        const connectWebSocket = () => {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                return;
+            }
+
+            socket = new WebSocket(wsEndpoint);
+
+            socket.onopen = () => {
+                if (reconnectTimer) {
+                    clearTimeout(reconnectTimer);
+                    reconnectTimer = undefined;
+                }
+                setConnectivity(true);
+                logStatus("Connected to agent.");
+            };
+
+            socket.onmessage = (event) => {
+                const message = event.data;
+                agentStatus.textContent = message;
+
+                if (typeof message === "string") {
+                    const normalized = message.toLowerCase();
+
+                    const readyForNext = normalized.includes("ready for next command");
+                    const cancellationAck = normalized.includes("cancellation requested");
+                    const emptyIgnored = normalized.includes("empty command ignored");
+
+                    if (cancellationAck) {
+                        resumeAfterProcessing = false;
+                        if (recognition && isRecognizing) {
+                            isRecognizing = false;
+                            try {
+                                recognition.stop();
+                            } catch (error) {
+                                console.warn("Recognition stop failed after cancellation", error);
+                            }
+                        }
+                        if (controlBtn.dataset.state !== "disabled") {
+                            setButtonState("idle", "Start Voice Control");
+                        }
+                        return;
+                    }
+
+                    if (readyForNext) {
+                        if (resumeAfterProcessing && recognition && controlBtn.dataset.state !== "disabled") {
+                            resumeAfterProcessing = false;
+                            try {
+                                recognition.start();
+                                isRecognizing = true;
+                                setButtonState("listening", "Listening… Tap to stop");
+                                logStatus("Ready for next command. Voice control resumed.");
+                                return;
+                            } catch (error) {
+                                console.error("Failed to restart recognition", error);
+                                logStatus("Unable to restart voice capture automatically.", "warn");
+                            }
+                        }
+
+                        if (controlBtn.dataset.state === "processing") {
+                            setButtonState("idle", "Start Voice Control");
+                        }
+                        return;
+                    }
+
+                    if (emptyIgnored && controlBtn.dataset.state === "processing") {
+                        setButtonState("idle", "Start Voice Control");
+                    }
+                }
+            };
+
+            socket.onclose = () => {
+                setConnectivity(false);
+                logStatus("Connection lost. Attempting to reconnect…", "warn");
+                if (controlBtn.dataset.state !== "disabled") {
+                    setButtonState("idle", "Start Voice Control");
+                }
+                scheduleReconnect();
+            };
+
+            socket.onerror = (error) => {
+                console.error("WebSocket error", error);
+                logStatus("WebSocket error encountered.", "error");
+            };
+        };
+
+        const initialiseSpeechRecognition = () => {
+            if (!SpeechRecognition) {
+                controlBtn.classList.remove("idle", "listening", "processing");
+                controlBtn.classList.add("disabled");
+                controlBtn.dataset.state = "disabled";
+                controlBtn.disabled = true;
+                controlBtn.textContent = "Voice Control Unsupported";
+                controlHint.innerHTML = "Your browser doesn't support the Web Speech API. Try Chrome on desktop.";
+                logStatus("Speech recognition unavailable on this browser.", "error");
+                return false;
+            }
+
+            if (recognition) {
+                return true;
+            }
+
+            recognition = new SpeechRecognition();
+            recognition.lang = navigator.language || "en-US";
+            recognition.continuous = true;
+            recognition.interimResults = true;
+
+            recognition.onstart = () => {
+                isRecognizing = true;
+                resumeAfterProcessing = false;
+                setButtonState("listening", "Listening… Tap to stop");
+                logStatus("Listening for commands…");
+            };
+
+            recognition.onresult = (event) => {
+                let interimTranscript = "";
+                const finalSegments = [];
+
+                for (let i = event.resultIndex; i < event.results.length; i += 1) {
+                    const result = event.results[i];
+                    const textChunk = (result[0]?.transcript || "").trim();
+                    if (!textChunk) {
+                        continue;
+                    }
+                    if (result.isFinal) {
+                        finalSegments.push(textChunk);
+                    } else {
+                        interimTranscript += `${textChunk} `;
+                    }
+                }
+
+                if (finalSegments.length > 0) {
+                    finalSegments.forEach((segment) => {
+                        transcriptHistory.push(segment);
+                        if (transcriptHistory.length > TRANSCRIPT_HISTORY_LIMIT) {
+                            transcriptHistory.shift();
+                        }
+                    });
+                    updateTranscript();
+                    const combined = finalSegments.join(" ");
+                    const dispatched = sendCommand(combined, { source: "voice" });
+                    if (dispatched) {
+                        isRecognizing = false;
+                        try {
+                            recognition.stop();
+                        } catch (error) {
+                            console.warn("Unable to stop recognition after dispatch", error);
+                        }
+                    } else {
+                        resumeAfterProcessing = false;
+                        if (controlBtn.dataset.state !== "disabled") {
+                            setButtonState("idle", "Start Voice Control");
+                        }
+                    }
+                } else {
+                    updateTranscript(interimTranscript);
+                }
+            };
+
+            recognition.onerror = (event) => {
+                console.error("Speech recognition error:", event.error);
+                logStatus(`Speech recognition error: ${event.error}`, "error");
+                isRecognizing = false;
+                resumeAfterProcessing = false;
+                if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+                    controlBtn.classList.add("disabled");
+                    controlBtn.dataset.state = "disabled";
+                    controlBtn.disabled = true;
+                    controlBtn.textContent = "Microphone Access Blocked";
+                    controlHint.textContent = "Microphone access denied. Update browser permissions and reload.";
+                }
+            };
+
+            recognition.onend = () => {
+                if (resumeAfterProcessing && socket && socket.readyState === WebSocket.OPEN && controlBtn.dataset.state !== "disabled") {
+                    try {
+                        recognition.start();
+                        isRecognizing = true;
+                        setButtonState("listening", "Listening… Tap to stop");
+                        resumeAfterProcessing = false;
+                        return;
+                    } catch (error) {
+                        console.error("Failed to restart recognition on end", error);
+                        logStatus("Unable to restart voice capture automatically.", "warn");
+                    }
+                }
+
+                if (isRecognizing) {
+                    try {
+                        recognition.start();
+                        return;
+                    } catch (error) {
+                        console.error("Recognition restart failed", error);
+                        isRecognizing = false;
+                    }
+                }
+
+                if (controlBtn.dataset.state !== "processing" && controlBtn.dataset.state !== "disabled") {
+                    setButtonState("idle", "Start Voice Control");
+                }
+            };
+
+            return true;
+        };
+
+        controlBtn.addEventListener("click", () => {
+            const state = controlBtn.dataset.state || "idle";
+            if (state === "processing" || state === "disabled") {
+                return;
+            }
+
+            if (!recognition && !initialiseSpeechRecognition()) {
+                return;
+            }
+
+            if (!recognition) {
+                return;
+            }
+
+            if (state === "idle") {
+                if (!isWebSocketOpen) {
+                    logStatus("WebSocket offline. Connect before starting voice control.", "warn");
+                    return;
+                }
+                isRecognizing = true;
+                resumeAfterProcessing = false;
+                recognition.start();
+            } else if (state === "listening") {
+                isRecognizing = false;
+                resumeAfterProcessing = false;
+                recognition.stop();
+                setButtonState("idle", "Start Voice Control");
+                logStatus("Voice control paused.");
+            }
+        });
+
+        sendTextBtn.addEventListener("click", () => {
+            const command = textCommandInput.value.trim();
+            if (!command) {
+                textCommandInput.focus();
+                return;
+            }
+            if (sendCommand(command, { source: "manual" })) {
+                textCommandInput.value = "";
+            }
+        });
+
+        textCommandInput.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                sendTextBtn.click();
+            }
+        });
+
+        deleteTaskBtn.addEventListener("click", () => {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                logStatus("Cannot cancel task: WebSocket offline.", "error");
+                return;
+            }
+
+            socket.send(JSON.stringify({
+                type: "delete_task",
+                requestedAt: Date.now()
+            }));
+            resumeAfterProcessing = false;
+            if (recognition && isRecognizing) {
+                isRecognizing = false;
+                try {
+                    recognition.stop();
+                } catch (error) {
+                    console.warn("Unable to stop recognition during cancellation", error);
+                }
+            }
+            setButtonState("processing", "Cancelling current task…");
+            logStatus("Cancellation request sent to agent.");
+        });
+
+        stream.src = streamUrl.href;
+        stream.addEventListener("load", () => {
+            streamPlaceholder.style.display = "none";
+        });
+        stream.addEventListener("error", () => {
+            streamPlaceholder.style.display = "grid";
+        });
+        if (stream.complete && stream.naturalWidth > 0) {
+            streamPlaceholder.style.display = "none";
+        }
+
+        setButtonState("idle", "Start Voice Control");
+        setConnectivity(false);
+        connectWebSocket();
+        const speechReady = initialiseSpeechRecognition();
+        if (speechReady && isWebSocketOpen) {
+            setButtonState("idle", "Start Voice Control");
+        }
+
+        window.addEventListener("beforeunload", () => {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.close();
+            }
+            if (recognition && isRecognizing) {
+                isRecognizing = false;
+                recognition.stop();
+            }
+        });
+    </script>
+</body>
+</html>
