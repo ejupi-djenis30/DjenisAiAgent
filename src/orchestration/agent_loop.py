@@ -3,11 +3,18 @@ Agent Loop Module
 
 This module contains the main orchestration loop that coordinates perception,
 reasoning, and action execution using the ReAct (Reason+Act) paradigm.
+
+The agent loop now operates in two modes:
+1. Async mode: Consumes commands from asyncio.Queue and sends status updates
+2. Sync mode: Traditional synchronous execution for CLI compatibility
 """
 
+import asyncio
+import functools
 import logging
 from collections.abc import Mapping
-from typing import Any, Callable, Dict, List, Protocol, TypeGuard, cast
+from threading import Event
+from typing import Any, Callable, Dict, List, Optional, Protocol, TypeGuard, cast
 
 from src.perception.screen_capture import get_multimodal_context
 from src.reasoning.gemini_core import decide_next_action
@@ -37,7 +44,10 @@ def _is_function_call(response: Any) -> TypeGuard[FunctionCallLike]:
 
 def run_agent_loop(user_command: str) -> str:
     """
-    Execute the main ReAct agent loop to fulfill a user command.
+    Execute the main ReAct agent loop to fulfill a user command (synchronous version).
+    
+    This is the synchronous wrapper for CLI mode compatibility.
+    For web mode, use agent_loop() instead which is fully asynchronous.
     
     This function implements the core ReAct cycle:
     1. Observe: Capture screen state and UI structure
@@ -53,6 +63,115 @@ def run_agent_loop(user_command: str) -> str:
     Returns:
         str: Final status message indicating success or failure.
     """
+    return _execute_agent_task(user_command, status_callback=print)
+
+
+async def agent_loop(
+    command_queue: asyncio.Queue,
+    status_queue: asyncio.Queue,
+    cancel_event: Event
+):
+    """
+    Asynchronous agent loop that continuously processes commands from a queue.
+    
+    This is the main entry point for web mode. It runs indefinitely, consuming
+    commands from the command_queue and sending status updates to the status_queue.
+    
+    Architecture:
+        WebSocket -> command_queue -> agent_loop -> status_queue -> broadcaster -> WebSocket
+    
+    Args:
+    command_queue: AsyncIO queue containing user commands to process
+    status_queue: AsyncIO queue for sending status updates to web clients
+    cancel_event: Thread-safe flag used to interrupt the current task
+        
+    The loop will:
+    1. Wait for a command from the queue (blocking)
+    2. Execute the full ReAct cycle for that command
+    3. Send status updates throughout execution
+    4. Mark the task as done when complete
+    5. Repeat indefinitely
+    """
+    logger.info("Agent loop started in async queue-driven mode")
+    await status_queue.put("✅ Agent loop initialized and ready for commands")
+    
+    while True:
+        try:
+            # Block until a command is available
+            user_command = await command_queue.get()
+            cancel_event.clear()
+            logger.info(f"Agent loop received command: {user_command}")
+            await status_queue.put(f"📥 Received command: {user_command}")
+            
+            try:
+                # Execute the command with status callback
+                async def status_callback(message: str):
+                    """Send status updates to the queue for broadcasting."""
+                    await status_queue.put(message)
+                
+                # Run the agent task (uses run_in_executor for sync code)
+                loop = asyncio.get_event_loop()
+                executor_fn = functools.partial(
+                    _execute_agent_task,
+                    user_command,
+                    lambda msg: asyncio.run_coroutine_threadsafe(
+                        status_queue.put(msg),
+                        loop
+                    ).result(),
+                    cancel_event
+                )
+                result = await loop.run_in_executor(None, executor_fn)
+                
+                logger.info(f"Command completed: {result}")
+                await status_queue.put(f"✅ {result}")
+                
+            except Exception as e:
+                error_msg = f"❌ Error executing command: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                await status_queue.put(error_msg)
+            
+            finally:
+                # Mark task as complete
+                command_queue.task_done()
+                await status_queue.put("🔄 Ready for next command")
+                
+        except asyncio.CancelledError:
+            logger.info("Agent loop cancelled, shutting down gracefully")
+            await status_queue.put("⚠️ Agent loop shutting down")
+            break
+        except Exception as e:
+            logger.error(f"Unexpected error in agent loop: {e}", exc_info=True)
+            await status_queue.put(f"❌ Critical error: {str(e)}")
+
+
+def _execute_agent_task(
+    user_command: str,
+    status_callback: Optional[Callable[[str], None]] = None,
+    cancel_event: Optional[Event] = None
+) -> str:
+    """
+    Internal function that executes a single agent task.
+    
+    This function contains the core ReAct logic and is used by both:
+    - run_agent_loop() for synchronous CLI mode
+    - agent_loop() for asynchronous web mode
+    
+    Args:
+        user_command: The user's natural language command to execute
+        status_callback: Optional callback function to report status updates
+        
+    Returns:
+        str: Final status message indicating success, failure or cancellation
+    """
+    def cancelled() -> bool:
+        return bool(cancel_event and cancel_event.is_set())
+
+    def log_status(message: str):
+        """Helper to log status via callback or print."""
+        if status_callback:
+            status_callback(message)
+        else:
+            print(message)
     # ===== INITIALIZATION =====
     history: List[str] = []  # Store conversation and action log
     task_completed: bool = False  # Track task completion status
@@ -72,20 +191,27 @@ def run_agent_loop(user_command: str) -> str:
     
     logger.info("Starting agent loop for command: %s", user_command)
     logger.info("Maximum turns: %d", MAX_TURNS)
-    print(f"\n{'='*80}")
-    print(f"🤖 AVVIO AGENTE - Comando: {user_command}")
-    print(f"{'='*80}\n")
+    log_status(f"\n{'='*80}")
+    log_status(f"🤖 AVVIO AGENTE - Comando: {user_command}")
+    log_status(f"{'='*80}\n")
     
     # ===== MAIN REACT LOOP =====
     for turn in range(1, MAX_TURNS + 1):
+        if cancelled():
+            log_status("🛑 Task cancellato dall'utente. Interruzione in corso…")
+            logger.info("Task cancellation detected before turn %s", turn)
+            if cancel_event:
+                cancel_event.clear()
+            return "CANCELLATO: Task interrotto dall'utente"
+
         # Check if task is already completed
         if task_completed:
             success_msg = f"✅ Task completato con successo al turno {turn - 1}!"
             logger.info(success_msg)
-            print(f"\n{success_msg}\n")
+            log_status(f"\n{success_msg}\n")
             break
 
-        print(f"\n--- TURNO {turn}/{MAX_TURNS} ---\n")
+        log_status(f"\n--- TURNO {turn}/{MAX_TURNS} ---\n")
         logger.info("Starting turn %s/%s", turn, MAX_TURNS)
 
         # ===== STEP A: OBSERVE (Perception) =====
@@ -93,17 +219,23 @@ def run_agent_loop(user_command: str) -> str:
             logger.debug("Capturing multimodal context (screenshot + UI tree)")
             screenshot, ui_tree = get_multimodal_context()
             
-            print("📸 PERCEZIONE: Screenshot e albero UI catturati.")
+            log_status("📸 PERCEZIONE: Screenshot e albero UI catturati.")
             logger.info("Perception: Successfully captured screen and UI tree")
             logger.debug(f"UI tree length: {len(ui_tree)} characters")
             
         except Exception as e:
             error_msg = f"Errore durante la percezione: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            print(f"❌ {error_msg}")
+            log_status(f"❌ {error_msg}")
             # Add error to history and continue to allow recovery
             history.append(f"ERRORE PERCEZIONE: {error_msg}")
             continue
+
+        if cancelled():
+            log_status("🛑 Task cancellato dall'utente durante la fase di percezione.")
+            if cancel_event:
+                cancel_event.clear()
+            return "CANCELLATO: Task interrotto dall'utente"
         
         # ===== STEP B: REASON (Call Gemini) =====
         try:
@@ -125,9 +257,15 @@ def run_agent_loop(user_command: str) -> str:
         except Exception as e:
             error_msg = f"Errore durante il ragionamento: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            print(f"❌ {error_msg}")
+            log_status(f"❌ {error_msg}")
             history.append(f"ERRORE RAGIONAMENTO: {error_msg}")
             continue
+
+        if cancelled():
+            log_status("🛑 Task cancellato dall'utente durante la fase di ragionamento.")
+            if cancel_event:
+                cancel_event.clear()
+            return "CANCELLATO: Task interrotto dall'utente"
         
         # ===== STEP C: ACT (Dispatch the Action) =====
         observation: str = ""
@@ -138,15 +276,15 @@ def run_agent_loop(user_command: str) -> str:
                 tool_name = function_call.name
                 tool_args = dict(function_call.args)
 
-                print(f"🧠 PENSIERO: Il modello ha deciso di chiamare lo strumento '{tool_name}'")
-                print(f"   Argomenti: {tool_args}")
+                log_status(f"🧠 PENSIERO: Il modello ha deciso di chiamare lo strumento '{tool_name}'")
+                log_status(f"   Argomenti: {tool_args}")
                 logger.info("Action: Dispatching tool '%s' with args: %s", tool_name, tool_args)
 
                 if tool_name == "finish_task":
                     task_completed = True
                     summary = tool_args.get("summary", "Task completato")
                     observation = f"✅ TASK COMPLETATO: {summary}"
-                    print(f"\n{observation}\n")
+                    log_status(f"\n{observation}\n")
                     logger.info("Task marked as completed: %s", summary)
 
                     history.append("PENSIERO: finish_task chiamato")
@@ -158,7 +296,7 @@ def run_agent_loop(user_command: str) -> str:
                         f"Errore: Strumento '{tool_name}' non trovato nei tool disponibili."
                     )
                     logger.error(observation)
-                    print(f"❌ {observation}")
+                    log_status(f"❌ {observation}")
                 else:
                     tool_function = AVAILABLE_TOOLS[tool_name]
                     try:
@@ -180,17 +318,23 @@ def run_agent_loop(user_command: str) -> str:
                         logger.error(observation, exc_info=True)
             else:
                 observation = str(response)
-                print("💬 PENSIERO: Il modello ha risposto con del testo:")
-                print(f"   {observation}")
+                log_status("💬 PENSIERO: Il modello ha risposto con del testo:")
+                log_status(f"   {observation}")
                 logger.info("Action: Model responded with text instead of function call")
 
         except Exception as e:
             observation = f"Errore durante il dispatch dell'azione: {str(e)}"
             logger.error(observation, exc_info=True)
-            print(f"❌ {observation}")
+            log_status(f"❌ {observation}")
+
+        if cancelled():
+            log_status("🛑 Task cancellato dall'utente durante l'esecuzione dell'azione.")
+            if cancel_event:
+                cancel_event.clear()
+            return "CANCELLATO: Task interrotto dall'utente"
         
         # ===== STEP D: VERIFY & UPDATE HISTORY (Feedback) =====
-        print(f"👁️  OSSERVAZIONE: {observation}")
+        log_status(f"👁️  OSSERVAZIONE: {observation}")
         
         # Update history with thought and observation for next iteration
         if _is_function_call(response):
@@ -207,9 +351,12 @@ def run_agent_loop(user_command: str) -> str:
     
     # ===== HANDLE LOOP TERMINATION =====
     if not task_completed:
+        if cancelled():
+            log_status("🛑 Task cancellato dall'utente.")
+            return "CANCELLATO: Task interrotto dall'utente"
         failure_msg = f"⚠️  L'agente non è riuscito a completare il task entro {MAX_TURNS} turni."
         logger.warning(failure_msg)
-        print(f"\n{failure_msg}\n")
+        log_status(f"\n{failure_msg}\n")
         return f"FALLITO: Task non completato dopo {MAX_TURNS} turni"
     
     return "SUCCESSO: Task completato"
