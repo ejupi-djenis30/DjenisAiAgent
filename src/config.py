@@ -95,6 +95,17 @@ class AgentConfig:
     # Miscellaneous
     config_source: str = field(default="environment", init=False)
 
+    # Local transcription settings
+    enable_local_transcription: bool = field(
+        default_factory=lambda: _env_bool("DJENIS_LOCAL_TRANSCRIPTION", False)
+    )
+    vosk_model_path: str = field(
+        default_factory=lambda: os.getenv("DJENIS_VOSK_MODEL_PATH", "")
+    )
+    transcription_sample_rate: int = field(
+        default_factory=lambda: _env_int("DJENIS_TRANSCRIPTION_SAMPLE_RATE", 16000)
+    )
+
     def validate(self) -> bool:
         """Validate configuration settings and ensure secrets are present."""
 
@@ -111,6 +122,11 @@ class AgentConfig:
 
         if not 1 <= self.screenshot_quality <= 100:
             raise ValueError("DJENIS_SCREENSHOT_QUALITY must be between 1 and 100")
+
+        if self.enable_local_transcription and not self.vosk_model_path.strip():
+            raise ValueError(
+                "DJENIS_LOCAL_TRANSCRIPTION è abilitato ma DJENIS_VOSK_MODEL_PATH non è impostato"
+            )
 
         return True
 

@@ -17,4 +17,13 @@ pyautogui
 # Web Server and WebSocket Support
 fastapi
 uvicorn
-python-websockets
+websockets
+
+# Local audio transcription
+vosk
+
+# Testing
+pytest
+pytest-asyncio
+
+python-multipart

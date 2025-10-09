@@ -39,6 +39,12 @@ This cycle repeats until the task is completed or max turns is reached.
 - **Backend fallback**: UIA (modern) → Win32 (legacy) for maximum compatibility
 - **Error handling**: No crashes—failed actions return descriptive messages for self-correction
 - **Dynamic UI support**: Waits for elements to be ready before interaction
+- **Locator caching**: Use the `element_id` tool to mint stable tokens (e.g. `element:abc123`) that work across `click`, `type_text` and `get_text`
+
+### 🎙️ Local Voice Transcription (optional)
+- **Browser-first**: Uses the Web Speech API when available for zero-setup voice commands
+- **Offline fallback**: Seamlessly switches to an on-device Vosk model via `/api/transcribe`
+- **Configurable**: Enable with `DJENIS_LOCAL_TRANSCRIPTION=1` and point `DJENIS_VOSK_MODEL_PATH` to a downloaded Vosk model directory
 
 ### 🧠 Gemini Function Calling
 - **Structured responses**: Model outputs machine-readable function calls (no fragile parsing)
@@ -94,6 +100,12 @@ $env:DJENIS_LOG_LEVEL="DEBUG"
 py -3 .\main.py "your command"
 ```
 
+> **Optional – Enable local transcription**
+> 1. Download a Vosk model (e.g. `vosk-model-small-it-0.22`) and extract it locally.
+> 2. Set `DJENIS_LOCAL_TRANSCRIPTION="1"` and `DJENIS_VOSK_MODEL_PATH="C:\\path\\to\\vosk-model"`.
+> 3. Install dependencies: `pip install -r requirements.txt` (includes `vosk`).
+> The web UI will automatically fall back to the local endpoint when browser speech recognition is unavailable or blocked.
+
 See [QUICKSTART.md](QUICKSTART.md) for detailed usage examples.
 
 ## Available Tools
@@ -102,12 +114,15 @@ The agent can call these tools via Gemini Function Calling:
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
+| `element_id` | Genera un identificatore stabile per un elemento UI | `query: str, control_type?: str, auto_id?: str, index?: int, exact?: bool` |
 | `click` | Click a UI element | `element_id: str` |
 | `type_text` | Type text into an input field | `element_id: str, text: str` |
 | `get_text` | Read text from a UI element | `element_id: str` |
 | `scroll` | Scroll in a direction | `direction: str, amount: int` |
 | `press_hotkey` | Send keyboard shortcuts | `keys: str` |
 | `finish_task` | Mark task as complete | `summary: str` |
+
+> ℹ️ Each UI tree line is prefixed with an index `[n]`. You can resolve a control by running `element_id(query="#12")` or combine filters such as `element_id(query="Save", control_type="Button")`.
 
 ## Configuration Options
 
@@ -121,6 +136,9 @@ Set via environment variables or `.env`:
 | `DJENIS_ACTION_TIMEOUT` | `30` | Timeout per action (seconds) |
 | `DJENIS_TEMPERATURE` | `0.7` | Model creativity (0.0-1.0) |
 | `DJENIS_LOG_LEVEL` | `INFO` | Logging verbosity |
+| `DJENIS_LOCAL_TRANSCRIPTION` | `0` | Enable local Vosk-based transcription fallback |
+| `DJENIS_VOSK_MODEL_PATH` | *(optional)* | Path to a Vosk model directory (required when local transcription is enabled) |
+| `DJENIS_TRANSCRIPTION_SAMPLE_RATE` | `16000` | Target sample rate for local transcription (Hz) |
 
 ## Troubleshooting
 

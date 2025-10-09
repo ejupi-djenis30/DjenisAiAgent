@@ -1,13 +1,9 @@
-"""
-Screen Capture Module
+"""Screen capture and UI tree utilities."""
 
-This module handles capturing screenshots of the desktop for perception.
-"""
+from __future__ import annotations
 
-import io
-import re
-import contextlib
-from typing import Optional, Tuple
+import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 import pyautogui
 from PIL import Image
@@ -15,67 +11,156 @@ from pywinauto import Desktop
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError as PywinautoTimeoutError
 
+logger = logging.getLogger(__name__)
 
-def capture_ui_tree(window) -> str:
-    """
-    Extract and format the UI element hierarchy from a pywinauto window object.
-    
-    This function captures the structural information of UI elements, which complements
-    the visual screenshot. It uses print_control_identifiers() to get the hierarchy
-    and cleans up the output for better LLM consumption.
-    
-    Args:
-        window: A pywinauto window object to extract UI tree from.
-        
-    Returns:
-        str: A cleaned, formatted string representation of the UI element hierarchy.
-    """
-    # Create an in-memory text buffer to capture printed output
-    buffer = io.StringIO()
-    
-    # Redirect stdout to the buffer and capture the UI tree
-    with contextlib.redirect_stdout(buffer):
+MAX_SNAPSHOT_DEPTH = 4
+LAST_UI_SNAPSHOT: List[Dict[str, Any]] = []
+
+
+def _safe_str(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        return str(value).strip()
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+def _extract_metadata(wrapper: Any, depth: int, index: int, include_wrappers: bool) -> Dict[str, Any]:
+    info = getattr(wrapper, "element_info", None)
+
+    def attr(name: str) -> str:
+        return _safe_str(getattr(info, name, "")) if info is not None else ""
+
+    metadata: Dict[str, Any] = {
+        "index": index,
+        "depth": depth,
+        "title": _safe_str(getattr(wrapper, "window_text", lambda: "")()),
+        "name": attr("name"),
+        "auto_id": attr("automation_id"),
+        "control_type": attr("control_type"),
+        "class_name": attr("class_name"),
+        "control_id": attr("control_id"),
+        "handle": getattr(info, "handle", None) if info is not None else None,
+    }
+
+    try:
+        metadata["friendly_class"] = _safe_str(wrapper.friendly_class_name())
+    except Exception:  # pragma: no cover - backend differences
+        metadata["friendly_class"] = ""
+
+    selector_candidates = [value for value in (metadata["auto_id"], metadata["title"], metadata["name"]) if value]
+    metadata["selector"] = selector_candidates[0] if selector_candidates else ""
+
+    search_hints: Dict[str, str] = {}
+    if metadata["selector"]:
+        search_hints["title"] = metadata["selector"]
+    if metadata["auto_id"]:
+        search_hints["auto_id"] = metadata["auto_id"]
+    control_type = metadata["control_type"] or metadata["friendly_class"] or metadata["class_name"]
+    if control_type:
+        search_hints["control_type"] = control_type
+    metadata["search_hints"] = search_hints
+
+    if include_wrappers:
+        metadata["wrapper"] = wrapper
+
+    return metadata
+
+
+def build_control_snapshot(
+    window: Any,
+    *,
+    max_depth: int = MAX_SNAPSHOT_DEPTH,
+    include_wrappers: bool = False,
+) -> List[Dict[str, Any]]:
+    """Enumerate controls for the active window up to the requested depth."""
+
+    results: List[Dict[str, Any]] = []
+    counter = 0
+
+    def _walk(node: Any, depth: int) -> None:
+        nonlocal counter
+        if depth > max_depth:
+            return
+
+        counter += 1
+        results.append(_extract_metadata(node, depth, counter, include_wrappers))
+
+        if depth >= max_depth:
+            return
+
         try:
-            # Print the control identifiers with limited depth to keep output manageable
-            # Use wrapper_object() to get the actual window wrapper if needed
-            if hasattr(window, 'print_control_identifiers'):
-                window.print_control_identifiers(depth=4)
-            elif hasattr(window, 'wrapper_object'):
-                window.wrapper_object().print_control_identifiers(depth=4)
-            else:
-                # If neither method exists, try to get window info directly
-                return f"Window: {window.window_text()}\nClass: {window.class_name()}"
-        except Exception as e:
-            return f"Error capturing UI tree: {str(e)}"
-    
-    # Get the complete string from the buffer
-    ui_tree_raw = buffer.getvalue()
-    
-    # If buffer is empty, try alternative approach
-    if not ui_tree_raw.strip():
-        try:
-            return f"Window: {window.window_text()}\nClass: {window.class_name()}\nControls: {len(window.children())}"
-        except:
-            return "Could not extract detailed UI tree information"
-    
-    # Clean up the output for better LLM consumption
-    lines = ui_tree_raw.split('\n')
-    cleaned_lines = []
-    
-    for line in lines:
-        # Remove positional coordinates with various formats:
-        # (L123, T456, R789, B910) or (L-13, T-13, R2893, B1837)
-        line = re.sub(r'\(L-?\d+,\s*T-?\d+,\s*R-?\d+,\s*B-?\d+\)', '', line)
-        
-        # Filter out lines containing verbose 'child_window' phrase
-        if 'child_window' not in line.lower():
-            # Only add non-empty lines after cleaning
-            cleaned_line = line.strip()
-            if cleaned_line:
-                cleaned_lines.append(cleaned_line)
-    
-    # Join the cleaned lines back into a single string
-    return '\n'.join(cleaned_lines)
+            children = node.children()
+        except Exception as exc:  # pragma: no cover - backend-specific failures
+            logger.debug("Unable to enumerate children for node %s: %s", results[-1].get("selector") or results[-1]["index"], exc)
+            return
+
+        for child in children:
+            _walk(child, depth + 1)
+
+    _walk(window, 0)
+    return results
+
+
+def snapshot_to_text(snapshot: List[Dict[str, Any]]) -> str:
+    """Convert a control snapshot into a readable tree for the LLM."""
+
+    if not snapshot:
+        return "Nessuna finestra attiva trovata."
+
+    lines: List[str] = []
+    for entry in snapshot:
+        indent = "  " * entry["depth"]
+        type_label = entry.get("control_type") or entry.get("friendly_class") or entry.get("class_name") or "Control"
+        parts = [f"type={type_label}"]
+
+        title = entry.get("title")
+        if title:
+            parts.append(f'title="{title}"')
+
+        name = entry.get("name")
+        if name and name != title:
+            parts.append(f'name="{name}"')
+
+        auto_id = entry.get("auto_id")
+        if auto_id:
+            parts.append(f'auto_id="{auto_id}"')
+
+        control_id = entry.get("control_id")
+        if control_id:
+            parts.append(f"control_id={control_id}")
+
+        selector = entry.get("selector")
+        if selector and selector not in (title, name, auto_id):
+            parts.append(f'selector="{selector}"')
+
+        lines.append(f"{indent}[{entry['index']}] " + " | ".join(parts))
+
+    return "\n".join(lines)
+
+
+def capture_ui_tree(window: Any) -> str:
+    """Capture the UI tree and cache the underlying snapshot for tool reuse."""
+
+    global LAST_UI_SNAPSHOT
+    snapshot = build_control_snapshot(window, include_wrappers=True)
+    LAST_UI_SNAPSHOT = snapshot
+    return snapshot_to_text(snapshot)
+
+
+def refresh_ui_snapshot(window: Any) -> List[Dict[str, Any]]:
+    """Rebuild and cache the UI snapshot without producing formatted text."""
+
+    global LAST_UI_SNAPSHOT
+    LAST_UI_SNAPSHOT = build_control_snapshot(window, include_wrappers=True)
+    return LAST_UI_SNAPSHOT
+
+
+def get_latest_ui_snapshot() -> List[Dict[str, Any]]:
+    """Return the most recent UI snapshot captured during perception."""
+
+    return LAST_UI_SNAPSHOT
 
 
 def get_multimodal_context() -> Tuple[Image.Image, str]:
@@ -97,6 +182,8 @@ def get_multimodal_context() -> Tuple[Image.Image, str]:
     # Step 1: Capture the visual state of the screen
     screenshot = pyautogui.screenshot()
     
+    global LAST_UI_SNAPSHOT
+
     # Step 2: Capture the structural UI information with fallback mechanisms
     ui_tree_text = ""
 
@@ -124,6 +211,8 @@ def get_multimodal_context() -> Tuple[Image.Image, str]:
                 "Nessuna finestra attiva trovata o impossibile accedere agli elementi UI. "
                 f"Dettagli: {details}"
             )
+            logger.warning("Impossibile acquisire l'albero UI: %s", details)
+            LAST_UI_SNAPSHOT = []
     
     return screenshot, ui_tree_text
 
