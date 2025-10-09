@@ -12,8 +12,8 @@ from typing import Optional, Tuple, List, Dict, Any
 import pytesseract
 import psutil
 
-from logger import setup_logger
-from config import config
+from src.utils.logger import setup_logger
+from src.config.config import config
 
 logger = setup_logger("UIAutomation")
 
@@ -48,6 +48,9 @@ class UIAutomationEngine:
         if filename is None:
             filepath = config.screenshots_dir / f"screenshot_{int(time.time())}.png"
         else:
+            # Ensure filename has .png extension
+            if not filename.endswith(('.png', '.jpg', '.jpeg')):
+                filename = f"{filename}.png"
             filepath = config.screenshots_dir / filename
         screenshot.save(filepath)
         logger.debug(f"Screenshot saved: {filepath}")

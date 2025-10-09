@@ -5,8 +5,8 @@ from typing import Optional, List, Dict, Any
 import google.generativeai as genai
 from PIL import Image
 
-from logger import setup_logger
-from config import config
+from src.utils.logger import setup_logger
+from src.config.config import config
 from src.core.prompts import prompt_builder
 
 logger = setup_logger("GeminiClient")

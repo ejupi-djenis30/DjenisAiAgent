@@ -1,18 +1,79 @@
 """Enhanced AI Agent with improved architecture and UI overlay."""
 
+from __future__ import annotations
+
 import time
-from typing import Dict, Any, List, Optional
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Callable, Deque, Dict, Any, List, Optional
 from datetime import datetime
 import keyboard
 
-from logger import setup_logger
-from config import config
+from src.utils.logger import setup_logger
+from src.config.config import config
 from src.core.gemini_client import EnhancedGeminiClient
-from src.core.executor import ActionExecutor
+from src.core.executor import ActionExecutor, ActionResult
 from src.core.ui_overlay import get_overlay
-from ui_automation import UIAutomationEngine
+from src.automation.ui_automation import UIAutomationEngine
 
 logger = setup_logger("EnhancedAgent")
+
+
+class StepStatus(str, Enum):
+    """Lifecycle states for an execution step."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+@dataclass
+class StepContext:
+    """Track reasoning metadata for a single plan step."""
+
+    index: int
+    raw: Dict[str, Any]
+    attempts: int = 0
+    status: StepStatus = StepStatus.PENDING
+    last_result: Optional[ActionResult] = None
+    adaptive_notes: List[str] = field(default_factory=list)
+
+    def begin(self) -> None:
+        self.status = StepStatus.RUNNING
+        self.attempts += 1
+
+    def complete(self, result: ActionResult) -> None:
+        self.last_result = result
+        self.status = StepStatus.COMPLETED if result.success else StepStatus.FAILED
+
+    def add_note(self, note: str) -> None:
+        self.adaptive_notes.append(note)
+
+    @property
+    def action(self) -> str:
+        return self.raw.get("action", "unknown")
+
+    @property
+    def target(self) -> str:
+        return self.raw.get("target", "")
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return self.raw.get("parameters", {})
+
+
+@dataclass
+class FailureHandlingOutcome:
+    """Result of adaptive failure handling logic."""
+
+    resolved: bool
+    added_steps: int = 0
+
+    def __bool__(self) -> bool:  # pragma: no cover - bool semantics helper
+        return self.resolved
 
 
 class EnhancedAIAgent:
@@ -136,6 +197,10 @@ class EnhancedAIAgent:
                 steps = self.task_plan.get("steps", [])
                 self.overlay.update_progress(0, len(steps))
                 self.overlay.add_log(f"Plan generated: {len(steps)} steps", "INFO")
+                if steps:
+                    next_step = steps[0]
+                    preview = f"{next_step.get('action', 'unknown')} → {next_step.get('target', '')}"
+                    self.overlay.update_step_detail(f"Upcoming: {preview}")
             
             # Step 2: Execute the plan with enhanced monitoring
             logger.info(f"⚡ Executing plan...")
@@ -205,14 +270,18 @@ class EnhancedAIAgent:
         }
     
     def _execute_plan(self, steps: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Execute the task plan with DYNAMIC adaptation and verification."""
-        
+        """Execute the task plan with dynamic adaptation and richer telemetry."""
+
         completed_steps = 0
-        total_steps = len(steps)
-        
-        # Dynamic execution: we can add/modify steps on the fly
-        remaining_steps = list(steps)  # Make a copy we can modify
-        
+        step_sequence: List[StepContext] = []
+
+        def _new_context(step_payload: Dict[str, Any]) -> StepContext:
+            ctx = StepContext(index=len(step_sequence) + 1, raw=step_payload)
+            step_sequence.append(ctx)
+            return ctx
+
+        remaining_steps: Deque[StepContext] = deque(_new_context(step) for step in steps)
+
         while remaining_steps:
             if not self.is_running:
                 logger.warning("⚠️  Execution aborted by user")
@@ -221,8 +290,7 @@ class EnhancedAIAgent:
                     "error": "Aborted by user",
                     "steps_completed": completed_steps
                 }
-            
-            # Check timeout
+
             if self.task_start_time and time.time() - self.task_start_time > config.max_task_duration:
                 logger.error("⏱️  Task timeout exceeded")
                 return {
@@ -230,172 +298,106 @@ class EnhancedAIAgent:
                     "error": f"Task timeout exceeded ({config.max_task_duration}s)",
                     "steps_completed": completed_steps
                 }
-            
-            # Get next step
-            step = remaining_steps.pop(0)
-            step_num = completed_steps + 1
-            action = step.get("action", "unknown")
-            target = step.get("target", "")
-            parameters = step.get("parameters", {})
-            
-            logger.info(f"⚡ Step {step_num}/{total_steps}: {action} → {target}")
-            print(f"⚡ Step {step_num}/{total_steps + len(remaining_steps)}: {action}")
+
+            ctx = remaining_steps.popleft()
+            ctx.begin()
+
+            step_display_index = completed_steps + 1
+            action = ctx.action
+            target = ctx.target
+            parameters = ctx.parameters
+
+            logger.info(f"⚡ Step {step_display_index}/{len(step_sequence)}: {action} → {target}")
+            print(f"⚡ Step {step_display_index}/{len(step_sequence)}: {action}")
             print(f"   Target: {target}")
-            
-            # Update UI
-            if self.overlay:
-                self.overlay.update_progress(step_num, total_steps + len(remaining_steps), action)
-                self.overlay.add_log(f"Step {step_num}: {action} - {target}", "INFO")
-            
-            if parameters and parameters != {}:
+
+            if parameters:
                 print(f"   Parameters: {parameters}")
-            
-            # Hide UI for screenshot
-            if self.overlay and action in ["screenshot", "take_screenshot", "take_screenshot_region"]:
+
+            if self.overlay:
+                total_remaining = len(remaining_steps) + 1
+                self.overlay.update_progress(step_display_index, len(step_sequence), action)
+                self.overlay.add_log(
+                    f"Step {step_display_index} ({ctx.attempts} attempt{'s' if ctx.attempts != 1 else ''}): "
+                    f"{action} - {target}",
+                    "INFO"
+                )
+                self.overlay.update_step_detail(self._format_step_detail(ctx))
+                if ctx.attempts > 1:
+                    self.overlay.show_toast(
+                        f"Retrying step {step_display_index} ({ctx.attempts - 1} retries)",
+                        level="warning"
+                    )
+
+            hide_overlay = bool(self.overlay) and action in {"screenshot", "take_screenshot", "take_screenshot_region"}
+            if hide_overlay and self.overlay:
                 self.overlay.hide()
                 time.sleep(0.2)
-            
-            # Take screenshot BEFORE action
+
             before_screenshot = None
             if config.enable_screen_recording:
                 before_screenshot = self.ui.take_screenshot()
-            
-            # Execute the action
-            result = self.executor.execute(action, target, parameters)
-            
-            # Take screenshot AFTER action
+
+            action_result = self.executor.execute(action, target, parameters)
+            ctx.complete(action_result)
+
             after_screenshot = None
             if config.enable_screen_recording:
-                time.sleep(0.5)  # Wait for UI to update
+                time.sleep(0.5)
                 after_screenshot = self.ui.take_screenshot()
-            
-            # Show UI again
-            if self.overlay and action in ["screenshot", "take_screenshot", "take_screenshot_region"]:
+
+            if hide_overlay and self.overlay:
                 self.overlay.show()
-            
-            # Record in history
+
             self.execution_history.append({
-                "step": step_num,
+                "step": step_display_index,
                 "action": action,
                 "target": target,
                 "parameters": parameters,
-                "result": result,
+                "result": action_result.to_dict(),
                 "timestamp": datetime.now().isoformat(),
-                "type": "action"
+                "type": "action",
             })
-            
-            # ============== DYNAMIC VERIFICATION & ADAPTATION ==============
-            
-            # For critical actions, VERIFY with AI if they actually worked
-            if action in ["click", "type_text", "press_key", "hotkey", "focus_window"]:
-                logger.info(f"   🔍 Verifying step result with AI...")
-                print(f"   🔍 Verifying with AI vision...")
-                
-                verification = self._verify_step_with_ai(
-                    step=step,
+
+            if not action_result.success:
+                handled = self._handle_action_failure(
+                    ctx=ctx,
+                    remaining_steps=remaining_steps,
+                    new_context=_new_context,
                     before_screenshot=before_screenshot,
-                    after_screenshot=after_screenshot,
-                    expected_outcome=step.get("expected_outcome", target)
+                    after_screenshot=after_screenshot
                 )
-                
-                if not verification.get("success", True):
-                    # Step FAILED verification!
-                    logger.warning(f"   ⚠️  AI detected step didn't work: {verification.get('issue')}")
-                    print(f"   ⚠️  AI detected issue: {verification.get('issue')}")
-                    
-                    if self.overlay:
-                        self.overlay.add_log(f"Step verification failed: {verification.get('issue')}", "WARNING")
-                    
-                    # Ask AI for CORRECTIVE ACTIONS
-                    logger.info(f"   🧠 Asking AI for corrective actions...")
-                    print(f"   🧠 Generating corrective plan...")
-                    
-                    corrective_steps = self._generate_corrective_steps(
-                        failed_step=step,
-                        issue=verification.get("issue"),
-                        screenshot=after_screenshot,
-                        original_goal=step.get("expected_outcome", target)
-                    )
-                    
-                    if corrective_steps:
-                        logger.info(f"   🔄 AI generated {len(corrective_steps)} corrective steps")
-                        print(f"   🔄 AI generated {len(corrective_steps)} corrective steps")
-                        
-                        # INSERT corrective steps at the BEGINNING of remaining steps
-                        remaining_steps = corrective_steps + remaining_steps
-                        total_steps += len(corrective_steps)
-                        
-                        if self.overlay:
-                            self.overlay.add_log(f"Added {len(corrective_steps)} corrective steps", "INFO")
-                        
-                        # Continue to next iteration (execute corrective steps)
-                        continue
-                    else:
-                        # No corrective steps possible, retry original step
-                        logger.warning(f"   ⚠️  No corrective steps available, retrying...")
-                        print(f"   ⚠️  Retrying original action...")
-                        
-                        # Retry with slight delay
-                        time.sleep(1.0)
-                        result = self.executor.execute(action, target, parameters)
-                        
-                        if not result.get("success", False):
-                            error_msg = f"Step {step_num} failed and could not be corrected"
-                            logger.error(f"   ❌ {error_msg}")
-                            print(f"   ❌ {error_msg}\n")
-                            
-                            return {
-                                "success": False,
-                                "error": error_msg,
-                                "steps_completed": completed_steps,
-                                "failed_step": step
-                            }
-                else:
-                    logger.info(f"   ✅ AI verified step succeeded")
-                    print(f"   ✅ AI verified success")
-            
-            # Basic success check
-            if not result.get("success", False):
-                logger.warning(f"   ⚠️  Step execution failed: {result.get('error', 'Unknown error')}")
-                
-                # Simple retry with exponential backoff
-                retry_count = 0
-                retry_delay = 1.0
-                
-                while retry_count < config.max_retries and not result.get("success", False):
-                    retry_count += 1
-                    logger.info(f"   🔄 Retry {retry_count}/{config.max_retries}")
-                    print(f"   🔄 Retry {retry_count}/{config.max_retries} (waiting {retry_delay}s)...")
-                    
-                    time.sleep(retry_delay)
-                    retry_delay *= 1.5
-                    
-                    result = self.executor.execute(action, target, parameters)
-                    
-                    if result.get("success", False):
-                        logger.info(f"   ✅ Retry successful!")
-                        print(f"   ✅ Retry successful!\n")
-                        break
-                
-                if not result.get("success", False):
-                    error_msg = (f"Step {step_num} failed after {config.max_retries} retries: "
-                               f"{result.get('error', 'Unknown error')}")
-                    logger.error(f"   ❌ {error_msg}")
+
+                if not handled:
+                    error_msg = action_result.error or "Unknown execution error"
+                    logger.error(f"   ❌ Step failed irrecoverably: {error_msg}")
                     print(f"   ❌ {error_msg}\n")
-                    
                     return {
                         "success": False,
                         "error": error_msg,
                         "steps_completed": completed_steps,
-                        "failed_step": step
+                        "failed_step": ctx.raw,
                     }
-            else:
-                logger.info(f"   ✅ Step completed successfully")
-                print(f"   ✅ Completed\n")
-            
+
+                if self.overlay and handled.added_steps:
+                    self.overlay.add_log(
+                        f"Added {handled.added_steps} adaptive step(s) after failure",
+                        "INFO"
+                    )
+                continue  # jump to next iteration (retry/adaptive step enqueued)
+
+            self._post_success_verification(
+                ctx=ctx,
+                before_screenshot=before_screenshot,
+                after_screenshot=after_screenshot,
+                remaining_steps=remaining_steps,
+                new_context=_new_context
+            )
+
+            logger.info("   ✅ Step completed successfully")
+            print("   ✅ Completed\n")
+
             completed_steps += 1
-            
-            # Wait between steps
             time.sleep(config.action_delay)
         
         # Verify final success
@@ -415,6 +417,211 @@ class EnhancedAIAgent:
             "steps_completed": completed_steps
         }
     
+    def _handle_action_failure(
+        self,
+        ctx: StepContext,
+        remaining_steps: Deque[StepContext],
+        new_context: Callable[[Dict[str, Any]], StepContext],
+        before_screenshot: Optional[Any],
+        after_screenshot: Optional[Any]
+    ) -> FailureHandlingOutcome:
+        """Attempt to recover from an action failure."""
+
+        result = ctx.last_result
+        error_msg = result.error if result else "Unknown error"
+
+        logger.warning(f"   ⚠️  Step execution failed: {error_msg}")
+        ctx.add_note(f"Failure: {error_msg}")
+
+        if self.overlay:
+            self.overlay.update_step_detail(self._format_step_detail(ctx))
+
+        if self.overlay:
+            self.overlay.add_log(
+                f"Step {ctx.index} failed: {error_msg}",
+                "ERROR"
+            )
+
+        # Retry if we still have attempts remaining
+        if ctx.attempts <= config.max_retries:
+            delay = min(1.0 * (1.5 ** (ctx.attempts - 1)), 6.0)
+            logger.info(f"   🔄 Scheduling retry #{ctx.attempts} after {delay:.1f}s")
+
+            if self.overlay:
+                self.overlay.show_toast(
+                    f"Retrying step {ctx.index} in {delay:.1f}s",
+                    level="info"
+                )
+                self.overlay.update_step_detail(self._format_step_detail(ctx))
+
+            time.sleep(delay)
+            ctx.status = StepStatus.PENDING
+            remaining_steps.appendleft(ctx)
+
+            self.execution_history.append({
+                "type": "retry_scheduled",
+                "step": ctx.index,
+                "error": error_msg,
+                "attempt": ctx.attempts,
+                "timestamp": datetime.now().isoformat(),
+            })
+
+            return FailureHandlingOutcome(resolved=True)
+
+        # Exhausted retries – ask for corrective actions
+        corrective_steps = self._generate_corrective_steps(
+            failed_step=ctx.raw,
+            issue=error_msg,
+            screenshot=after_screenshot or before_screenshot,
+            original_goal=ctx.raw.get("expected_outcome", ctx.target)
+        )
+
+        if corrective_steps:
+            added = self._inject_steps(corrective_steps, remaining_steps, new_context)
+            logger.info(f"   🔄 Injected {added} corrective step(s) from AI")
+            ctx.add_note(f"Injected {added} corrective step(s)")
+            if self.overlay:
+                self.overlay.update_step_detail(self._format_step_detail(ctx))
+            return FailureHandlingOutcome(resolved=True, added_steps=added)
+
+        # Fall back to Gemini next-action suggestion
+        fallback_step = self._consult_ai_for_next_action(ctx)
+        if fallback_step:
+            added_ctx = new_context(fallback_step)
+            remaining_steps.appendleft(added_ctx)
+            ctx.add_note("Fallback action injected")
+            logger.info("   🧠 Added fallback action from Gemini")
+            if self.overlay:
+                self.overlay.update_step_detail(self._format_step_detail(ctx))
+            return FailureHandlingOutcome(resolved=True, added_steps=1)
+
+        return FailureHandlingOutcome(resolved=False)
+
+    def _post_success_verification(
+        self,
+        ctx: StepContext,
+        before_screenshot: Optional[Any],
+        after_screenshot: Optional[Any],
+        remaining_steps: Deque[StepContext],
+        new_context: Callable[[Dict[str, Any]], StepContext]
+    ) -> None:
+        """Perform AI verification and enqueue corrective steps if necessary."""
+
+        action = ctx.action
+        if action not in {"click", "type_text", "press_key", "hotkey", "focus_window"}:
+            return
+
+        logger.info("   🔍 Verifying step result with AI...")
+        print("   🔍 Verifying with AI vision...")
+
+        verification = self._verify_step_with_ai(
+            step=ctx.raw,
+            before_screenshot=before_screenshot,
+            after_screenshot=after_screenshot,
+            expected_outcome=ctx.raw.get("expected_outcome", ctx.target)
+        )
+
+        if verification.get("success", True):
+            logger.info("   ✅ AI verified step succeeded")
+            if self.overlay:
+                self.overlay.add_log("Step verified via vision", "INFO")
+            return
+
+        issue = verification.get("issue", "Verification failed")
+        logger.warning(f"   ⚠️  Verification failed: {issue}")
+        ctx.add_note(f"Verification issue: {issue}")
+
+        if self.overlay:
+            self.overlay.add_log(f"Verification failed: {issue}", "WARNING")
+            self.overlay.show_toast("Verification failed – adjusting plan", level="warning")
+            self.overlay.update_step_detail(self._format_step_detail(ctx))
+
+        corrective_steps = self._generate_corrective_steps(
+            failed_step=ctx.raw,
+            issue=issue,
+            screenshot=after_screenshot,
+            original_goal=ctx.raw.get("expected_outcome", ctx.target)
+        )
+
+        if corrective_steps:
+            added = self._inject_steps(corrective_steps, remaining_steps, new_context)
+            logger.info(f"   🔄 Verification injected {added} corrective step(s)")
+            ctx.add_note(f"Verification corrective steps: {added}")
+            return
+
+        # As last resort, re-run the original step
+        ctx.status = StepStatus.PENDING
+        remaining_steps.appendleft(ctx)
+        logger.info("   🔁 Re-queueing original step due to verification uncertainty")
+
+    def _inject_steps(
+        self,
+        steps: List[Dict[str, Any]],
+        remaining_steps: Deque[StepContext],
+        new_context: Callable[[Dict[str, Any]], StepContext]
+    ) -> int:
+        """Convert raw step payloads into contexts and queue them next."""
+
+        contexts = [new_context(step_payload) for step_payload in steps]
+        for ctx in reversed(contexts):
+            remaining_steps.appendleft(ctx)
+        return len(contexts)
+
+    def _consult_ai_for_next_action(self, ctx: StepContext) -> Optional[Dict[str, Any]]:
+        """Ask Gemini for the next best action when stuck."""
+
+        try:
+            recent = [
+                f"{h.get('action')} -> {'✅' if h.get('result', {}).get('success') else '❌'}"
+                for h in self.execution_history[-5:]
+                if h.get('type') == 'action'
+            ]
+            current_state = {
+                "active_window": self.ui.get_active_window_title(),
+                "step_error": ctx.last_result.error if ctx.last_result else "Unknown",
+            }
+
+            goal = ctx.raw.get("expected_outcome") or self.current_task or ctx.target
+
+            suggestion = self.gemini.get_next_action(
+                current_state=str(current_state),
+                goal=str(goal),
+                previous_actions=recent
+            )
+
+            action_name = suggestion.get("action")
+            if not action_name:
+                return None
+
+            return {
+                "step_number": ctx.index + 0.1,  # indicate adaptive step
+                "action": action_name,
+                "target": suggestion.get("target", ""),
+                "parameters": suggestion.get("parameters", {}),
+                "expected_outcome": suggestion.get("reasoning", ""),
+            }
+
+        except Exception as e:
+            logger.debug(f"Fallback next-action suggestion failed: {e}")
+            return None
+
+    def _format_step_detail(self, ctx: StepContext) -> str:
+        """Create a human-friendly summary for the overlay."""
+
+        summary_lines = [
+            f"Action: {ctx.action}",
+            f"Target: {ctx.target or '—'}",
+            f"Attempt: {ctx.attempts}",
+        ]
+
+        if ctx.parameters:
+            summary_lines.append(f"Parameters: {ctx.parameters}")
+
+        if ctx.adaptive_notes:
+            summary_lines.append(f"Latest note: {ctx.adaptive_notes[-1]}")
+
+        return "\n".join(summary_lines)
+
     def _verify_completion(self, success_criteria: str) -> Dict[str, Any]:
         """Verify that the task completed successfully."""
         try:

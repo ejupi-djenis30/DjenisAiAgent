@@ -3,7 +3,12 @@ Test script for AI-powered window identification fallback.
 """
 
 import sys
-from ui_automation import UIAutomationEngine
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from src.automation.ui_automation import UIAutomationEngine
 
 def test_window_enumeration():
     """Test getting all open windows."""

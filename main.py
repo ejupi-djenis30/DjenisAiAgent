@@ -4,8 +4,8 @@ import sys
 import argparse
 from colorama import init, Fore, Style
 
-from logger import setup_logger
-from config import config
+from src.utils.logger import setup_logger
+from src.config.config import config
 from src.core.agent import EnhancedAIAgent
 
 # Initialize colorama for Windows
