@@ -40,6 +40,23 @@ class EnhancedGeminiClient:
             "max_output_tokens": config.gemini_max_output_tokens,
         }
         
+        # Dynamically disable thinking for flash models to improve speed
+        is_flash_model = "flash" in self.model_name.lower()
+        if is_flash_model:
+            try:
+                from google.generativeai import types
+
+                thinking_cls = getattr(types, "ThinkingConfig", None)
+                if thinking_cls:
+                    generation_config["thinking_config"] = thinking_cls(
+                        thinking_budget=0
+                    )
+                    logger.info(f"Thinking disabled for flash model: {self.model_name}")
+                else:
+                    logger.debug("ThinkingConfig not available in current SDK version")
+            except (ImportError, AttributeError) as e:
+                logger.debug(f"Could not configure ThinkingConfig (may not be available): {e}")
+        
         self.model = genai.GenerativeModel(  # type: ignore
             model_name=self.model_name,
             generation_config=generation_config  # type: ignore
@@ -53,6 +70,18 @@ class EnhancedGeminiClient:
             logger.warning("OCR engine unavailable - vision-only mode")
         
         logger.info(f"Initialized Enhanced Gemini client with model: {self.model_name}")
+    
+    def generate_content(self, prompt: str) -> str:
+        """
+        Generate content from a text prompt.
+        Simple wrapper for basic text generation.
+        """
+        try:
+            response = self.model.generate_content(prompt)
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Content generation failed: {e}")
+            raise
     
     def generate_text(
         self,
@@ -233,7 +262,7 @@ class EnhancedGeminiClient:
         use_ocr: bool = True
     ) -> Dict[str, Any]:
         """
-        Use vision to locate a UI element in a screenshot.
+        Use vision to locate a UI element and return its bounding box.
         
         Args:
             screenshot: PIL Image to search
@@ -241,7 +270,8 @@ class EnhancedGeminiClient:
             use_ocr: Whether to attempt OCR text search first (recommended)
             
         Returns:
-            Dict with location data and confidence
+            Dict with 'box' key containing [left, top, right, bottom] coordinates,
+            or 'error' key if element not found
         """
         
         # Try OCR-based text search first (faster and more accurate for text elements)
@@ -262,17 +292,16 @@ class EnhancedGeminiClient:
                     if matches:
                         # Use the first high-confidence match
                         best_match = max(matches, key=lambda m: m.confidence)
+                        box = best_match.bounding_box if best_match.bounding_box else (0, 0, 0, 0)
+                        
                         logger.info(
-                            f"OCR found '{element_description}' at {best_match.center} "
+                            f"OCR found '{element_description}' with box {box} "
                             f"(confidence: {best_match.confidence:.1f}%)"
                         )
                         return {
-                            "found": True,
-                            "x": best_match.center[0] if best_match.center else 0,
-                            "y": best_match.center[1] if best_match.center else 0,
-                            "confidence": best_match.confidence,
+                            "box": list(box),
+                            "confidence": best_match.confidence / 100.0,
                             "method": "ocr",
-                            "bounding_box": best_match.bounding_box,
                             "text_matched": best_match.text
                         }
                     else:
@@ -282,7 +311,19 @@ class EnhancedGeminiClient:
                 logger.warning(f"OCR element search failed, falling back to vision: {e}")
         
         # Fall back to vision model
-        prompt = prompt_builder.build_element_location_prompt(element_description)
+        prompt = f"""In this screenshot, locate the UI element described as: '{element_description}'.
+
+Respond with a JSON object containing the bounding box coordinates in this exact format:
+{{
+  "box": [left, top, right, bottom],
+  "confidence": 0.95
+}}
+
+The coordinates should be pixel values relative to the image dimensions.
+If you cannot find the element, respond with:
+{{
+  "error": "Element not found"
+}}"""
 
         prepared_image = self._prepare_image_for_model(screenshot)
 
@@ -294,17 +335,16 @@ class EnhancedGeminiClient:
             result = json.loads(json_text)
             result["method"] = "vision"
             
-            if result.get("found", False):
-                logger.info(f"Vision model found: {element_description} "
-                          f"(confidence: {result.get('confidence', 0)}%)")
+            if "box" in result:
+                logger.info(f"Vision model found '{element_description}' at box {result['box']}")
             else:
                 logger.debug(f"Vision model could not find: {element_description}")
             
             return result
             
         except Exception as e:
-            logger.error(f"Error finding element: {e}")
-            return {"found": False, "error": str(e), "method": "vision"}
+            logger.error(f"Error finding element location: {e}")
+            return {"error": f"Vision analysis failed: {str(e)}", "method": "vision"}
     
     def verify_action_result(self, before_image: Image.Image, after_image: Image.Image, 
                            expected_change: str) -> Dict[str, Any]:

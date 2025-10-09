@@ -39,6 +39,7 @@ class StepContext:
     index: int
     raw: Dict[str, Any]
     attempts: int = 0
+    max_attempts: int = 3  # Circuit breaker: maximum attempts before failure
     status: StepStatus = StepStatus.PENDING
     last_result: Optional[ActionResult] = None
     adaptive_notes: List[str] = field(default_factory=list)
@@ -343,17 +344,18 @@ class EnhancedAIAgent:
                 self.overlay.hide()
                 time.sleep(0.2)
 
+            # Capture screenshot only when verification or recovery may need it
             before_screenshot = None
-            if config.enable_screen_recording:
+            if action in {"click", "type_text", "press_key", "hotkey", "focus_window"}:
                 before_screenshot = self.ui.take_screenshot()
 
             action_result = self.executor.execute(action, target, parameters)
             ctx.complete(action_result)
 
+            # Capture after screenshot only on failure or for important verification steps
             after_screenshot = None
-            if config.enable_screen_recording:
-                if config.screen_recording_delay > 0:
-                    time.sleep(config.screen_recording_delay)
+            if not action_result.success or action in {"click", "type_text", "press_key", "hotkey", "focus_window", "open_application"}:
+                time.sleep(0.1)  # Brief pause for UI to settle
                 after_screenshot = self.ui.take_screenshot()
 
             if hide_overlay and self.overlay:
@@ -469,10 +471,41 @@ class EnhancedAIAgent:
                 "ERROR"
             )
 
+        # Circuit Breaker: Check if we've exceeded maximum attempts
+        if ctx.attempts >= ctx.max_attempts:
+            logger.error(
+                f"   ❌ Step {ctx.index} failed after {ctx.attempts} attempts. "
+                f"Circuit breaker activated - aborting task."
+            )
+            ctx.status = StepStatus.FAILED
+            ctx.add_note(f"Circuit breaker: exceeded {ctx.max_attempts} attempts")
+            
+            if self.overlay:
+                self.overlay.add_log(
+                    f"Step {ctx.index} circuit breaker: max attempts exceeded",
+                    "ERROR"
+                )
+                self.overlay.show_toast(
+                    f"Step {ctx.index} failed permanently",
+                    level="error"
+                )
+            
+            self.execution_history.append({
+                "type": "circuit_breaker_triggered",
+                "step": ctx.index,
+                "error": error_msg,
+                "attempts": ctx.attempts,
+                "timestamp": datetime.now().isoformat(),
+            })
+            
+            return FailureHandlingOutcome(resolved=False)
+
         # Retry if we still have attempts remaining
-        if ctx.attempts <= config.max_retries:
+        if ctx.attempts < ctx.max_attempts:
             delay = min(1.0 * (1.5 ** (ctx.attempts - 1)), 6.0)
-            logger.info(f"   🔄 Scheduling retry #{ctx.attempts} after {delay:.1f}s")
+            logger.info(
+                f"   🔄 Scheduling retry #{ctx.attempts}/{ctx.max_attempts - 1} after {delay:.1f}s"
+            )
 
             if self.overlay:
                 self.overlay.show_toast(
@@ -651,7 +684,9 @@ class EnhancedAIAgent:
     ) -> List[Image.Image]:
         """Derive focus-region crops from existing screenshots using telemetry centers."""
 
-        if not config.enable_screen_recording or not mouse_metadata:
+        # Disabled continuous focus view collection for performance
+        # Focus views should only be captured when needed for specific analysis
+        if not mouse_metadata:
             return []
 
         centers: List[Tuple[int, int]] = []

@@ -965,25 +965,45 @@ try {
         Write-Host "   Skipping Tesseract check (--SkipTesseract flag)" -ForegroundColor Gray
     }
     
-    # Step 6: Check Configuration
-    Write-Step -StepNumber 6 -Message "Checking configuration..."
+    # Step 6: Setup Configuration
+    Write-Step -StepNumber 6 -Message "Setting up configuration..."
     
-    $configPath = "config.py"
+    $envExamplePath = ".env.example"
+    $envPath = ".env"
     
-    if (Test-ConfigFile -ConfigPath $configPath) {
-        # Backup existing config
-        Backup-ConfigFile -ConfigPath $configPath
-    }
-    else {
-        if (Test-Path $configPath) {
-            Write-Host "`n   [CONFIG] Configuration setup needed:" -ForegroundColor Cyan
-            Write-Host "   1. Get API key from: https://aistudio.google.com/apikey" -ForegroundColor White
-            Write-Host "   2. Edit config.py and replace 'your_api_key_here'" -ForegroundColor White
-            Write-Host "   3. Save the file and re-run this script to verify`n" -ForegroundColor White
+    # Create .env from .env.example if it doesn't exist
+    if (-not (Test-Path $envPath)) {
+        if (Test-Path $envExamplePath) {
+            Write-Host "   Creating .env file from .env.example..." -ForegroundColor Yellow
+            Copy-Item -Path $envExamplePath -Destination $envPath -Force
+            Write-Host "   ✓ .env file created successfully" -ForegroundColor Green
+            Write-Log -Message ".env file created from .env.example" -Level Success
         }
         else {
-            Write-Log -Message "config.py not found in current directory" -Level Warning
-            Write-Host "   Create config.py with your Gemini API key before running the agent.`n" -ForegroundColor Yellow
+            Write-Log -Message ".env.example not found - cannot create .env" -Level Warning
+            Write-Host "   ⚠️  .env.example not found. Please create .env manually." -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "   .env file already exists" -ForegroundColor Gray
+    }
+    
+    # Check if API key is configured
+    if (Test-Path $envPath) {
+        $envContent = Get-Content $envPath -Raw
+        $hasValidKey = $envContent -match 'GEMINI_API_KEY\s*=\s*(?!your_api_key_here)\S+'
+        
+        if ($hasValidKey) {
+            Write-Host "   ✓ Gemini API key is configured" -ForegroundColor Green
+            Write-Log -Message "Gemini API key found in .env" -Level Success
+        }
+        else {
+            Write-Host "`n   [ACTION REQUIRED] Configure your Gemini API key:" -ForegroundColor Cyan
+            Write-Host "   1. Get your API key from: https://aistudio.google.com/app/apikey" -ForegroundColor White
+            Write-Host "   2. Open .env file in a text editor" -ForegroundColor White
+            Write-Host "   3. Replace 'your_api_key_here' with your actual API key" -ForegroundColor White
+            Write-Host "   4. Save the file`n" -ForegroundColor White
+            Write-Log -Message "API key not configured in .env - user action required" -Level Warning
         }
     }
     
