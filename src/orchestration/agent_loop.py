@@ -6,7 +6,8 @@ reasoning, and action execution using the ReAct (Reason+Act) paradigm.
 """
 
 import logging
-from typing import List, Dict, Callable, Any
+from collections.abc import Mapping
+from typing import Any, Callable, Dict, List, Protocol, TypeGuard, cast
 
 from src.perception.screen_capture import get_multimodal_context
 from src.reasoning.gemini_core import decide_next_action
@@ -14,6 +15,24 @@ from src.action import tools as action_tools
 from src.config import config
 
 logger = logging.getLogger(__name__)
+
+
+class FunctionCallLike(Protocol):
+    """Protocol describing the attributes of a Gemini FunctionCall."""
+
+    name: str
+    args: Mapping[str, Any]
+
+
+def _is_function_call(response: Any) -> TypeGuard[FunctionCallLike]:
+    """Return True when the response exposes the FunctionCall interface."""
+
+    if not hasattr(response, "name") or not hasattr(response, "args"):
+        return False
+
+    name = getattr(response, "name")
+    args = getattr(response, "args")
+    return isinstance(name, str) and isinstance(args, Mapping)
 
 
 def run_agent_loop(user_command: str) -> str:
@@ -39,10 +58,10 @@ def run_agent_loop(user_command: str) -> str:
     task_completed: bool = False  # Track task completion status
     
     # Use config for max turns with fallback
-    MAX_TURNS: int = config.max_loop_turns
+    MAX_TURNS: int = max(1, config.max_loop_turns)
     
     # Map tool names to actual functions from action module
-    AVAILABLE_TOOLS: Dict[str, Callable] = {
+    AVAILABLE_TOOLS: Dict[str, Callable[..., str]] = {
         "click": action_tools.click,
         "type_text": action_tools.type_text,
         "get_text": action_tools.get_text,
@@ -51,8 +70,8 @@ def run_agent_loop(user_command: str) -> str:
         "finish_task": action_tools.finish_task,
     }
     
-    logger.info(f"Starting agent loop for command: {user_command}")
-    logger.info(f"Maximum turns: {MAX_TURNS}")
+    logger.info("Starting agent loop for command: %s", user_command)
+    logger.info("Maximum turns: %d", MAX_TURNS)
     print(f"\n{'='*80}")
     print(f"🤖 AVVIO AGENTE - Comando: {user_command}")
     print(f"{'='*80}\n")
@@ -65,10 +84,10 @@ def run_agent_loop(user_command: str) -> str:
             logger.info(success_msg)
             print(f"\n{success_msg}\n")
             break
-        
+
         print(f"\n--- TURNO {turn}/{MAX_TURNS} ---\n")
-        logger.info(f"Starting turn {turn}/{MAX_TURNS}")
-        
+        logger.info("Starting turn %s/%s", turn, MAX_TURNS)
+
         # ===== STEP A: OBSERVE (Perception) =====
         try:
             logger.debug("Capturing multimodal context (screenshot + UI tree)")
@@ -89,18 +108,18 @@ def run_agent_loop(user_command: str) -> str:
         # ===== STEP B: REASON (Call Gemini) =====
         try:
             logger.debug("Calling Gemini API for next action decision")
-            
+
             # Convert tool functions to list for Gemini
             tool_functions = list(AVAILABLE_TOOLS.values())
-            
+
             response = decide_next_action(
                 screenshot_image=screenshot,
                 ui_tree=ui_tree,
                 user_command=user_command,
                 history=history,
-                available_tools=tool_functions
+                available_tools=tool_functions,
             )
-            
+
             logger.info("Reasoning: Received response from Gemini")
             
         except Exception as e:
@@ -114,54 +133,57 @@ def run_agent_loop(user_command: str) -> str:
         observation: str = ""
         
         try:
-            # Try to extract FunctionCall from response
-            if hasattr(response, 'name') and hasattr(response, 'args'):
-                # Response is a FunctionCall object
-                tool_name = response.name
-                tool_args = dict(response.args)
-                
+            if _is_function_call(response):
+                function_call = cast(FunctionCallLike, response)
+                tool_name = function_call.name
+                tool_args = dict(function_call.args)
+
                 print(f"🧠 PENSIERO: Il modello ha deciso di chiamare lo strumento '{tool_name}'")
                 print(f"   Argomenti: {tool_args}")
-                logger.info(f"Action: Dispatching tool '{tool_name}' with args: {tool_args}")
-                
-                # Special handling for finish_task
+                logger.info("Action: Dispatching tool '%s' with args: %s", tool_name, tool_args)
+
                 if tool_name == "finish_task":
                     task_completed = True
                     summary = tool_args.get("summary", "Task completato")
                     observation = f"✅ TASK COMPLETATO: {summary}"
                     print(f"\n{observation}\n")
-                    logger.info(f"Task marked as completed: {summary}")
-                    
-                    # Add to history and continue to trigger loop exit
-                    history.append(f"PENSIERO: finish_task chiamato")
+                    logger.info("Task marked as completed: %s", summary)
+
+                    history.append("PENSIERO: finish_task chiamato")
                     history.append(observation)
                     continue
-                
-                # Look up the tool function
+
                 if tool_name not in AVAILABLE_TOOLS:
-                    observation = f"Errore: Strumento '{tool_name}' non trovato nei tool disponibili."
+                    observation = (
+                        f"Errore: Strumento '{tool_name}' non trovato nei tool disponibili."
+                    )
                     logger.error(observation)
                     print(f"❌ {observation}")
                 else:
-                    # Execute the tool function with unpacked arguments
                     tool_function = AVAILABLE_TOOLS[tool_name]
                     try:
                         observation = tool_function(**tool_args)
-                        logger.info(f"Action: Tool '{tool_name}' executed, result: {observation[:100]}")
-                    except TypeError as e:
-                        observation = f"Errore: Argomenti non validi per '{tool_name}'. Dettagli: {str(e)}"
+                        logger.info(
+                            "Action: Tool '%s' executed, result: %s",
+                            tool_name,
+                            observation[:100],
+                        )
+                    except TypeError as exc:
+                        observation = (
+                            f"Errore: Argomenti non validi per '{tool_name}'. Dettagli: {exc}"
+                        )
                         logger.error(observation)
-                    except Exception as e:
-                        observation = f"Errore durante l'esecuzione di '{tool_name}': {str(e)}"
+                    except Exception as exc:
+                        observation = (
+                            f"Errore durante l'esecuzione di '{tool_name}': {exc}"
+                        )
                         logger.error(observation, exc_info=True)
-            
             else:
-                # Response is text (model asking for clarification or providing commentary)
                 observation = str(response)
-                print(f"💬 PENSIERO: Il modello ha risposto con del testo:")
+                print("💬 PENSIERO: Il modello ha risposto con del testo:")
                 print(f"   {observation}")
-                logger.info(f"Action: Model responded with text instead of function call")
-        
+                logger.info("Action: Model responded with text instead of function call")
+
         except Exception as e:
             observation = f"Errore durante il dispatch dell'azione: {str(e)}"
             logger.error(observation, exc_info=True)
@@ -171,8 +193,11 @@ def run_agent_loop(user_command: str) -> str:
         print(f"👁️  OSSERVAZIONE: {observation}")
         
         # Update history with thought and observation for next iteration
-        if hasattr(response, 'name'):
-            history.append(f"PENSIERO: Chiamato {response.name} con {dict(response.args)}")
+        if _is_function_call(response):
+            function_call = cast(FunctionCallLike, response)
+            history.append(
+                f"PENSIERO: Chiamato {function_call.name} con {dict(function_call.args)}"
+            )
         else:
             history.append(f"PENSIERO: {str(response)[:200]}")
         

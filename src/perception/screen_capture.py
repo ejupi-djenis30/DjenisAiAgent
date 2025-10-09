@@ -7,10 +7,13 @@ This module handles capturing screenshots of the desktop for perception.
 import io
 import re
 import contextlib
-from typing import Tuple
+from typing import Optional, Tuple
+
 import pyautogui
 from PIL import Image
 from pywinauto import Desktop
+from pywinauto.findwindows import ElementNotFoundError
+from pywinauto.timings import TimeoutError as PywinautoTimeoutError
 
 
 def capture_ui_tree(window) -> str:
@@ -96,44 +99,46 @@ def get_multimodal_context() -> Tuple[Image.Image, str]:
     
     # Step 2: Capture the structural UI information with fallback mechanisms
     ui_tree_text = ""
-    
+
     try:
-        # Primary attempt: Use UIA backend (for modern Windows applications)
-        # UIA works with: WPF, WinForms, Qt5, UWP, modern Windows apps
+        active_window = _get_active_window("uia")
+        if active_window is None:
+            raise RuntimeError("UIA backend non ha restituito una finestra attiva.")
+        ui_tree_text = capture_ui_tree(active_window)
+    except Exception as primary_exc:
         try:
-            from pywinauto.application import Application
-            app = Application(backend="uia").connect(active_only=True)
-            active_window = app.top_window()
+            active_window = _get_active_window("win32")
+            if active_window is None:
+                raise RuntimeError("Win32 backend non ha restituito una finestra attiva.")
             ui_tree_text = capture_ui_tree(active_window)
-            
-        except Exception as e:
-            # Fallback: Use Win32 backend (for legacy applications)
-            # Win32 works with: MFC, VB6, older Win32 applications
-            try:
-                from pywinauto.application import Application
-                app = Application(backend="win32").connect(active_only=True)
-                active_window = app.top_window()
-                ui_tree_text = capture_ui_tree(active_window)
-                
-            except Exception:
-                # Both backends failed to find an active window
-                # Try one more approach using Desktop
-                try:
-                    desktop = Desktop(backend="uia")
-                    windows = desktop.windows()
-                    if windows:
-                        active_window = windows[0]
-                        ui_tree_text = capture_ui_tree(active_window)
-                    else:
-                        ui_tree_text = "Nessuna finestra attiva trovata o impossibile accedere agli elementi UI."
-                except:
-                    ui_tree_text = "Nessuna finestra attiva trovata o impossibile accedere agli elementi UI."
-                
-    except Exception as e:
-        # Catch any other unexpected exceptions during UI inspection
-        ui_tree_text = f"Errore durante l'ispezione UI: {type(e).__name__}: {str(e)}"
+        except Exception as fallback_exc:
+            reasons = []
+            primary_reason = str(primary_exc).strip()
+            if primary_reason:
+                reasons.append(f"UIA: {primary_reason}")
+            fallback_reason = str(fallback_exc).strip()
+            if fallback_reason:
+                reasons.append(f"Win32: {fallback_reason}")
+            details = " | ".join(reasons) if reasons else "nessun dettaglio disponibile"
+            ui_tree_text = (
+                "Nessuna finestra attiva trovata o impossibile accedere agli elementi UI. "
+                f"Dettagli: {details}"
+            )
     
     return screenshot, ui_tree_text
+
+
+def _get_active_window(backend: str) -> Optional[object]:
+    """Return the active window for the requested pywinauto backend."""
+
+    try:
+        desktop = Desktop(backend=backend)
+        windows = desktop.windows()
+        if not windows:
+            return None
+        return windows[0]
+    except (PywinautoTimeoutError, RuntimeError, ElementNotFoundError):
+        return None
 
 
 class ScreenCapture:

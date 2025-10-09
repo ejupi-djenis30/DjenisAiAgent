@@ -1,25 +1,136 @@
-"""
-Gemini Core Module
+"""Core reasoning utilities for interacting with Google Gemini."""
 
-This module handles all interactions with the Google Gemini API for reasoning
-and decision making. It implements the Function Calling pattern to ensure
-structured, reliable responses from the model.
-"""
+from __future__ import annotations
 
-from typing import List, Union, Any
+import inspect
 import logging
+from typing import Any, Dict, Iterable, List, Optional, Union
+
 from PIL import Image
 
 import google.generativeai as genai
-from google.generativeai.types import FunctionDeclaration
 from google.api_core import exceptions as google_exceptions
+from google.generativeai import types as genai_types
 
 from src.config import config
 
 logger = logging.getLogger(__name__)
 
 # System instruction that defines the agent's persona and behavior
-SYSTEM_INSTRUCTION = """Sei un assistente esperto di Windows 11 chiamato MCP. Il tuo obiettivo è eseguire i comandi dell'utente interagendo con l'interfaccia grafica. Analizza lo screenshot e l'elenco degli elementi UI forniti. Usa esclusivamente gli strumenti a tua disposizione per compiere le azioni. Pensa passo dopo passo prima di decidere quale strumento chiamare. Se il compito è completato, chiama lo strumento 'finish_task'."""
+SYSTEM_PROMPT = """<system_prompt>
+    <persona>
+        You are DjenisAiAgent, a helpful and expert AI assistant for Windows 11. Your purpose is to execute user commands by interacting with the Graphical User Interface (GUI). You operate in a strict, iterative cycle: Observe, Reason, Act.
+    </persona>
+
+    <goal>
+        Your primary goal is to accurately and efficiently achieve the user's stated objective. Analyze the provided screenshot for visual context and the UI element list for structural information to decide on the best next action.
+    </goal>
+
+    <rules>
+        1.  **Chain of Thought:** You MUST reason step-by-step before acting. In your thought process, break down the problem, state your hypothesis for the next action, and then select a tool. This is a form of Chain-of-Thought prompting that helps in debugging and transparency[cite: 1202, 1207].
+        2.  **Tool Exclusivity:** You can ONLY interact with the system using the provided tools. Do not invent actions or assume you can perform actions for which no tool is available.
+        3.  **Completion:** Once the user's objective is fully completed, you MUST call the `finish_task` tool to end the operation.
+        4.  **Efficiency:** When possible, prefer using keyboard shortcuts (`press_hotkey` tool) over a sequence of mouse clicks, as they are more reliable and efficient[cite: 1277, 1279]. For example, use Ctrl+S to save instead of clicking the 'File' then 'Save' menu items[cite: 1281].
+    </rules>
+
+    <constraints>
+        1.  You are forbidden from performing destructive actions (like deleting files or shutting down the system) unless explicitly and unambiguously instructed by the user in the current command.
+        2.  You must not interact with financial, security, or password management applications unless it is the explicit goal of the user's command.
+        3.  If an action fails, analyze the observation and the new screenshot to understand the error and formulate a new plan. Do not repeat the same failed action more than twice[cite: 1143].
+    </constraints>
+</system_prompt>"""
+
+
+def _json_type_for_annotation(annotation: Any) -> str:
+    """Map Python annotations to JSON schema types."""
+
+    mapping = {
+        str: "string",
+        int: "integer",
+        float: "number",
+        bool: "boolean",
+    }
+
+    if annotation in mapping:
+        return mapping[annotation]
+
+    # Handle typing.Optional[X]
+    origin = getattr(annotation, "__origin__", None)
+    args = getattr(annotation, "__args__", ())
+    if origin is Union and args:
+        non_none = [arg for arg in args if arg is not type(None)]  # noqa: E721
+        if len(non_none) == 1:
+            return _json_type_for_annotation(non_none[0])
+
+    return "string"
+
+
+def _build_function_declaration(func: Any) -> Optional[genai_types.FunctionDeclaration]:
+    """Create a FunctionDeclaration schema for a Python callable."""
+
+    signature = inspect.signature(func)
+    properties: Dict[str, Dict[str, Any]] = {}
+    required: List[str] = []
+
+    for name, param in signature.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            logger.warning(
+                "Ignoring variadic parameter '%s' on tool '%s' for function calling.",
+                name,
+                func.__name__,
+            )
+            continue
+
+        json_type = _json_type_for_annotation(param.annotation)
+        properties[name] = {
+            "type": json_type,
+            "description": f"Parametro '{name}' per la funzione {func.__name__}.",
+        }
+        if param.default is inspect._empty:
+            required.append(name)
+
+    parameters_schema: Dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+    }
+    if required:
+        parameters_schema["required"] = required
+
+    try:
+        return genai_types.FunctionDeclaration(
+            name=func.__name__,
+            description=inspect.getdoc(func) or "",
+            parameters=parameters_schema,
+        )
+    except Exception as exc:  # pragma: no cover - schema construction issues
+        logger.error(
+            "Unable to build FunctionDeclaration for '%s': %s", func.__name__, exc
+        )
+        return None
+
+
+def _prepare_tools_payload(available_tools: Iterable[Any]) -> List[genai_types.Tool]:
+    """Convert Python callables into Gemini tool declarations."""
+
+    declarations: List[genai_types.FunctionDeclaration] = []
+    for tool in available_tools:
+        declaration = getattr(tool, "function_declaration", None)
+        if declaration is not None:
+            declarations.append(declaration)
+            continue
+
+        built = _build_function_declaration(tool)
+        if built is not None:
+            declarations.append(built)
+
+    if not declarations:
+        logger.error("No valid tool declarations available for Gemini model")
+        return []
+
+    return [genai_types.Tool(function_declarations=declarations)]
 
 
 def decide_next_action(
@@ -28,7 +139,7 @@ def decide_next_action(
     user_command: str,
     history: List[str],
     available_tools: List[Any]
-) -> Union[genai.protos.FunctionCall, str]:
+) -> Union[Any, str]:
     """
     Decide the next action to take based on multimodal context.
     
@@ -48,39 +159,50 @@ def decide_next_action(
         (if model responded with text, asking for clarification, etc.).
     """
     try:
+        # Prepare tool declarations for function calling
+        tools_payload = _prepare_tools_payload(available_tools)
+        if not tools_payload:
+            return (
+                "Errore: Nessun tool disponibile per la chiamata di funzioni. "
+                "Verificare la configurazione dell'agente."
+            )
+
         # Configure and initialize the Gemini model with Function Calling support
         logger.debug(f"Initializing Gemini model: {config.gemini_model_name}")
         
         # Configure the API key
-        genai.configure(api_key=config.gemini_api_key)
+        genai.configure(api_key=config.gemini_api_key)  # type: ignore[attr-defined]
         
         # Create the model with tools for Function Calling
-        model = genai.GenerativeModel(
+        model = genai.GenerativeModel(  # type: ignore[attr-defined]
             model_name=config.gemini_model_name,
-            tools=available_tools,
-            generation_config=genai.GenerationConfig(
+            tools=tools_payload,
+            generation_config=genai.GenerationConfig(  # type: ignore[attr-defined]
                 temperature=config.temperature,
                 max_output_tokens=config.max_tokens,
             )
         )
-        
-        logger.debug(f"Model initialized with {len(available_tools)} tools")
+
+        logger.debug("Model initialized with %d tools", len(tools_payload[0].function_declarations))
         
         # Assemble the multimodal prompt in the correct order
+        history_text = (
+            "PREVIOUS STEPS:\n" + "\n".join(history[-config.max_loop_turns :])
+            if history
+            else "PREVIOUS STEPS:\n- None"
+        )
+
         prompt_parts = [
-            SYSTEM_INSTRUCTION,
-            "\n\nEcco lo stato attuale dello schermo:",
+            SYSTEM_PROMPT,
+            history_text,
+            f"CURRENT OBJECTIVE: {user_command}",
+            "STRUCTURAL UI ELEMENTS:\n" + ui_tree,
             screenshot_image,
-            "\n\nEcco gli elementi UI interagibili:",
-            ui_tree,
-            "\n\nCronologia precedente:",
-            "\n".join(history) if history else "Nessuna cronologia disponibile.",
-            f"\n\nObiettivo attuale: {user_command}"
         ]
         
         logger.info("Sending multimodal prompt to Gemini API")
-        logger.debug(f"Prompt structure: {len(prompt_parts)} parts")
-        
+        logger.debug("Prompt structure: %d parts", len(prompt_parts))
+
         # Call the Gemini API with the assembled prompt
         response = model.generate_content(prompt_parts)
         
@@ -97,20 +219,25 @@ def decide_next_action(
         
         # Check if response contains a function call
         if candidate.content.parts:
-            first_part = candidate.content.parts[0]
-            
-            # Check if it's a function call
-            if hasattr(first_part, 'function_call') and first_part.function_call:
-                function_call = first_part.function_call
-                logger.info(f"Model requested function call: {function_call.name}")
-                logger.debug(f"Function arguments: {dict(function_call.args)}")
-                return function_call
+            for part in candidate.content.parts:
+                function_call = getattr(part, "function_call", None)
+                if function_call:
+                    logger.info("Model requested function call: %s", function_call.name)
+                    logger.debug("Function arguments: %s", dict(function_call.args))
+                    return function_call
         
         # If no function call, extract text response
-        if response.text:
+        if getattr(response, "text", None):
             logger.info("Model responded with text instead of function call")
             logger.debug(f"Response text: {response.text[:100]}...")
             return response.text
+
+        if candidate.content.parts:
+            text_parts = [getattr(part, "text", "") for part in candidate.content.parts]
+            joined = "\n".join(filter(None, text_parts)).strip()
+            if joined:
+                logger.info("Model provided textual response via content parts")
+                return joined
         
         # Empty response case
         error_msg = "Errore: Gemini ha restituito una risposta vuota."
