@@ -181,12 +181,39 @@ def _execute_agent_task(
     
     # Map tool names to actual functions from action module
     AVAILABLE_TOOLS: Dict[str, Callable[..., str]] = {
+        # Core UI interaction tools
         "element_id": action_tools.element_id,
         "click": action_tools.click,
+        "double_click": action_tools.double_click,
+        "right_click": action_tools.right_click,
         "type_text": action_tools.type_text,
         "get_text": action_tools.get_text,
+        
+        # Navigation and control tools
         "scroll": action_tools.scroll,
         "press_hotkey": action_tools.press_hotkey,
+        "move_mouse": action_tools.move_mouse,
+        "wait_seconds": action_tools.wait_seconds,
+        
+        # Window management tools
+        "minimize_window": action_tools.minimize_window,
+        "maximize_window": action_tools.maximize_window,
+        "close_window": action_tools.close_window,
+        "switch_window": action_tools.switch_window,
+        
+        # Clipboard tools
+        "copy_to_clipboard": action_tools.copy_to_clipboard,
+        "paste_from_clipboard": action_tools.paste_from_clipboard,
+        "get_clipboard_text": action_tools.get_clipboard_text,
+        "set_clipboard_text": action_tools.set_clipboard_text,
+        
+        # Application and file tools
+        "start_application": action_tools.start_application,
+        "open_file": action_tools.open_file,
+        "open_url": action_tools.open_url,
+        "take_screenshot": action_tools.take_screenshot,
+        
+        # Task completion
         "finish_task": action_tools.finish_task,
     }
     

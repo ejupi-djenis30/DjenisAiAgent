@@ -14,6 +14,9 @@ python-dotenv
 # Screen Capture and Basic Automation
 pyautogui
 
+# Clipboard management
+pyperclip
+
 # Web Server and WebSocket Support
 fastapi
 uvicorn

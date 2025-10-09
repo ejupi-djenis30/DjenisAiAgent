@@ -23,6 +23,9 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 import google.generativeai as genai
 import pyautogui
+from PIL import Image
+
+IMAGE_RESAMPLING_LANCZOS = Image.Resampling.LANCZOS
 
 from src.config import config
 from src.orchestration.agent_loop import run_agent_loop, agent_loop
@@ -402,18 +405,32 @@ async def screen_generator():
     logger.info("Screen streaming generator started")
     
     try:
+        target_sleep = max(0.001, 1.0 / max(1, config.stream_max_fps))
+
         while True:
             buffer = io.BytesIO()
             try:
                 # Capture the current screen using pyautogui without blocking the loop
                 screenshot = await asyncio.to_thread(pyautogui.screenshot)
 
+                if 0.0 < config.stream_resize_factor < 0.999:
+                    width, height = screenshot.size
+                    new_size = (
+                        max(1, int(width * config.stream_resize_factor)),
+                        max(1, int(height * config.stream_resize_factor)),
+                    )
+                    screenshot = await asyncio.to_thread(
+                        screenshot.resize,
+                        new_size,
+                        IMAGE_RESAMPLING_LANCZOS,
+                    )
+
                 # Encode the screenshot to JPEG inside the worker thread
                 await asyncio.to_thread(
                     screenshot.save,
                     buffer,
                     format="JPEG",
-                    quality=85,
+                    quality=config.stream_frame_quality,
                     optimize=True,
                 )
 
@@ -436,7 +453,7 @@ async def screen_generator():
 
             # Control frame rate: ~10 FPS (100ms delay)
             # This prevents overwhelming the CPU while providing smooth video
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(target_sleep)
             
     except asyncio.CancelledError:
         logger.info("Screen streaming generator cancelled")

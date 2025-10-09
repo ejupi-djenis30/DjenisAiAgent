@@ -454,8 +454,34 @@ def scroll(direction: str, amount: int = 3) -> str:
     Returns:
         A string message indicating the result.
     """
-    # TODO: Implement scroll functionality in subsequent steps
-    return "Tool not implemented yet."
+    import pyautogui
+    
+    try:
+        logger.info(f"Scrolling {direction} by {amount} units")
+        
+        direction = direction.lower().strip()
+        
+        if direction in ['up', 'down']:
+            # Positive for up, negative for down
+            scroll_amount = amount if direction == 'up' else -amount
+            pyautogui.scroll(scroll_amount)
+            logger.info(f"Successfully scrolled {direction}")
+            return f"Scroll {direction} di {amount} unità eseguito con successo."
+        elif direction in ['left', 'right']:
+            # Horizontal scroll using hscroll
+            scroll_amount = -amount if direction == 'left' else amount
+            pyautogui.hscroll(scroll_amount)
+            logger.info(f"Successfully scrolled {direction}")
+            return f"Scroll {direction} di {amount} unità eseguito con successo."
+        else:
+            error_msg = f"Direzione non valida: '{direction}'. Usa 'up', 'down', 'left', o 'right'."
+            logger.warning(error_msg)
+            return error_msg
+            
+    except Exception as e:
+        error_msg = f"Errore durante lo scroll {direction}: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
 
 
 def press_hotkey(keys: str) -> str:
@@ -463,13 +489,35 @@ def press_hotkey(keys: str) -> str:
     Press a keyboard hotkey combination.
     
     Args:
-        keys: Hotkey combination (e.g., 'ctrl+c', 'alt+tab').
+        keys: Hotkey combination (e.g., 'ctrl+c', 'alt+tab', 'enter').
         
     Returns:
         A string message indicating the result.
     """
-    # TODO: Implement hotkey functionality in subsequent steps
-    return "Tool not implemented yet."
+    import pyautogui
+    import time
+    
+    try:
+        logger.info(f"Pressing hotkey: {keys}")
+        
+        # Parse the keys (support both '+' and ' ' as separators)
+        key_list = keys.replace('+', ' ').split()
+        
+        if len(key_list) == 1:
+            # Single key press
+            pyautogui.press(key_list[0])
+            logger.info(f"Successfully pressed key: {key_list[0]}")
+            return f"Tasto '{key_list[0]}' premuto con successo."
+        else:
+            # Key combination (e.g., ctrl+c)
+            pyautogui.hotkey(*key_list)
+            logger.info(f"Successfully pressed hotkey combination: {keys}")
+            return f"Combinazione di tasti '{keys}' premuta con successo."
+            
+    except Exception as e:
+        error_msg = f"Errore durante la pressione del tasto '{keys}': {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
 
 
 def finish_task(summary: str) -> str:
@@ -482,5 +530,405 @@ def finish_task(summary: str) -> str:
     Returns:
         A string message confirming task completion.
     """
-    # TODO: Implement task completion logic in subsequent steps
-    return f"Task completato: {summary}"
+    logger.info(f"Task completed: {summary}")
+    return f"✅ Task completato con successo: {summary}"
+
+
+def double_click(element_id: str) -> str:
+    """
+    Double-click on a UI element identified by its ID.
+    
+    Args:
+        element_id: The element identifier (e.g., 'element:abc123').
+        
+    Returns:
+        A string message indicating the result.
+    """
+    window = _get_active_window()
+    if not window:
+        return "Errore: Impossibile accedere alla finestra attiva."
+
+    control, metadata = _resolve_control(window, element_id)
+    if not control:
+        snapshot = refresh_ui_snapshot(window)
+        suggestions = _build_suggestions(snapshot)
+        return f"Errore: Elemento '{element_id}' non trovato o non più valido. {suggestions}"
+
+    descriptor = _describe_target(metadata)
+    try:
+        wrapper = _prepare_wrapper(control)
+        wrapper.double_click_input()
+        logger.info("Successfully double-clicked %s (elemento '%s')", element_id, descriptor)
+        return f"Elemento '{descriptor}' doppio-cliccato con successo."
+    except Exception as exc:
+        logger.error("Failed to double-click %s: %s", element_id, exc, exc_info=True)
+        return f"Errore durante il doppio-click su '{descriptor}': {exc}"
+
+
+def right_click(element_id: str) -> str:
+    """
+    Right-click on a UI element to open context menu.
+    
+    Args:
+        element_id: The element identifier (e.g., 'element:abc123').
+        
+    Returns:
+        A string message indicating the result.
+    """
+    window = _get_active_window()
+    if not window:
+        return "Errore: Impossibile accedere alla finestra attiva."
+
+    control, metadata = _resolve_control(window, element_id)
+    if not control:
+        snapshot = refresh_ui_snapshot(window)
+        suggestions = _build_suggestions(snapshot)
+        return f"Errore: Elemento '{element_id}' non trovato o non più valido. {suggestions}"
+
+    descriptor = _describe_target(metadata)
+    try:
+        wrapper = _prepare_wrapper(control)
+        wrapper.right_click_input()
+        logger.info("Successfully right-clicked %s (elemento '%s')", element_id, descriptor)
+        return f"Click destro su elemento '{descriptor}' eseguito con successo."
+    except Exception as exc:
+        logger.error("Failed to right-click %s: %s", element_id, exc, exc_info=True)
+        return f"Errore durante il click destro su '{descriptor}': {exc}"
+
+
+def move_mouse(x: int, y: int) -> str:
+    """
+    Move the mouse cursor to specific screen coordinates.
+    
+    Args:
+        x: The X coordinate on the screen.
+        y: The Y coordinate on the screen.
+        
+    Returns:
+        A string message indicating the result.
+    """
+    import pyautogui
+    
+    try:
+        logger.info(f"Moving mouse to coordinates ({x}, {y})")
+        pyautogui.moveTo(x, y, duration=0.5)
+        logger.info(f"Successfully moved mouse to ({x}, {y})")
+        return f"Mouse spostato alle coordinate ({x}, {y})."
+    except Exception as e:
+        error_msg = f"Errore durante lo spostamento del mouse a ({x}, {y}): {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def wait_seconds(seconds: int) -> str:
+    """
+    Wait for a specified number of seconds before continuing.
+    
+    Args:
+        seconds: Number of seconds to wait (1-30).
+        
+    Returns:
+        A string message indicating the result.
+    """
+    import time
+    
+    try:
+        if seconds < 1 or seconds > 30:
+            return "Errore: Il tempo di attesa deve essere tra 1 e 30 secondi."
+        
+        logger.info(f"Waiting for {seconds} seconds")
+        time.sleep(seconds)
+        logger.info(f"Wait completed after {seconds} seconds")
+        return f"Attesa di {seconds} secondi completata."
+    except Exception as e:
+        error_msg = f"Errore durante l'attesa: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def minimize_window() -> str:
+    """
+    Minimize the currently active window.
+    
+    Returns:
+        A string message indicating the result.
+    """
+    window = _get_active_window()
+    if not window:
+        return "Errore: Impossibile accedere alla finestra attiva."
+    
+    try:
+        window.minimize()
+        logger.info("Successfully minimized active window")
+        return "Finestra attiva minimizzata con successo."
+    except Exception as exc:
+        logger.error("Failed to minimize window: %s", exc, exc_info=True)
+        return f"Errore durante la minimizzazione della finestra: {exc}"
+
+
+def maximize_window() -> str:
+    """
+    Maximize the currently active window.
+    
+    Returns:
+        A string message indicating the result.
+    """
+    window = _get_active_window()
+    if not window:
+        return "Errore: Impossibile accedere alla finestra attiva."
+    
+    try:
+        window.maximize()
+        logger.info("Successfully maximized active window")
+        return "Finestra attiva massimizzata con successo."
+    except Exception as exc:
+        logger.error("Failed to maximize window: %s", exc, exc_info=True)
+        return f"Errore durante la massimizzazione della finestra: {exc}"
+
+
+def close_window() -> str:
+    """
+    Close the currently active window.
+    
+    Returns:
+        A string message indicating the result.
+    """
+    window = _get_active_window()
+    if not window:
+        return "Errore: Impossibile accedere alla finestra attiva."
+    
+    try:
+        window.close()
+        logger.info("Successfully closed active window")
+        return "Finestra attiva chiusa con successo."
+    except Exception as exc:
+        logger.error("Failed to close window: %s", exc, exc_info=True)
+        return f"Errore durante la chiusura della finestra: {exc}"
+
+
+def copy_to_clipboard() -> str:
+    """
+    Copy selected text to clipboard using Ctrl+C.
+    
+    Returns:
+        A string message indicating the result.
+    """
+    import pyautogui
+    
+    try:
+        logger.info("Copying to clipboard with Ctrl+C")
+        pyautogui.hotkey('ctrl', 'c')
+        logger.info("Successfully executed Ctrl+C")
+        return "Testo copiato negli appunti con Ctrl+C."
+    except Exception as e:
+        error_msg = f"Errore durante la copia negli appunti: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def paste_from_clipboard() -> str:
+    """
+    Paste text from clipboard using Ctrl+V.
+    
+    Returns:
+        A string message indicating the result.
+    """
+    import pyautogui
+    
+    try:
+        logger.info("Pasting from clipboard with Ctrl+V")
+        pyautogui.hotkey('ctrl', 'v')
+        logger.info("Successfully executed Ctrl+V")
+        return "Testo incollato dagli appunti con Ctrl+V."
+    except Exception as e:
+        error_msg = f"Errore durante l'incolla dagli appunti: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def get_clipboard_text() -> str:
+    """
+    Get the current text content from the clipboard.
+    
+    Returns:
+        The clipboard text content or an error message.
+    """
+    import pyperclip
+    
+    try:
+        logger.info("Reading text from clipboard")
+        text = pyperclip.paste()
+        if text:
+            logger.info(f"Successfully read {len(text)} characters from clipboard")
+            return f"Contenuto appunti: {text}"
+        else:
+            return "Gli appunti sono vuoti o non contengono testo."
+    except Exception as e:
+        error_msg = f"Errore durante la lettura degli appunti: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def set_clipboard_text(text: str) -> str:
+    """
+    Set text content to the clipboard.
+    
+    Args:
+        text: The text to copy to clipboard.
+    
+    Returns:
+        A string message indicating the result.
+    """
+    import pyperclip
+    
+    try:
+        logger.info(f"Setting clipboard text ({len(text)} characters)")
+        pyperclip.copy(text)
+        logger.info("Successfully set clipboard text")
+        return f"Testo copiato negli appunti: '{text[:50]}{'...' if len(text) > 50 else ''}'"
+    except Exception as e:
+        error_msg = f"Errore durante l'impostazione degli appunti: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def start_application(app_name: str) -> str:
+    """
+    Start an application by name or path.
+    
+    Args:
+        app_name: Name of the application (e.g., 'notepad', 'calc') or full path to executable.
+        
+    Returns:
+        A string message indicating the result.
+    """
+    import subprocess
+    
+    try:
+        logger.info(f"Starting application: {app_name}")
+        subprocess.Popen(app_name, shell=True)
+        logger.info(f"Successfully started application: {app_name}")
+        return f"Applicazione '{app_name}' avviata con successo."
+    except Exception as e:
+        error_msg = f"Errore durante l'avvio dell'applicazione '{app_name}': {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def open_file(file_path: str) -> str:
+    """
+    Open a file with its default application.
+    
+    Args:
+        file_path: Full path to the file to open.
+        
+    Returns:
+        A string message indicating the result.
+    """
+    import os
+    import subprocess
+    
+    try:
+        logger.info(f"Opening file: {file_path}")
+        if not os.path.exists(file_path):
+            return f"Errore: Il file '{file_path}' non esiste."
+        
+        os.startfile(file_path)
+        logger.info(f"Successfully opened file: {file_path}")
+        return f"File '{file_path}' aperto con successo."
+    except Exception as e:
+        error_msg = f"Errore durante l'apertura del file '{file_path}': {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def open_url(url: str) -> str:
+    """
+    Open a URL in the default web browser.
+    
+    Args:
+        url: The URL to open (e.g., 'https://www.google.com').
+        
+    Returns:
+        A string message indicating the result.
+    """
+    import webbrowser
+    
+    try:
+        logger.info(f"Opening URL: {url}")
+        webbrowser.open(url)
+        logger.info(f"Successfully opened URL: {url}")
+        return f"URL '{url}' aperto nel browser predefinito."
+    except Exception as e:
+        error_msg = f"Errore durante l'apertura dell'URL '{url}': {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def take_screenshot(save_path: Optional[str] = None) -> str:
+    """
+    Take a screenshot and optionally save it to a file.
+    
+    Args:
+        save_path: Optional path where to save the screenshot. If None, screenshot is not saved.
+        
+    Returns:
+        A string message indicating the result.
+    """
+    import pyautogui
+    from datetime import datetime
+    
+    try:
+        logger.info("Taking screenshot")
+        screenshot = pyautogui.screenshot()
+        
+        if save_path:
+            screenshot.save(save_path)
+            logger.info(f"Screenshot saved to: {save_path}")
+            return f"Screenshot salvato in: {save_path}"
+        else:
+            # Save with timestamp if no path provided
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_path = f"screenshot_{timestamp}.png"
+            screenshot.save(default_path)
+            logger.info(f"Screenshot saved to: {default_path}")
+            return f"Screenshot salvato in: {default_path}"
+    except Exception as e:
+        error_msg = f"Errore durante lo screenshot: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
+
+def switch_window(window_title: str) -> str:
+    """
+    Switch to a window by its title (partial match supported).
+    
+    Args:
+        window_title: The title or partial title of the window to activate.
+        
+    Returns:
+        A string message indicating the result.
+    """
+    from pywinauto import Desktop
+    
+    try:
+        logger.info(f"Searching for window with title: {window_title}")
+        desktop = Desktop(backend="uia")
+        
+        # Find windows matching the title
+        windows = desktop.windows()
+        matching_windows = [w for w in windows if window_title.lower() in w.window_text().lower()]
+        
+        if not matching_windows:
+            return f"Errore: Nessuna finestra trovata con titolo contenente '{window_title}'."
+        
+        # Activate the first matching window
+        target_window = matching_windows[0]
+        target_window.set_focus()
+        logger.info(f"Successfully switched to window: {target_window.window_text()}")
+        return f"Finestra '{target_window.window_text()}' attivata con successo."
+    except Exception as e:
+        error_msg = f"Errore durante il cambio finestra '{window_title}': {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
+
