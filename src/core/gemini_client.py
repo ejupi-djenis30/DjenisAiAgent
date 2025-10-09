@@ -3,6 +3,7 @@
 import json
 from typing import Optional, List, Dict, Any
 import google.generativeai as genai
+from google.generativeai.types import GenerationConfig
 from PIL import Image
 
 try:
@@ -13,6 +14,7 @@ except AttributeError:  # pragma: no cover - fallback for older Pillow
 from src.utils.logger import setup_logger
 from src.config.config import config
 from src.core.prompts import prompt_builder
+from src.utils.ocr import get_ocr_engine, ScreenTextAnalysis
 
 logger = setup_logger("GeminiClient")
 
@@ -43,8 +45,60 @@ class EnhancedGeminiClient:
             generation_config=generation_config  # type: ignore
         )
         
+        # Initialize OCR engine
+        self.ocr = get_ocr_engine()
+        if self.ocr:
+            logger.info("OCR engine initialized alongside vision model")
+        else:
+            logger.warning("OCR engine unavailable - vision-only mode")
+        
         logger.info(f"Initialized Enhanced Gemini client with model: {self.model_name}")
     
+    def generate_text(
+        self,
+        prompt: str,
+        max_tokens: int = 64,
+        *,
+        temperature: float = 0.5,
+    ) -> str:
+        """Generate a concise text response without requiring JSON parsing."""
+
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUAL_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+
+        try:
+            response = self.model.generate_content(  # type: ignore[attr-defined]
+                prompt,
+                generation_config=GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                    top_p=0.9,
+                    top_k=20,
+                ),
+                safety_settings=safety_settings,
+            )
+            text = self._extract_text_from_response(response)
+            if not text:
+                raise ValueError("Model returned empty text response")
+            logger.debug("Generated text response (%d chars)", len(text))
+            return text
+        except Exception as exc:  # pragma: no cover - upstream API exceptions
+            logger.error(f"Gemini text generation failed: {exc}")
+
+            fallback_text = self._extract_text_from_response(getattr(exc, "response", None))
+            if not fallback_text:
+                fallback_text = self._extract_text_from_response(getattr(exc, "result", None))
+
+            if fallback_text:
+                logger.warning("Using fallback text extracted from blocked response")
+                return fallback_text
+
+            raise
+
     def generate_task_plan(
         self,
         user_request: str,
@@ -100,13 +154,56 @@ class EnhancedGeminiClient:
         *,
         additional_images: Optional[List[Image.Image]] = None,
         focus_area: Optional[str] = None,
+        use_ocr: bool = True,
     ) -> str:
-        """Analyze a screenshot and answer questions about it."""
+        """
+        Analyze a screenshot and answer questions about it.
+        
+        Args:
+            screenshot: PIL Image to analyze
+            question: Optional question to answer
+            additional_images: Optional additional images for context
+            focus_area: Optional focus area hint (center, top, bottom, etc.)
+            use_ocr: Whether to run OCR first and include text in prompt (recommended)
+        """
+        
+        # Extract text via OCR first (preferred method)
+        ocr_text = ""
+        ocr_metadata = ""
+        if use_ocr and self.ocr:
+            try:
+                analysis = self.ocr.analyze_screen(screenshot, min_confidence=60.0)
+                ocr_text = analysis.full_text
+                
+                if ocr_text:
+                    ocr_metadata = (
+                        f"\n\n═══ OCR TEXT EXTRACTION ═══\n"
+                        f"The following text was extracted via Tesseract OCR from the screenshot:\n"
+                        f"(Average confidence: {analysis.average_confidence:.1f}%)\n\n"
+                        f"{ocr_text}\n"
+                        f"═══════════════════════════\n\n"
+                        f"Use this extracted text to assist your visual analysis. "
+                        f"The OCR text is reliable and should be referenced when describing UI elements, "
+                        f"button labels, menu items, or any visible text content."
+                    )
+                    logger.info(
+                        f"OCR extracted {len(ocr_text)} chars of text "
+                        f"({len(analysis.words)} words, confidence: {analysis.average_confidence:.1f}%)"
+                    )
+                else:
+                    logger.debug("OCR found no text in screenshot")
+                    
+            except Exception as e:
+                logger.warning(f"OCR extraction failed, continuing with vision only: {e}")
 
         prompt = prompt_builder.build_screen_analysis_prompt(
             question,
             focus_area=focus_area,
         )
+        
+        # Prepend OCR results to prompt if available
+        if ocr_metadata:
+            prompt = ocr_metadata + prompt
 
         optimized_primary = self._prepare_image_for_model(screenshot)
         inputs: List[Any] = [prompt, optimized_primary]
@@ -123,11 +220,68 @@ class EnhancedGeminiClient:
             
         except Exception as e:
             logger.error(f"Error analyzing screen: {e}", exc_info=True)
+            # Return OCR text as fallback if available
+            if ocr_text:
+                return f"Vision model error, OCR text only:\n{ocr_text}"
             return f"Error: {str(e)}"
     
-    def find_element_location(self, screenshot: Image.Image, element_description: str) -> Dict[str, Any]:
-        """Use vision to locate a UI element in a screenshot."""
+    def find_element_location(
+        self, 
+        screenshot: Image.Image, 
+        element_description: str,
+        *,
+        use_ocr: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Use vision to locate a UI element in a screenshot.
         
+        Args:
+            screenshot: PIL Image to search
+            element_description: Description of element to find
+            use_ocr: Whether to attempt OCR text search first (recommended)
+            
+        Returns:
+            Dict with location data and confidence
+        """
+        
+        # Try OCR-based text search first (faster and more accurate for text elements)
+        if use_ocr and self.ocr:
+            try:
+                # Check if description looks like text search
+                if len(element_description.split()) <= 5 and not any(
+                    keyword in element_description.lower() 
+                    for keyword in ["button", "icon", "image", "picture", "graphic"]
+                ):
+                    matches = self.ocr.find_text(
+                        screenshot,
+                        element_description,
+                        exact_match=False,
+                        min_confidence=70.0
+                    )
+                    
+                    if matches:
+                        # Use the first high-confidence match
+                        best_match = max(matches, key=lambda m: m.confidence)
+                        logger.info(
+                            f"OCR found '{element_description}' at {best_match.center} "
+                            f"(confidence: {best_match.confidence:.1f}%)"
+                        )
+                        return {
+                            "found": True,
+                            "x": best_match.center[0] if best_match.center else 0,
+                            "y": best_match.center[1] if best_match.center else 0,
+                            "confidence": best_match.confidence,
+                            "method": "ocr",
+                            "bounding_box": best_match.bounding_box,
+                            "text_matched": best_match.text
+                        }
+                    else:
+                        logger.debug(f"OCR found no match for '{element_description}', trying vision model")
+                        
+            except Exception as e:
+                logger.warning(f"OCR element search failed, falling back to vision: {e}")
+        
+        # Fall back to vision model
         prompt = prompt_builder.build_element_location_prompt(element_description)
 
         prepared_image = self._prepare_image_for_model(screenshot)
@@ -138,18 +292,19 @@ class EnhancedGeminiClient:
             
             json_text = self._extract_json(text)
             result = json.loads(json_text)
+            result["method"] = "vision"
             
             if result.get("found", False):
-                logger.info(f"Element found: {element_description} "
+                logger.info(f"Vision model found: {element_description} "
                           f"(confidence: {result.get('confidence', 0)}%)")
             else:
-                logger.debug(f"Element not found: {element_description}")
+                logger.debug(f"Vision model could not find: {element_description}")
             
             return result
             
         except Exception as e:
             logger.error(f"Error finding element: {e}")
-            return {"found": False, "error": str(e)}
+            return {"found": False, "error": str(e), "method": "vision"}
     
     def verify_action_result(self, before_image: Image.Image, after_image: Image.Image, 
                            expected_change: str) -> Dict[str, Any]:
@@ -310,3 +465,37 @@ class EnhancedGeminiClient:
             "steps": [],
             "clarification_needed": clarification
         }
+
+    @staticmethod
+    def _extract_text_from_response(response: Any) -> str:
+        """Best-effort extraction of text from a Gemini response or error payload."""
+
+        if response is None:
+            return ""
+
+        try:
+            text_attr = getattr(response, "text", None)
+            if text_attr:
+                return str(text_attr).strip()
+        except Exception:
+            pass
+
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) if content else None
+
+            if parts:
+                for part in parts:
+                    part_text = getattr(part, "text", None)
+                    if part_text:
+                        return str(part_text).strip()
+
+            legacy_parts = getattr(candidate, "parts", None)
+            if legacy_parts:
+                for part in legacy_parts:
+                    part_text = getattr(part, "text", None)
+                    if part_text:
+                        return str(part_text).strip()
+
+        return ""

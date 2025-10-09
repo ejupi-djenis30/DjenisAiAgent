@@ -3,10 +3,14 @@
 import os
 from pathlib import Path
 from typing import Optional
-from pydantic import BaseModel, Field, ConfigDict
-from dotenv import load_dotenv
 
-# Load environment variables
+from dotenv import load_dotenv
+from pydantic import BaseModel, ConfigDict, Field
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+# Load environment variables from project root if available, then fall back to defaults
+load_dotenv(BASE_DIR / ".env")
 load_dotenv()
 
 
@@ -47,12 +51,12 @@ class AgentConfig(BaseModel):
     vision_image_max_dim: int = Field(default_factory=lambda: int(os.getenv("VISION_IMAGE_MAX_DIM", "1600")))
     
     # Paths
-    base_dir: Path = Field(default_factory=lambda: Path(__file__).parent)
-    logs_dir: Path = Field(default_factory=lambda: Path(__file__).parent / "logs")
-    screenshots_dir: Path = Field(default_factory=lambda: Path(__file__).parent / "screenshots")
+    base_dir: Path = Field(default_factory=lambda: BASE_DIR)
+    logs_dir: Path = Field(default_factory=lambda: BASE_DIR / "logs")
+    screenshots_dir: Path = Field(default_factory=lambda: BASE_DIR / "screenshots")
     
     # Safety
-    emergency_stop_key: str = "ctrl+shift+esc"
+    emergency_stop_key: str = Field(default_factory=lambda: os.getenv("EMERGENCY_STOP_KEY", "ctrl+shift+q"))
     max_task_duration: int = 300  # seconds
     no_limit_mode: bool = False
     
@@ -61,8 +65,8 @@ class AgentConfig(BaseModel):
     def __init__(self, **data):
         super().__init__(**data)
         # Create directories
-        self.logs_dir.mkdir(exist_ok=True)
-        self.screenshots_dir.mkdir(exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
         # Normalize screenshot settings
         self.screenshot_format = self._normalize_format(self.screenshot_format, fallback="jpeg")

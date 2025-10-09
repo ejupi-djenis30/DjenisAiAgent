@@ -153,6 +153,9 @@ LOG_LEVEL=INFO
 MAX_RETRIES=3
 ACTION_DELAY=0.5
 
+# Safety
+EMERGENCY_STOP_KEY=ctrl+shift+q
+
 # Features
 ENABLE_SCREEN_RECORDING=false
 ```
@@ -250,6 +253,9 @@ LOG_LEVEL=INFO            # Options: DEBUG, INFO, WARNING, ERROR
 MAX_RETRIES=3             # Number of retry attempts for failed actions
 ACTION_DELAY=0.5          # Delay between actions in seconds
 
+# Safety
+EMERGENCY_STOP_KEY=ctrl+shift+q  # Keyboard shortcut to cancel execution
+
 # Features
 ENABLE_SCREEN_RECORDING=false  # Save before/after screenshots for each action
 SCREEN_FOCUS_SIZE=420          # Focus crop dimension (pixels) for AI corrections
@@ -281,6 +287,7 @@ GEMINI_MODEL=gemini-2.0-flash-exp
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG/INFO/WARNING/ERROR) |
 | `MAX_RETRIES` | `3` | Max retry attempts for failed actions |
 | `ACTION_DELAY` | `0.5` | Delay between actions (seconds) |
+| `EMERGENCY_STOP_KEY` | `ctrl+shift+q` | Keyboard shortcut to cancel execution |
 | `ENABLE_SCREEN_RECORDING` | `false` | Save screenshots before/after each action |
 | `SCREEN_FOCUS_SIZE` | `420` | Square pixel size for focus crops shared with AI |
 | `SCREEN_FOCUS_HISTORY` | `3` | Number of recent focus crops retained for reasoning |
@@ -296,7 +303,7 @@ api_timeout: int = 30              # Gemini API timeout (seconds)
 screenshot_quality: int = 85        # Screenshot JPEG quality (0-100)
 
 # Safety
-emergency_stop_key: str = "ctrl+shift+esc"
+emergency_stop_key: str = "ctrl+shift+q"
 max_task_duration: int = 300        # Maximum task duration (seconds)
 
 # Paths
@@ -306,7 +313,7 @@ screenshots_dir: Path = Path("screenshots")  # Directory for screenshots
 
 ## 🛡️ Safety Features
 
-- **Emergency Stop**: Press `Ctrl+Shift+Q` to abort execution immediately
+- **Emergency Stop**: Press `Ctrl+Shift+Q` to abort execution immediately (configurable via `EMERGENCY_STOP_KEY`)
 - **Task Timeout**: Automatic timeout after 300 seconds (configurable)
 - **Fail-safe**: Move mouse to screen corners to trigger PyAutoGUI failsafe
 - **Exponential Backoff**: Intelligent retry delays (1s, 1.5s, 2.25s)
@@ -332,9 +339,7 @@ AI Fallback Activates:
   ✅ Successfully focuses window!
 ```
 
-**Supported:** All languages (DE, ES, FR, IT, PT, RU, ZH, JA, KO, etc.)
-
-See [AI Window Identification Documentation](docs/AI_WINDOW_IDENTIFICATION.md) for details.
+**Supported:** All languages (DE, ES, FR, IT, PT, RU, ZH, JA, KO, etc.). Internals are handled in `src/automation/ui_automation.py` by the `focus_window` routine, which progressively escalates from exact title matches to AI-assisted fallbacks.
 
 ## 🏗️ Architecture
 

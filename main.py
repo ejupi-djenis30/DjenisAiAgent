@@ -14,19 +14,26 @@ init(autoreset=True)
 logger = setup_logger("Main", config.logs_dir, config.log_level)
 
 
+def _format_hotkey(hotkey: str) -> str:
+    """Return a display-friendly representation of a keyboard shortcut."""
+
+    return "+".join(part.upper() for part in hotkey.split("+")) if hotkey else "N/A"
+
+
 def main():
     """Main function."""
-    
+    emergency_hotkey = _format_hotkey(config.emergency_stop_key)
+
     parser = argparse.ArgumentParser(
         description="AI Agent for Windows UI Automation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
   python main.py "open notepad and type hello world"
   python main.py "search google for python tutorials"
   python main.py "open calculator and calculate 25 * 4"
   
-Emergency Stop: Press Ctrl+Shift+Q during execution
+Emergency Stop: Press {emergency_hotkey} during execution
         """
     )
     
@@ -98,18 +105,18 @@ Emergency Stop: Press Ctrl+Shift+Q during execution
         if args.interactive or not args.request:
             # Interactive mode
             print(f"{Fore.YELLOW}Interactive Mode{Style.RESET_ALL} - Type 'exit', 'quit', or 'help' for assistance\n")
-            
+
             while True:
                 try:
                     request = input(f"\n{Fore.GREEN}🎯 Enter your request: {Style.RESET_ALL}").strip()
-                    
+
                     if not request:
                         continue
-                    
+
                     if request.lower() in ['exit', 'quit', 'q']:
                         print(f"\n{Fore.CYAN}👋 Goodbye!{Style.RESET_ALL}")
                         break
-                    
+
                     if request.lower() == 'help':
                         print(f"""
 {Fore.CYAN}Available Commands:{Style.RESET_ALL}
@@ -123,10 +130,10 @@ Emergency Stop: Press Ctrl+Shift+Q during execution
   • "open calculator and calculate 25 * 4"
   • "take a screenshot"
   
-{Fore.YELLOW}Emergency Stop:{Style.RESET_ALL} Press Ctrl+Shift+Q during execution
+{Fore.YELLOW}Emergency Stop:{Style.RESET_ALL} Press {emergency_hotkey} during execution
                         """)
                         continue
-                    
+
                     if request.lower() == 'stats':
                         stats = agent.get_stats()
                         print(f"\n{Fore.CYAN}📊 Execution Statistics:{Style.RESET_ALL}")
@@ -137,15 +144,15 @@ Emergency Stop: Press Ctrl+Shift+Q during execution
                         print(f"  Total Actions: {stats['total_actions']}")
                         print(f"  Avg Time/Task: {stats['avg_execution_time']:.1f}s")
                         continue
-                    
+
                     # Execute task
                     result = agent.execute_task(request)
-                    
+
                     # Handle clarification
                     if result.get("needs_clarification"):
                         print(f"\n{Fore.YELLOW}❓ {result['question']}{Style.RESET_ALL}")
                         continue
-                    
+
                 except KeyboardInterrupt:
                     print(f"\n\n{Fore.CYAN}👋 Interrupted by user. Goodbye!{Style.RESET_ALL}")
                     break

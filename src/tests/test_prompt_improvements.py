@@ -3,6 +3,8 @@ Test script to verify prompt improvement implementations.
 Run with: py test_prompt_improvements.py
 """
 
+import platform
+
 from src.core.prompts import prompt_builder, _detect_complexity, _format_context
 from src.core.actions import action_registry
 
@@ -195,10 +197,46 @@ def test_screen_analysis():
     return all_passed
 
 
+def test_system_app_discovery():
+    """Test that system application discovery integrates with prompts on Windows."""
+
+    print("=" * 60)
+    print("TEST 6: System Application Discovery")
+    print("=" * 60)
+
+    if platform.system() != "Windows":
+        print("⚠️  Skipped: System application discovery is Windows-only.")
+        return True
+
+    try:
+        from src.utils.system_apps import get_apps_catalog_formatted, find_executable
+    except Exception as exc:  # pragma: no cover - import guards handle non-Windows
+        print(f"✗ Failed to import system apps utilities: {exc}")
+        return False
+
+    catalog = get_apps_catalog_formatted()
+    print("Catalog preview:")
+    preview_lines = "\n".join(catalog.splitlines()[:6])
+    print(preview_lines)
+
+    resolved_edge = find_executable("edge")
+    resolved_calc = find_executable("calculator")
+
+    success = catalog.startswith("Available Windows applications") and (
+        resolved_edge.endswith(".exe")
+    ) and (
+        resolved_calc.endswith(".exe")
+    )
+
+    status = "✓" if success else "✗"
+    print(f"{status} Discovery integration working\n")
+    return success
+
+
 def test_edge_cases():
     """Test edge cases and error handling."""
     print("=" * 60)
-    print("TEST 6: Edge Cases")
+    print("TEST 7: Edge Cases")
     print("=" * 60)
     
     all_passed = True
@@ -255,6 +293,7 @@ def main():
     results.append(("Prompt Generation", test_prompt_generation()))
     results.append(("Action Registry", test_action_registry()))
     results.append(("Screen Analysis", test_screen_analysis()))
+    results.append(("System App Discovery", test_system_app_discovery()))
     results.append(("Edge Cases", test_edge_cases()))
     
     print("=" * 60)

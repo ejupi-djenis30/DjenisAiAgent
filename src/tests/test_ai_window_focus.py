@@ -25,15 +25,15 @@ def test_window_enumeration():
     print("\nFiltering out system windows...")
     
     user_windows = [
-        (title, hwnd) for title, hwnd in windows
-        if title and not ui._is_system_window(title)
+        window for window in windows
+        if window.get('title') and not ui._is_system_window(window.get('title', ''))
     ]
     
     print(f"Found {len(user_windows)} user windows:")
     print()
     
-    for i, (title, hwnd) in enumerate(user_windows[:20], 1):
-        print(f"  {i:2}. {title}")
+    for i, window in enumerate(user_windows[:20], 1):
+        print(f"  {i:2}. {window.get('title')}")
     
     if len(user_windows) > 20:
         print(f"  ... and {len(user_windows) - 20} more")
