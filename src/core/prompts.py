@@ -263,10 +263,28 @@ class PromptBuilder:
         "     Example: Tab 3 times, press Enter\n"
         "  3. TEXT-BASED SEARCH (Use app's search if available)\n"
         "     Example: Ctrl+F → type query → Enter\n"
-        "  4. VISUAL ELEMENT LOCATION (Requires screenshot analysis)\n"
+        "  4. OCR + FINE MOUSE CONTROL (Precise pixel-level targeting)\n"
+        "     Example: Use OCR to get near target, then fine-tune with directional moves\n"
+        "  5. VISUAL ELEMENT LOCATION (Requires screenshot analysis)\n"
         "     Example: Identify button via vision, click at (~x, ~y)\n"
-        "  5. COORDINATE ESTIMATION (Last resort, lowest reliability)\n"
+        "  6. COORDINATE ESTIMATION (Last resort, lowest reliability)\n"
         "     Example: Click at (~100, ~50) for top-left area\n\n"
+        
+    "FINE MOUSE CONTROL SYSTEM:\n"
+        "  • Purpose: Pixel-perfect targeting guided by AI vision\n"
+        "  • Strategy: OCR places cursor near target, AI guides final positioning\n"
+        "  • Actions Available:\n"
+        "    - move_mouse_fine: Move cursor 1 pixel in direction (up/down/left/right)\n"
+        "    - get_mouse_position: Get current cursor coordinates\n"
+        "  • Usage Pattern:\n"
+        "    1. Use OCR to approximate target location (fast, gets within ~50px)\n"
+        "    2. Take screenshot to see current cursor position\n"
+        "    3. Analyze: Is cursor on target? If not, which direction?\n"
+        "    4. Issue directional commands: move_mouse_fine(\"up\"), move_mouse_fine(\"right\"), etc.\n"
+        "    5. Repeat steps 2-4 until cursor is precisely on target\n"
+        "    6. Execute click action\n"
+        "  • Best For: Small buttons, precise UI elements, when OCR alone isn't accurate enough\n"
+        "  • Max Iterations: 20-30 fine movements (keeps responsiveness)\n\n"
         
     "SCREEN ANALYSIS CAPABILITIES:\n"
         "  • Vision Model: Google Gemini (image understanding)\n"
@@ -637,6 +655,80 @@ class PromptBuilder:
         "    • Ctrl+Home/End: Jump to start/end\n"
     )
 
+    CALCULATOR_AUTOMATION_GUIDE = (
+    "CALCULATOR AUTOMATION PATTERNS:\n"
+        "  ⚠️ IMPORTANT: Windows Calculator does NOT have a text input field.\n"
+        "  You must interact with buttons OR use keyboard typing.\n"
+        "  \n"
+        "  Method 1 - Keyboard Input (RECOMMENDED):\n"
+        "    1. Open Calculator: open_application → calc.exe\n"
+        "    2. Focus window: focus_window → Calculator\n"
+        "    3. Type formula directly: type_text → '43+123.45/34=' (include '=' at end)\n"
+        "    4. Copy result: hotkey → ctrl+c\n"
+        "    Note: Typing works because Calculator accepts keyboard input\n"
+        "  \n"
+        "  Method 2 - Button Clicks:\n"
+        "    1. Open Calculator\n"
+        "    2. Click each button: click → '4', click → '3', click → '+', etc.\n"
+        "    3. Click '=' button to get result\n"
+        "    Note: This is slower and more error-prone than typing\n"
+        "  \n"
+        "  Clearing Calculator:\n"
+        "    • Press 'C' key OR click 'C' button (clears current entry)\n"
+        "    • Press 'Esc' key (clears all)\n"
+        "  \n"
+        "  Getting Result:\n"
+        "    • Copy: Ctrl+C (copies displayed result)\n"
+        "    • Select All: Ctrl+A then Ctrl+C\n"
+        "  \n"
+        "  Common Mistakes to AVOID:\n"
+        "    ❌ DON'T use 'type_text → Calculator input field' (no such field exists!)\n"
+        "    ❌ DON'T try to click a non-existent input box\n"
+        "    ✅ DO use 'type_text → Calculator window' (types into focused window)\n"
+        "    ✅ DO ensure Calculator window is focused before typing\n"
+    )
+
+    FINE_MOUSE_TARGETING_GUIDE = (
+    "FINE MOUSE TARGETING - STEP-BY-STEP EXAMPLES:\n"
+        "  \n"
+        "  When to Use Fine Mouse Control:\n"
+        "    • Small buttons or icons (< 30x30 pixels)\n"
+        "    • Precise UI elements where OCR placement is approximate\n"
+        "    • Elements without text labels (icons, color pickers, sliders)\n"
+        "    • When regular click misses target and requires refinement\n"
+        "  \n"
+        "  Example 1 - Clicking a Small 'X' Close Button:\n"
+        "    Step 1: {action: 'click', target: 'X close button', parameters: {}}\n"
+        "            → OCR places cursor near button but not precisely on it\n"
+        "    Step 2: Take screenshot to see current position\n"
+        "    Step 3: Analyze cursor position relative to target\n"
+        "    Step 4: {action: 'move_mouse_fine', target: 'up', parameters: {amount: 5}}\n"
+        "    Step 5: {action: 'move_mouse_fine', target: 'right', parameters: {amount: 3}}\n"
+        "    Step 6: Take screenshot to verify position\n"
+        "    Step 7: {action: 'click', target: 'current position', parameters: {}}\n"
+        "  \n"
+        "  Example 2 - Color Picker Precision:\n"
+        "    Step 1: Use OCR or vision to get approximate color picker location\n"
+        "    Step 2: Move mouse to approximate position\n"
+        "    Step 3: Take screenshot, analyze exact target pixel\n"
+        "    Step 4-N: Use move_mouse_fine with directions until cursor is on exact color\n"
+        "    Step N+1: Click to select color\n"
+        "  \n"
+        "  Fine Movement Commands:\n"
+        "    • {action: 'move_mouse_fine', target: 'up', parameters: {amount: 1}}\n"
+        "    • {action: 'move_mouse_fine', target: 'down', parameters: {amount: 1}}\n"
+        "    • {action: 'move_mouse_fine', target: 'left', parameters: {amount: 1}}\n"
+        "    • {action: 'move_mouse_fine', target: 'right', parameters: {amount: 1}}\n"
+        "    • Default amount is 1 pixel; can specify larger amounts for faster approach\n"
+        "  \n"
+        "  Optimization Tips:\n"
+        "    • Use larger amounts (3-5px) when far from target, then switch to 1px near target\n"
+        "    • Limit fine movements to 20-30 iterations to maintain responsiveness\n"
+        "    • Combine horizontal and vertical movements in separate steps\n"
+        "    • Take screenshot every 5-10 fine movements to verify progress\n"
+        "    • If getting stuck in a loop, fall back to coordinate-based click\n"
+    )
+
     WINDOW_MANAGEMENT_GUIDE = (
     "WINDOW MANAGEMENT STRATEGIES:\n"
         "  Finding Windows:\n"
@@ -835,6 +927,9 @@ class PromptBuilder:
         needs_window_guide = any(word in request_lower for word in 
                                   ['window', 'close', 'minimize', 'maximize', 'focus', 'switch',
                                    'alt+tab', 'taskbar'])
+        needs_calculator_guide = any(word in request_lower for word in 
+                                      ['calculator', 'calc', 'calculate', 'math', 'computation',
+                                       'add', 'subtract', 'multiply', 'divide', 'plus', 'minus'])
 
         sections = [PromptBuilder.TASK_PLANNING_SYSTEM]
 
@@ -861,7 +956,8 @@ class PromptBuilder:
 
         # Add specialized guides based on task type OR if specific keywords detected
         if complexity in {"medium", "complex"} or any([needs_browser_guide, needs_file_guide, 
-                                                         needs_text_guide, needs_window_guide]):
+                                                         needs_text_guide, needs_window_guide,
+                                                         needs_calculator_guide]):
             if complexity not in {"medium", "complex"}:
                 # Add execution strategies for keyword-triggered guides
                 sections.append(PromptBuilder.EXECUTION_STRATEGIES)
@@ -873,6 +969,8 @@ class PromptBuilder:
                 sections.append(PromptBuilder.FILE_OPERATIONS_GUIDE)
             if needs_text_guide:
                 sections.append(PromptBuilder.TEXT_EDITING_GUIDE)
+            if needs_calculator_guide:
+                sections.append(PromptBuilder.CALCULATOR_AUTOMATION_GUIDE)
             if needs_window_guide:
                 sections.append(PromptBuilder.WINDOW_MANAGEMENT_GUIDE)
 

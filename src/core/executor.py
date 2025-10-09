@@ -12,6 +12,8 @@ from src.utils.logger import setup_logger
 from src.config.config import config
 from src.automation.ui_automation import UIAutomationEngine, MouseMoveTelemetry
 from src.core.actions import action_registry
+from src.core.target_locator import TargetLocator
+from src.utils.ocr import get_ocr_engine
 
 logger = setup_logger("ActionExecutor")
 
@@ -63,7 +65,15 @@ class ActionExecutor:
         """Initialize action executor."""
         self.ui = ui_engine
         self.gemini = gemini_client
-        logger.info("Action executor initialized")
+        
+        # Initialize Target Locator for intelligent element finding
+        ocr_engine = get_ocr_engine()
+        self.target_locator = TargetLocator(
+            ocr_engine=ocr_engine,
+            gemini_client=gemini_client
+        )
+        
+        logger.info("Action executor initialized with TargetLocator")
     
     def execute(
         self,
@@ -459,12 +469,12 @@ If the target cannot be identified, set "found" to false and explain in "reason"
             center = attempt.final_position or attempt.target
             if center:
                 record["focus_center"] = center
-                if config.enable_screen_recording:
-                    focus_centers.append(center)
+                focus_centers.append(center)
 
             serialized_history.append(record)
 
-        if config.enable_screen_recording and focus_centers:
+        # Simplified focus center collection (no screen recording)
+        if focus_centers:
             unique_focus = []
             for center in focus_centers:
                 if center not in unique_focus:
@@ -555,8 +565,8 @@ If the target cannot be identified, set "found" to false and explain in "reason"
         center = telemetry.final_position or telemetry.target
         if center:
             history[0]["focus_center"] = center
-            if config.enable_screen_recording:
-                metadata["focus_centers"] = [center]
+            # No continuous screen recording, simplified metadata
+            metadata["focus_centers"] = [center]
 
         metadata["history"] = history
 
@@ -579,6 +589,39 @@ If the target cannot be identified, set "found" to false and explain in "reason"
             return {"success": success}
         else:
             return {"success": False, "error": f"Could not find element: {target}"}
+    
+    def _execute_move_mouse_fine(self, target: str, params: Dict) -> Dict[str, Any]:
+        """
+        Move mouse one pixel at a time in a direction.
+        Used for AI-guided fine targeting.
+        
+        Args:
+            target: Direction (up/down/left/right) or from params
+            params: Dictionary with optional 'direction' and 'amount' keys
+        """
+        direction = params.get("direction", target).lower().strip()
+        amount = int(params.get("amount", 1))
+        
+        if not direction:
+            return {"success": False, "error": "Direction not specified for move_mouse_fine"}
+        
+        # Get position before movement
+        pos_before = self.ui.get_mouse_position()
+        
+        # Execute fine movement
+        success = self.ui.move_mouse_fine(direction, amount)
+        
+        # Get position after movement
+        pos_after = self.ui.get_mouse_position()
+        
+        return {
+            "success": success,
+            "direction": direction,
+            "amount": amount,
+            "position_before": pos_before,
+            "position_after": pos_after,
+            "moved": (pos_after[0] - pos_before[0], pos_after[1] - pos_before[1])
+        }
     
     def _execute_right_click(self, target: str, params: Dict) -> Dict[str, Any]:
         """Right-click on an element."""
@@ -911,16 +954,37 @@ If the target cannot be identified, set "found" to false and explain in "reason"
             return {"success": False, "error": error_msg, **metadata}
     
     def _find_element(self, description: str) -> Optional[Tuple[int, int]]:
-        """Find an element on screen (placeholder - uses OCR in real implementation)."""
-        # Try text search first
-        location = self.ui.find_text_on_screen(description)
-        if location:
-            logger.debug(f"Found element by text: {description}")
-            return location
+        """
+        Find an element on screen using multi-level strategy.
         
-        # In production, you'd use AI vision here
-        logger.debug(f"Could not find element: {description}")
-        return None
+        Uses TargetLocator to implement funnel approach:
+        1. OCR exact text match (fast, precise)
+        2. OCR fuzzy match with AI semantic matching
+        3. Vision AI analysis (powerful but slower)
+        """
+        try:
+            screenshot = self.ui.take_screenshot()
+            if not screenshot:
+                logger.error("Could not capture screenshot for element finding")
+                return None
+            
+            result = self.target_locator.find_target(screenshot, description)
+            
+            if result.success and result.coordinates:
+                logger.info(
+                    f"Found element '{description}' at {result.coordinates} "
+                    f"using {result.method} (confidence: {result.confidence:.2f})"
+                )
+                return result.coordinates
+            else:
+                logger.warning(
+                    f"Could not find element '{description}': {result.error or 'No match found'}"
+                )
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error in element finding: {e}", exc_info=True)
+            return None
 
     def _suggest_actions(self, action_name: str) -> List[str]:
         """Suggest close action matches for unknown commands."""

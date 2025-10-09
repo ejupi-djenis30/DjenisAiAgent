@@ -62,9 +62,13 @@ def test_focus_from_candidates_uses_deterministic(engine: UIAutomationEngine, mo
 
     candidate = {"title": "Visual Studio Code", "hwnd": 1234, "process_name": "Code.exe", "width": 1200, "height": 800}
 
-    monkeypatch.setattr(engine, "_enumerate_focus_candidates", lambda: [candidate])
-    monkeypatch.setattr(engine, "_deterministic_window_choice", lambda target, cands: candidate)
-    monkeypatch.setattr(engine, "_select_window_with_ai", lambda target, cands: None)
+    monkeypatch.setattr(engine.window_manager, "_enumerate_focus_candidates", lambda: [candidate])
+    monkeypatch.setattr(
+        engine.window_manager,
+        "_deterministic_window_choice",
+        lambda target, cands: candidate,
+    )
+    monkeypatch.setattr(engine.window_manager, "_select_window_with_ai", lambda target, cands: None)
 
     focused: List[int] = []
 
@@ -72,7 +76,7 @@ def test_focus_from_candidates_uses_deterministic(engine: UIAutomationEngine, mo
         focused.append(hwnd)
         return True
 
-    monkeypatch.setattr(engine, "_focus_window_handle", fake_focus)
+    monkeypatch.setattr(engine.window_manager, "_focus_window_handle", fake_focus)
 
     assert engine._focus_from_candidates("Visual Studio Code", allow_ai=True) is True
     assert focused == [candidate["hwnd"]]

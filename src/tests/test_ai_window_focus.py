@@ -26,7 +26,7 @@ def test_window_enumeration():
     
     user_windows = [
         window for window in windows
-        if window.get('title') and not ui._is_system_window(window.get('title', ''))
+    if window.get('title') and not ui.window_manager._is_system_window(window.get('title', ''))
     ]
     
     print(f"Found {len(user_windows)} user windows:")

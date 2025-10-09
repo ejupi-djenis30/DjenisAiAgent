@@ -146,6 +146,33 @@ class ActionRegistry:
             aliases=["scroll_page", "wheel"]
         ))
         
+        self.register(ActionDefinition(
+            name="move_mouse",
+            category=ActionCategory.MOUSE,
+            description="Move mouse to specific coordinates",
+            parameters=["x", "y"],
+            examples=["move mouse to 100,200", "move cursor to 500,300"],
+            aliases=["move_cursor", "mouse_move"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="move_mouse_fine",
+            category=ActionCategory.MOUSE,
+            description="Move mouse one pixel at a time in a direction (up, down, left, right). Used for precise targeting guided by AI vision.",
+            parameters=["direction"],
+            examples=["move mouse up", "move mouse left", "move mouse down", "move mouse right"],
+            aliases=["nudge_mouse", "fine_move", "pixel_move"]
+        ))
+        
+        self.register(ActionDefinition(
+            name="get_mouse_position",
+            category=ActionCategory.MOUSE,
+            description="Get current mouse cursor position",
+            parameters=[],
+            examples=["get mouse position", "where is cursor"],
+            aliases=["mouse_position", "cursor_position", "mouse_location"]
+        ))
+        
         # Window Actions
         self.register(ActionDefinition(
             name="focus_window",

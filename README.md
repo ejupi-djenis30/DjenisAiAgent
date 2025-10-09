@@ -48,6 +48,7 @@ Execution Flow:
 | **Gemini Client** | Interfaces with Google Gemini for planning and vision | google-generativeai, Pillow |
 | **Action Executor** | Executes 38+ actions with telemetry | ActionResult, structured logging |
 | **UI Automation Engine** | Low-level Windows UI control | pyautogui, pywinauto, win32api |
+| **Window Manager** | Dedicated window discovery and focus orchestration | pywinauto, Win32 APIs, Google Gemini |
 | **Prompt Builder** | Crafts optimized prompts for Gemini | Chain-of-thought reasoning |
 | **Overlay UI** | Real-time monitoring interface | tkinter, transparent overlay |
 
@@ -133,42 +134,38 @@ pip install -r requirements.txt
 Create a `.env` file in the project root directory:
 
 ```bash
-# Create .env file
+# Copy the example configuration file
 cd DjenisAiAgent
-notepad .env
+copy .env.example .env
 ```
 
-Add your configuration to the `.env` file:
+Open `.env` in a text editor and add your Gemini API key:
 
 ```env
 # Google Gemini API Configuration
-GEMINI_API_KEY=your_api_key_here
+GEMINI_API_KEY=your_actual_api_key_here  # <-- Replace with your key
 GEMINI_MODEL=gemini-2.0-flash-exp
+GEMINI_MAX_OUTPUT_TOKENS=65536
 
-# Debug and Logging
+# Agent Configuration
 DEBUG_MODE=false
 LOG_LEVEL=INFO
+ENABLE_SCREEN_RECORDING=true
 
-# Performance Settings
+# Performance and Retry Settings
 MAX_RETRIES=3
-ACTION_DELAY=0.5
+ACTION_DELAY=0.1
 
-# Safety
-EMERGENCY_STOP_KEY=ctrl+shift+q
-
-# Features
-ENABLE_SCREEN_RECORDING=false
+# For more settings, see .env.example
 ```
 
 **Get your Gemini API key:**
-1. Visit https://makersuite.google.com/app/apikey
+1. Visit [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
 2. Sign in with your Google account
-3. Click "Create API Key"
-4. Copy the key and paste it in the `.env` file
+3. Click "Create API Key" or "Get API Key"
+4. Copy the key and paste it in your `.env` file
 
-**Alternative: Direct configuration**
-
-If you prefer, you can edit `src/config/config.py` directly, but using `.env` is recommended for security.
+⚠️ **IMPORTANT**: The `.env` file is excluded from git to protect your API key. Never commit it to version control.
 
 ### Usage
 

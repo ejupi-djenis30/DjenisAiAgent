@@ -1,5 +1,6 @@
 """Configuration management for the AI Agent."""
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -19,13 +20,12 @@ class AgentConfig(BaseModel):
     
     # API Configuration
     gemini_api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
-    gemini_model: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-flash-latest"))
-    gemini_max_output_tokens: int = Field(default_factory=lambda: int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "32768")))
+    gemini_model: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"))
+    gemini_max_output_tokens: int = Field(default_factory=lambda: int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "65536")))
     
     # Behavior Configuration
     debug_mode: bool = Field(default_factory=lambda: os.getenv("DEBUG_MODE", "false").lower() == "true")
     log_level: str = Field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
-    enable_screen_recording: bool = Field(default_factory=lambda: os.getenv("ENABLE_SCREEN_RECORDING", "false").lower() == "true")
     
     # Performance Configuration
     max_retries: int = Field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
@@ -44,7 +44,6 @@ class AgentConfig(BaseModel):
     screenshot_max_height: int = Field(default_factory=lambda: int(os.getenv("SCREENSHOT_MAX_HEIGHT", "0")))
     screen_focus_size: int = Field(default_factory=lambda: int(os.getenv("SCREEN_FOCUS_SIZE", "420")))
     screen_focus_history: int = Field(default_factory=lambda: int(os.getenv("SCREEN_FOCUS_HISTORY", "3")))
-    screen_recording_delay: float = Field(default_factory=lambda: float(os.getenv("SCREEN_RECORDING_DELAY", "0.2")))
     vision_image_format: str = Field(default_factory=lambda: os.getenv("VISION_IMAGE_FORMAT", "jpeg"))
     vision_image_quality: int = Field(default_factory=lambda: int(os.getenv("VISION_IMAGE_QUALITY", "75")))
     vision_image_scale: float = Field(default_factory=lambda: float(os.getenv("VISION_IMAGE_SCALE", "0.75")))
@@ -64,6 +63,19 @@ class AgentConfig(BaseModel):
     
     def __init__(self, **data):
         super().__init__(**data)
+
+        logger = logging.getLogger("AgentConfig")
+        if not logger.handlers:
+            logging.basicConfig(level=logging.INFO)
+
+        # Validate critical settings immediately, but allow empty keys during development/tests
+        if not self.gemini_api_key or self.gemini_api_key == "your_api_key_here":
+            logger.warning(
+                "GEMINI_API_KEY is not configured; Gemini-powered features will be disabled "
+                "until a valid key is provided."
+            )
+            self.gemini_api_key = ""
+        
         # Create directories
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)

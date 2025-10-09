@@ -1,28 +1,22 @@
 """UI Automation engine for Windows."""
 
-import difflib
 import math
 import random
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 
-import psutil
 import pyautogui
 import pywinauto
-from PIL import Image, ImageGrab
+from PIL import Image
 from pywinauto import Application
-from pywinauto.findwindows import ElementNotFoundError
 
+from src.automation.window_manager import WindowManager
 from src.config.config import config
+from src.core.gemini_client import EnhancedGeminiClient
 from src.utils.logger import setup_logger
 from src.utils.ocr import get_ocr_engine, OCRResult
-
-try:
-    RESAMPLE_LANCZOS = Image.Resampling.LANCZOS  # type: ignore[attr-defined]
-except AttributeError:  # pragma: no cover - fallback for older Pillow
-    RESAMPLE_LANCZOS = getattr(Image, "LANCZOS", 1)  # type: ignore[attr-defined]
+from src.utils.screen_utils import ScreenUtils
 
 logger = setup_logger("UIAutomation")
 
@@ -69,6 +63,13 @@ class UIAutomationEngine:
         self._base_duration = config.mouse_base_duration
         self._micro_correction = config.mouse_micro_correction_duration
         self._ocr_engine = get_ocr_engine()
+        self.screen_utils = ScreenUtils(screen_size=self.screen_size, logger=logger)
+        gemini_client = None
+        try:
+            gemini_client = EnhancedGeminiClient()
+        except Exception as exc:  # pragma: no cover - network/config dependent
+            logger.warning("Gemini client unavailable: %s", exc)
+        self.window_manager = WindowManager(logger=logger, gemini_client=gemini_client)
         if self._ocr_engine:
             logger.info("Tesseract OCR engine detected for text search")
         else:
@@ -109,148 +110,13 @@ class UIAutomationEngine:
 
         return path
         
-    @staticmethod
-    def _resize_image(
-        image: Image.Image,
-        *,
-        scale: float,
-        max_width: int,
-        max_height: int,
-    ) -> Image.Image:
-        """Resize image according to scale and max dimensions while preserving aspect ratio."""
-
-        width, height = image.size
-        if width <= 0 or height <= 0:
-            return image
-
-        ratio = 1.0
-        if scale < 1.0:
-            ratio = min(ratio, max(scale, 0.01))
-
-        if max_width > 0 and width > max_width:
-            ratio = min(ratio, max_width / width)
-
-        if max_height > 0 and height > max_height:
-            ratio = min(ratio, max_height / height)
-
-        if ratio >= 1.0:
-            return image
-
-        new_size = (
-            max(1, int(round(width * ratio))),
-            max(1, int(round(height * ratio))),
-        )
-
-        if new_size == image.size:
-            return image
-
-        return image.resize(new_size, RESAMPLE_LANCZOS)
-
-    def _prepare_image_for_storage(
-        self,
-        image: Image.Image,
-        *,
-        format_override: Optional[str] = None,
-        scale_override: Optional[float] = None,
-        max_width_override: Optional[int] = None,
-        max_height_override: Optional[int] = None,
-    ) -> Tuple[Image.Image, str, Dict[str, Any]]:
-        """Return optimized copy of image, target format, and save kwargs."""
-
-        format_name = (format_override or config.screenshot_format or "").strip().lower()
-        if format_name == "jpg":
-            format_name = "jpeg"
-        if format_name not in {"png", "jpeg", "webp"}:
-            format_name = config.screenshot_format
-
-        scale = config.screenshot_scale if scale_override is None else max(0.01, scale_override)
-        max_width = config.screenshot_max_width if max_width_override is None else max(0, max_width_override)
-        max_height = config.screenshot_max_height if max_height_override is None else max(0, max_height_override)
-
-        optimized = image.copy()
-        optimized = self._resize_image(optimized, scale=scale, max_width=max_width, max_height=max_height)
-
-        save_kwargs: Dict[str, Any] = {}
-
-        if format_name in {"jpeg", "webp"}:
-            if optimized.mode not in ("RGB", "L"):
-                optimized = optimized.convert("RGB")
-
-            quality = config.screenshot_quality
-            save_kwargs["quality"] = quality
-            save_kwargs["optimize"] = True
-
-            if format_name == "webp":
-                save_kwargs.setdefault("method", 6)
-        else:  # PNG
-            # Map 1-100 quality into PNG compress level (0-9, lower is faster)
-            quality = config.screenshot_quality
-            compress_level = max(0, min(9, int(round((100 - quality) / 10))))
-            save_kwargs["compress_level"] = compress_level
-            save_kwargs["optimize"] = True
-
-        return optimized, format_name, save_kwargs
-
     def take_screenshot(self, region: Optional[Tuple[int, int, int, int]] = None) -> Image.Image:
         """Take a screenshot of the screen or a specific region."""
-        try:
-            if region:
-                screenshot = ImageGrab.grab(bbox=region)
-            else:
-                screenshot = ImageGrab.grab()
-            return screenshot
-        except Exception as e:
-            logger.error(f"Failed to take screenshot: {e}")
-            raise
+        return self.screen_utils.take_screenshot(region)
     
     def save_screenshot(self, filename: Optional[str] = None) -> str:
         """Take and save a screenshot."""
-        screenshot = self.take_screenshot()
-        ext_hint: Optional[str] = None
-        if filename:
-            ext_hint = Path(filename).suffix.lower().lstrip(".") or None
-
-        optimized, format_name, save_kwargs = self._prepare_image_for_storage(
-            screenshot,
-            format_override=ext_hint,
-        )
-
-        if filename is None:
-            filename = f"screenshot_{int(time.time())}.{format_name}"
-        else:
-            path_candidate = Path(filename)
-            if not path_candidate.suffix:
-                filename = f"{filename}.{format_name}"
-
-        filepath = (config.screenshots_dir / filename).resolve()
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-
-        optimized.save(filepath, format=format_name.upper(), **save_kwargs)
-        logger.debug(
-            f"Screenshot saved: {filepath} ({format_name.upper()} {optimized.width}x{optimized.height})"
-        )
-        return str(filepath)
-
-    def _normalize_bbox(self, left: int, top: int, right: int, bottom: int) -> Tuple[int, int, int, int]:
-        """Clamp a bounding box within the visible screen area."""
-
-        screen_width, screen_height = self.screen_size
-        left = max(0, min(left, screen_width - 1))
-        top = max(0, min(top, screen_height - 1))
-        right = max(left + 1, min(right, screen_width))
-        bottom = max(top + 1, min(bottom, screen_height))
-        return int(left), int(top), int(right), int(bottom)
-
-    def _focus_bbox(self, center: Tuple[int, int], size: Optional[int] = None) -> Tuple[int, int, int, int]:
-        """Compute the bounding box for a focus region around a coordinate."""
-
-        size = size or config.screen_focus_size
-        half = max(size // 2, 8)
-        left = center[0] - half
-        top = center[1] - half
-        right = center[0] + half
-        bottom = center[1] + half
-        return self._normalize_bbox(left, top, right, bottom)
+        return self.screen_utils.save_screenshot(filename)
 
     def capture_focus_region(
         self,
@@ -258,19 +124,8 @@ class UIAutomationEngine:
         size: Optional[int] = None,
     ) -> Image.Image:
         """Capture a zoomed-in region around a coordinate for diagnostics."""
-
-        bbox = self._focus_bbox(center, size)
-        try:
-            focus_image = ImageGrab.grab(bbox=bbox)
-        except Exception as exc:  # pragma: no cover - hardware dependent
-            logger.error(f"Failed to capture focus region {bbox}: {exc}")
-            raise
-
-        target_size = size or config.screen_focus_size
-        if focus_image.width != target_size or focus_image.height != target_size:
-            focus_image = focus_image.resize((target_size, target_size), RESAMPLE_LANCZOS)
-
-        return focus_image
+        self.screen_utils.set_screen_size(self.screen_size)
+        return self.screen_utils.capture_focus_region(center, size)
 
     def crop_focus_region(
         self,
@@ -279,13 +134,8 @@ class UIAutomationEngine:
         size: Optional[int] = None,
     ) -> Image.Image:
         """Crop a focus region from an existing screenshot."""
-
-        bbox = self._focus_bbox(center, size)
-        cropped = image.crop(bbox)
-        target_size = size or config.screen_focus_size
-        if cropped.width != target_size or cropped.height != target_size:
-            cropped = cropped.resize((target_size, target_size), RESAMPLE_LANCZOS)
-        return cropped
+        self.screen_utils.set_screen_size(self.screen_size)
+        return self.screen_utils.crop_focus_region(image, center, size)
 
     def save_focus_region(
         self,
@@ -296,34 +146,13 @@ class UIAutomationEngine:
         image: Optional[Image.Image] = None,
     ) -> Optional[str]:
         """Persist a focus-region capture to disk and return its path."""
-
-        try:
-            focus_image = image or self.capture_focus_region(center, size)
-        except Exception as exc:  # pragma: no cover - hardware dependent
-            logger.debug(f"Focus capture skipped due to error: {exc}")
-            return None
-
-        focus_dir = config.screenshots_dir / "focus"
-        focus_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = int(time.time() * 1000)
-
-        optimized, format_name, save_kwargs = self._prepare_image_for_storage(
-            focus_image,
-            format_override=None,
-            scale_override=1.0,
-            max_width_override=0,
-            max_height_override=0,
+        self.screen_utils.set_screen_size(self.screen_size)
+        return self.screen_utils.save_focus_region(
+            center,
+            size,
+            prefix=prefix,
+            image=image,
         )
-        filename = f"{prefix}_{timestamp}.{format_name}"
-        filepath = (focus_dir / filename).resolve()
-
-        try:
-            optimized.save(filepath, format=format_name.upper(), **save_kwargs)
-            logger.debug(f"Focus region saved: {filepath} ({format_name.upper()} {optimized.width}x{optimized.height})")
-            return str(filepath)
-        except Exception as exc:
-            logger.debug(f"Failed to save focus region: {exc}")
-            return None
     
     def find_image_on_screen(self, template_path: str, confidence: float = 0.8) -> Optional[Tuple[int, int]]:
         """Find an image on the screen using template matching."""
@@ -641,6 +470,55 @@ class UIAutomationEngine:
         """Get current mouse position."""
         return pyautogui.position()
     
+    def move_mouse_fine(self, direction: str, amount: int = 1) -> bool:
+        """
+        Move mouse one pixel at a time in the specified direction.
+        This is used for AI-guided fine targeting where the model sees the screen
+        and directs the cursor pixel-by-pixel to the exact target.
+        
+        Args:
+            direction: One of 'up', 'down', 'left', 'right'
+            amount: Number of pixels to move (default 1)
+            
+        Returns:
+            bool: True if movement succeeded, False otherwise
+        """
+        direction = direction.lower().strip()
+        x_offset, y_offset = 0, 0
+        
+        if direction == 'up':
+            y_offset = -amount
+        elif direction == 'down':
+            y_offset = amount
+        elif direction == 'left':
+            x_offset = -amount
+        elif direction == 'right':
+            x_offset = amount
+        else:
+            logger.warning(f"Invalid direction for fine mouse movement: '{direction}'. Use: up, down, left, right")
+            return False
+        
+        try:
+            # Get current position
+            current_x, current_y = self.get_mouse_position()
+            new_x = current_x + x_offset
+            new_y = current_y + y_offset
+            
+            # Clamp to screen bounds
+            screen_w, screen_h = self.screen_size
+            new_x = max(0, min(new_x, screen_w - 1))
+            new_y = max(0, min(new_y, screen_h - 1))
+            
+            # Move instantly (no duration for fine movements)
+            pyautogui.moveTo(new_x, new_y, duration=0)
+            
+            logger.debug(f"Fine moved mouse {direction} by {amount}px: ({current_x},{current_y}) → ({new_x},{new_y})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Fine mouse movement failed: {e}")
+            return False
+    
     def type_text(self, text: str, interval: float = 0.05) -> bool:
         """Type text at current cursor position."""
         try:
@@ -723,524 +601,96 @@ class UIAutomationEngine:
     
     def get_active_window_title(self) -> Optional[str]:
         """Get the title of the currently active window."""
-        try:
-            import win32gui
-            hwnd = win32gui.GetForegroundWindow()
-            title = win32gui.GetWindowText(hwnd)
-            return title
-        except:
-            # Fallback method
-            try:
-                app = Application(backend="uia").connect(active_only=True)
-                title = app.top_window().window_text()
-                return title
-            except:
-                return None
-    
-    @staticmethod
-    def _normalize_title(title: Optional[str]) -> str:
-        """Return a normalized window title for matching."""
 
-        return (title or "").strip()
+        return self.window_manager.get_active_window_title()
+
+    def _normalize_title(self, title: Optional[str]) -> str:
+        """Proxy to the window manager title normaliser."""
+
+        return self.window_manager._normalize_title(title)
 
     def _titles_match(self, candidate: str, target: str) -> bool:
-        """Check whether two window titles refer to the same window."""
+        """Proxy to the window manager title matcher."""
 
-        candidate_norm = self._normalize_title(candidate).lower()
-        target_norm = self._normalize_title(target).lower()
-
-        if not candidate_norm or not target_norm:
-            return False
-
-        return target_norm in candidate_norm or candidate_norm in target_norm
+        return self.window_manager._titles_match(candidate, target)
 
     def _verify_focus(self, target_title: str, *, allow_partial: bool = True) -> bool:
-        """Verify whether the active window matches the requested title."""
+        """Proxy to the window manager focus verification."""
 
-        active_title = self.get_active_window_title()
-        if not active_title:
-            return False
-
-        if allow_partial:
-            return self._titles_match(active_title, target_title)
-
-        return (
-            self._normalize_title(active_title).lower()
-            == self._normalize_title(target_title).lower()
-        )
+        return self.window_manager._verify_focus(target_title, allow_partial=allow_partial)
 
     def _focus_window_handle(self, hwnd: int, *, expected_title: Optional[str] = None) -> bool:
-        """Focus a window by handle and optionally verify the resulting title."""
+        """Proxy to the window manager handle focus helper."""
 
-        try:
-            import win32gui
-            import win32con
-
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetForegroundWindow(hwnd)
-            time.sleep(0.4)
-
-            if expected_title and not self._verify_focus(expected_title):
-                logger.debug(
-                    "Post-focus verification failed for handle %s (expected '%s')",
-                    hwnd,
-                    expected_title,
-                )
-                return False
-
-            return True
-        except Exception as exc:
-            logger.debug(f"Failed to focus window handle {hwnd}: {exc}")
-            return False
+        return self.window_manager._focus_window_handle(hwnd, expected_title=expected_title)
 
     def _focus_pywinauto_window(self, window: Any, *, expected_title: str) -> bool:
-        """Focus a pywinauto window with verification."""
+        """Proxy to the window manager pywinauto focus helper."""
 
-        try:
-            window.set_focus()
-            time.sleep(0.3)
-        except Exception as exc:
-            logger.debug(f"Pywinauto focus failed: {exc}")
-            return False
-
-        if not self._verify_focus(expected_title):
-            logger.debug(
-                "Focused window did not match expectation (expected '%s')",
-                expected_title,
-            )
-            return False
-
-        return True
+        return self.window_manager._focus_pywinauto_window(window, expected_title=expected_title)
 
     def focus_window(self, title_pattern: str) -> bool:
-        """Focus a window using deterministic fallbacks before AI assistance."""
+        """Focus a window using deterministic and AI-assisted strategies."""
 
-        target = self._normalize_title(title_pattern)
-        if not target:
-            logger.warning("focus_window called with empty title pattern")
-            return False
-
-        if self._verify_focus(target):
-            current = self.get_active_window_title()
-            logger.info(
-                "Window '%s' already has focus; skipping focus request for '%s'",
-                current,
-                target,
-            )
-            return True
-
-        logger.info(f"Attempting to focus window: {target}")
-
-        try:
-            if self._focus_direct(target):
-                return True
-
-            logger.info("Direct focus failed; enumerating open windows for deterministic selection")
-            if self._focus_from_candidates(target, allow_ai=True):
-                return True
-
-            logger.warning(f"Window not found: {target}")
-            return False
-        except Exception as exc:
-            logger.error(f"Failed to focus window '{target}': {exc}")
-            return False
+        return self.window_manager.focus_window(title_pattern)
 
     def _focus_direct(self, title_pattern: str) -> bool:
-        """Attempt direct focus methods (exact match, regex, process, Win32)."""
+        """Proxy to the window manager direct focus helper."""
 
-        process_map = {
-            "calculator": "calculatorapp.exe",
-            "calc": "calculatorapp.exe",
-            "notepad": "notepad.exe",
-            "paint": "mspaint.exe",
-            "edge": "msedge.exe",
-            "chrome": "chrome.exe",
-            "firefox": "firefox.exe",
-        }
+        return self.window_manager._focus_direct(title_pattern)
 
-        # Exact title match
-        try:
-            app = Application(backend="uia").connect(title=title_pattern, timeout=2)
-            top_window = app.top_window()
-            if self._focus_pywinauto_window(top_window, expected_title=title_pattern):
-                logger.info(f"Focused window (exact match): {title_pattern}")
-                return True
-        except Exception:
-            pass
+    def _focus_from_candidates(self, title_pattern: str, *, allow_ai: bool) -> bool:
+        """Proxy to the window manager candidate selection logic."""
 
-        # Regex/partial title match
-        try:
-            app = Application(backend="uia").connect(title_re=f".*{title_pattern}.*", timeout=3)
-            windows = app.windows()
-            visible_windows = [win for win in windows if getattr(win, "is_visible", lambda: True)()]
-            candidates = visible_windows or windows
-
-            for win in candidates:
-                window_title = self._normalize_title(getattr(win, "window_text", lambda: "")()) or title_pattern
-                if self._focus_pywinauto_window(win, expected_title=window_title):
-                    logger.info(f"Focused window (regex match): {window_title}")
-                    return True
-        except Exception:
-            pass
-
-        # Process-based lookup for known applications
-        lower_title = title_pattern.lower()
-        for app_name, process_name in process_map.items():
-            if app_name in lower_title:
-                try:
-                    app = Application(backend="uia").connect(process=process_name, timeout=2)
-                    windows = app.windows()
-                    for win in windows:
-                        if not getattr(win, "is_visible", lambda: True)() and len(windows) > 1:
-                            continue
-
-                        window_title = self._normalize_title(getattr(win, "window_text", lambda: "")()) or title_pattern
-                        if self._focus_pywinauto_window(win, expected_title=window_title):
-                            logger.info(f"Focused window by process ({process_name}): {window_title}")
-                            return True
-                except Exception as exc:
-                    logger.debug(f"Process focus attempt failed for {process_name}: {exc}")
-
-        # Win32 fallback enumeration
-        try:
-            import win32gui
-
-            matches: List[Tuple[int, str]] = []
-
-            def callback(hwnd, windows):
-                if win32gui.IsWindowVisible(hwnd):
-                    title = win32gui.GetWindowText(hwnd)
-                    if self._titles_match(title, title_pattern):
-                        windows.append((hwnd, title))
-                return True
-
-            win32gui.EnumWindows(callback, matches)
-
-            if matches:
-                hwnd, title = matches[0]
-                if self._focus_window_handle(hwnd, expected_title=title):
-                    logger.info(f"Focused window via Win32: {title}")
-                    return True
-        except Exception as exc:
-            logger.debug(f"Win32 focus attempt failed: {exc}")
-
-        return False
+        return self.window_manager.focus_from_candidates(title_pattern, allow_ai=allow_ai)
 
     def _enumerate_focus_candidates(self) -> List[Dict[str, Any]]:
-        """Return user-visible window candidates for fallback selection."""
+        """Proxy to the window manager candidate enumeration."""
 
-        windows = self.get_all_open_windows()
-        return [
-            window
-            for window in windows
-            if window.get("title") and not self._is_system_window(window.get("title", ""))
-        ]
+        return self.window_manager._enumerate_focus_candidates()
 
     def _deterministic_window_choice(
         self,
         target_pattern: str,
         candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Return a deterministic best-match window when possible."""
+        """Proxy to the window manager deterministic candidate selection."""
 
-        if not candidates:
-            return None
-
-        target_norm = self._normalize_title(target_pattern).lower()
-        if not target_norm:
-            return None
-
-        # Prefer process-name matching when the target looks like an executable
-        if target_norm.endswith(".exe"):
-            process_matches = [
-                candidate
-                for candidate in candidates
-                if (candidate.get("process_name") or "").lower() == target_norm
-            ]
-
-            if len(process_matches) == 1:
-                logger.debug(
-                    "Deterministic process match for '%s': %s",
-                    target_pattern,
-                    process_matches[0].get("title"),
-                )
-                return process_matches[0]
-
-            if process_matches:
-                logger.debug(
-                    "Multiple process matches for '%s'; selecting largest visible window",
-                    target_pattern,
-                )
-                return max(
-                    process_matches,
-                    key=lambda candidate: (candidate.get("width", 0) * candidate.get("height", 0)),
-                )
-
-        # Direct substring matches (target in title)
-        substring_matches = [
-            candidate
-            for candidate in candidates
-            if target_norm in self._normalize_title(candidate.get("title")).lower()
-        ]
-
-        if len(substring_matches) == 1:
-            return substring_matches[0]
-
-        # Inverse substring matches (title fully contained in target)
-        inverse_matches = [
-            candidate
-            for candidate in candidates
-            if self._normalize_title(candidate.get("title")).lower() in target_norm
-        ]
-
-        if len(inverse_matches) == 1:
-            return inverse_matches[0]
-
-        # Process name match
-        process_matches = [
-            candidate
-            for candidate in candidates
-            if target_norm in (candidate.get("process_name") or "").lower()
-        ]
-
-        if len(process_matches) == 1:
-            return process_matches[0]
-
-        # Fuzzy matching using difflib
-        titles = [candidate.get("title", "") for candidate in candidates]
-        close_matches = difflib.get_close_matches(target_pattern, titles, n=2, cutoff=0.82)
-
-        if len(close_matches) == 1:
-            chosen_title = close_matches[0]
-            return next(candidate for candidate in candidates if candidate.get("title") == chosen_title)
-
-        if len(substring_matches) > 1:
-            best = max(
-                substring_matches,
-                key=lambda candidate: difflib.SequenceMatcher(
-                    None,
-                    target_norm,
-                    self._normalize_title(candidate.get("title")).lower(),
-                ).ratio(),
-            )
-            return best
-
-        if close_matches:
-            chosen_title = close_matches[0]
-            return next(candidate for candidate in candidates if candidate.get("title") == chosen_title)
-
-        return None
+        return self.window_manager._deterministic_window_choice(target_pattern, candidates)
 
     def _select_window_with_ai(
         self,
         target_pattern: str,
         candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Ask the language model to choose a window from the candidate list."""
+        """Proxy to the window manager AI candidate selector."""
 
-        try:
-            from src.core.gemini_client import EnhancedGeminiClient
-            from src.core.prompts import prompt_builder
-        except Exception as exc:
-            logger.debug(f"AI-assisted selection unavailable: {exc}")
-            return None
-
-        if not candidates:
-            return None
-
-        prompt = prompt_builder.build_window_selection_prompt(target_pattern, candidates)
-
-        try:
-            client = EnhancedGeminiClient()
-            response_text = client.generate_text(prompt, max_tokens=8)
-            selection = int(response_text.strip())
-        except Exception as exc:
-            logger.debug(f"AI window selection failed: {exc}")
-            return None
-
-        if selection <= 0 or selection > len(candidates):
-            logger.debug(f"AI returned invalid selection index: {selection}")
-            return None
-
-        return candidates[selection - 1]
-
-    def _focus_from_candidates(self, title_pattern: str, *, allow_ai: bool) -> bool:
-        """Focus a window using deterministic and optional AI selection."""
-
-        candidates = self._enumerate_focus_candidates()
-        if not candidates:
-            logger.debug("No window candidates available for fallback focus")
-            return False
-
-        logger.debug(
-            "Enumerated %d candidate windows for '%s'",
-            len(candidates),
-            title_pattern,
-        )
-        for index, candidate in enumerate(candidates[:5], start=1):
-            logger.debug(
-                "  %d. %s (process=%s, size=%dx%d)",
-                index,
-                candidate.get("title"),
-                candidate.get("process_name"),
-                candidate.get("width", 0),
-                candidate.get("height", 0),
-            )
-
-        deterministic = self._deterministic_window_choice(title_pattern, candidates)
-        if deterministic:
-            hwnd = deterministic.get("hwnd")
-            if hwnd:
-                logger.info(
-                    "Deterministic fallback selected window '%s' (%s)",
-                    deterministic.get("title"),
-                    deterministic.get("process_name") or "unknown process",
-                )
-                if self._focus_window_handle(
-                    hwnd,
-                    expected_title=deterministic.get("title"),
-                ):
-                    return True
-            else:
-                logger.debug(
-                    "Deterministic candidate '%s' lacks window handle; skipping",
-                    deterministic.get("title"),
-                )
-
-        if allow_ai:
-            selected = self._select_window_with_ai(title_pattern, candidates)
-            if selected:
-                hwnd = selected.get("hwnd")
-                if hwnd and self._focus_window_handle(
-                    hwnd,
-                    expected_title=selected.get("title"),
-                ):
-                    logger.info(
-                        "AI-assisted selection focused window '%s' (%s)",
-                        selected.get("title"),
-                        selected.get("process_name") or "unknown process",
-                    )
-                    return True
-                if not hwnd:
-                    logger.debug(
-                        "AI-selected window '%s' has no handle; skipping",
-                        selected.get("title"),
-                    )
-
-        return False
+        return self.window_manager._select_window_with_ai(target_pattern, candidates)
 
     def _ai_identify_window(self, target_pattern: str) -> bool:
         """Backward-compatible entry point for AI window identification."""
 
-        logger.info("Attempting AI-assisted window identification fallback")
-        return self._focus_from_candidates(target_pattern, allow_ai=True)
-    
+        return self.window_manager.ai_identify_window(target_pattern)
+
     def get_all_open_windows(self) -> List[Dict[str, Any]]:
-        """Get metadata about all visible top-level windows."""
+        """Expose window enumeration from the window manager."""
 
-        windows: List[Dict[str, Any]] = []
+        return self.window_manager.get_all_open_windows()
 
-        try:
-            import win32gui
-            import win32process
-
-            def callback(hwnd, window_list):
-                if not win32gui.IsWindowVisible(hwnd):
-                    return True
-
-                title = win32gui.GetWindowText(hwnd)
-                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-                width = max(0, right - left)
-                height = max(0, bottom - top)
-
-                process_name = ""
-                try:
-                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                    if pid:
-                        process = psutil.Process(pid)
-                        process_name = process.name()
-                except Exception:
-                    process_name = ""
-
-                window_list.append(
-                    {
-                        "title": title,
-                        "hwnd": hwnd,
-                        "x": left,
-                        "y": top,
-                        "width": width,
-                        "height": height,
-                        "process_name": process_name,
-                    }
-                )
-                return True
-
-            win32gui.EnumWindows(callback, windows)
-            return windows
-
-        except ImportError:
-            try:
-                import pygetwindow as gw
-
-                for window in gw.getAllWindows():
-                    title = window.title
-                    if not title:
-                        continue
-                    windows.append(
-                        {
-                            "title": title,
-                            "hwnd": getattr(window, "_hWnd", 0),
-                            "x": window.left,
-                            "y": window.top,
-                            "width": window.width,
-                            "height": window.height,
-                            "process_name": "",
-                        }
-                    )
-
-                return windows
-            except Exception:
-                logger.warning("Could not enumerate windows (win32gui not available)")
-                return []
-    
     def _is_system_window(self, title: str) -> bool:
-        """Check if a window title is a system window that should be ignored.
-        
-        Args:
-            title: Window title to check
-            
-        Returns:
-            True if it's a system window, False otherwise
-        """
-        # System window patterns to ignore
-        system_patterns = [
-            'Program Manager',
-            'Microsoft Text Input Application',
-            'Windows Input Experience',
-            'MSCTFIME UI',
-            'Default IME',
-            'Task Switching',
-            '',  # Empty titles
-        ]
-        
-        title_lower = title.lower()
-        
-        # Exact matches
-        if title in system_patterns:
-            return True
-        
-        # Pattern matches
-        system_keywords = ['ime ui', 'input experience', 'progman', 'dde server']
-        return any(keyword in title_lower for keyword in system_keywords)
-    
+        """Proxy to the window manager system window detector."""
+
+        return self.window_manager._is_system_window(title)
+
     def get_running_processes(self) -> List[str]:
-        """Get list of running process names."""
-        return [proc.name() for proc in psutil.process_iter(['name'])]
-    
+        """Expose process enumeration from the window manager."""
+
+        return self.window_manager.get_running_processes()
+
     def is_application_running(self, app_name: str) -> bool:
-        """Check if an application is running."""
-        processes = self.get_running_processes()
-        return any(app_name.lower() in proc.lower() for proc in processes)
+        """Check if an application is running via the window manager."""
+
+        return self.window_manager.is_application_running(app_name)
     
     def wait(self, seconds: float) -> None:
         """Wait for specified seconds."""
