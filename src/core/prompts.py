@@ -2,6 +2,11 @@
 
 from typing import Any, Dict, List, Optional
 
+try:  # Windows-only optional import
+    from src.utils.system_apps import get_apps_catalog_formatted
+except Exception:  # pragma: no cover - non-Windows or discovery failure
+    get_apps_catalog_formatted = None  # type: ignore
+
 from src.core.actions import action_registry
 
 
@@ -177,6 +182,28 @@ def _collect_system_configuration(context: Optional[Dict[str, Any]] = None) -> s
     return "\n".join(lines)
 
 
+def _collect_system_applications() -> str:
+    """Return formatted list of known Windows applications for prompt context."""
+
+    if not get_apps_catalog_formatted:  # pragma: no cover - depends on Windows availability
+        return ""
+
+    try:
+        catalog = get_apps_catalog_formatted()
+    except Exception:  # pragma: no cover - discovery may fail at runtime
+        return ""
+
+    if not catalog.strip():
+        return ""
+
+    header = (
+        "═══════════════════════════════════════════════════════════\n"
+        "SYSTEM APPLICATIONS DISCOVERY\n"
+        "═══════════════════════════════════════════════════════════"
+    )
+    return f"{header}\n{catalog}"
+
+
 class PromptBuilder:
     """Build optimized prompts for Gemini API calls."""
 
@@ -204,6 +231,7 @@ class PromptBuilder:
         
     "EXECUTION REQUIREMENTS:\n"
         "  • Window Focus: MANDATORY before ANY keyboard/typing action\n"
+        "  • Focus Strategy: Verify whether the target window already has focus; if not, attempt a direct match once, then enumerate open windows and choose deterministically before retrying\n"
         "  • Timing: Add 0.5-1s wait after window switches, 1-2s after app launches\n"
         "  • Verification: Take screenshot after critical actions to confirm state\n"
         "  • Precision: Mouse coordinates accurate within ±5px margin\n"
@@ -417,7 +445,7 @@ class PromptBuilder:
     )
 
     TASK_PLANNING_OUTPUT = (
-        "Return JSON only matching this schema:\n"
+        "Return STRICT JSON ONLY matching this schema (no markdown, commentary, or extra prose).\n"
         "{\n"
         "  \"understood\": bool,\n"
         "  \"confidence\": int (0-100),\n"
@@ -441,7 +469,14 @@ class PromptBuilder:
         "  \"potential_issues\": [string],\n"
         "  \"adaptive_strategies\": [string],\n"
         "  \"clarification_needed\": string|null\n"
-        "}"
+        "}\n"
+        "RULES:\n"
+        "  • Always include every key even if you must use empty strings, [], or {}.\n"
+        "  • When understood=true provide at least one success criterion, potential issue, adaptive strategy, and at least one step.\n"
+        "  • Step parameters MUST be JSON objects (use {} when no parameters are required).\n"
+        "  • When understood=false set steps=[], supply a specific clarification_needed string, and cap confidence at 40.\n"
+        "  • When understood=true set clarification_needed to null.\n"
+        "  • Do not wrap the JSON in code fences or add explanations."
     )
 
     CHAIN_OF_THOUGHT = (
@@ -614,6 +649,7 @@ class PromptBuilder:
         "    Method 1: focus_window action with title\n"
         "    Method 2: Alt+Tab to cycle (if you know position)\n"
         "    Method 3: Click taskbar icon (requires coordinates)\n"
+            "    Deterministic fallback: If focus fails, enumerate open windows and select the best match before asking for AI help\n"
         "  \n"
         "  Arranging Windows:\n"
         "    • Snap left: Win+Left Arrow\n"
@@ -726,6 +762,9 @@ class PromptBuilder:
         "  • Alternative Paths: [Backup methods if primary fails?]\n\n"
         
     "CRITICAL RULES:\n"
+    "  - PRIORITIZE OCR EXTRACTED TEXT when provided at the start of this prompt\n"
+    "  - Cross-reference OCR data with visual analysis for maximum accuracy\n"
+    "  - OCR text should be your primary source for button labels, menu items, and UI text\n"
     "  - Estimate coordinates as accurately as possible\n"
     "  - Provide confidence scores (0-100%) for all estimates\n"
     "  - Flag elements that are partially visible or unclear\n"
@@ -736,26 +775,35 @@ class PromptBuilder:
     )
 
     ELEMENT_LOCATION_TEMPLATE = (
-        "You are a spatial reasoning assistant. Return JSON with: reasoning {search_strategy, identification, confidence_basis, "
-        "alternatives_considered}, found (bool), confidence (0-100), x, y (pixel center), margin_of_error_px, element_type, "
-        "position {description}, pixel_estimate {width_px, height_px}, visual_characteristics {visible_text, icon_description, "
-        "color, styling}, surrounding_context {above, below, left, right}, interaction_guidance {click_target, hover_sensitive, "
-        "keyboard_alternative}, risks (list), suggestions (list). If not found set found=false, confidence=0, explain why, and "
-        "suggest how to reveal it or alternatives."
+        "You are a spatial reasoning assistant. Produce STRICT JSON (no markdown or prose) with all of these keys: "
+        "reasoning {search_strategy, identification, confidence_basis, alternatives_considered}, found (bool), confidence (0-100), "
+        "x, y (pixel center), margin_of_error_px, element_type, position {description}, pixel_estimate {width_px, height_px}, "
+        "visual_characteristics {visible_text, icon_description, color, styling}, surrounding_context {above, below, left, right}, "
+        "interaction_guidance {click_target, hover_sensitive, keyboard_alternative}, risks (list), suggestions (list). Always include "
+        "every key even if you must use null, an empty string, or []. If the element is not found set found=false, confidence=0, "
+        "provide explanatory reasoning, and suggest how to reveal it or viable alternatives. "
+        "NOTE: If OCR text extraction was provided, prioritize matching text from OCR data for higher accuracy."
     )
 
     VERIFICATION_TEMPLATE = (
-        "You are verifying whether an action achieved the expected change. Compare BEFORE vs AFTER. "
-        "Return JSON with keys: success (bool), confidence (0-100), issue (blank if success), observed_state (short summary), "
-        "evidence {supporting, missing}, next_step. Mark success false if evidence is incomplete or ambiguous."
+        "You are verifying whether an action achieved the expected change. Compare BEFORE vs AFTER and respond with STRICT JSON "
+        "containing keys: success (bool), confidence (0-100), issue (empty string if success), observed_state (short summary), "
+        "evidence {supporting, missing}, next_step. Never omit a key; if information is unavailable use an empty string, empty list, "
+        "or null. Mark success=false whenever evidence is incomplete or ambiguous."
     )
 
     NEXT_ACTION_TEMPLATE = (
-        "You are an adaptive planner. Use current state and recent history to choose the safest next action. Return JSON with: "
-        "reasoning {situation_summary, progress_estimate, analysis, strategy, alternatives_considered, decision_rationale}, "
-        "action, target, parameters, expected_outcome, verification {method, success_indicators, failure_indicators}, "
-        "fallback_plan {if_fails, alternative_sequence}, confidence, estimated_remaining_steps, adaptive_notes. "
-        "Avoid repeating the same failed action without a change in approach."
+        "You are an adaptive planner. Use current state and recent history to choose the safest next action. Return STRICT JSON with: "
+        "reasoning {situation_summary, progress_estimate, analysis, strategy, alternatives_considered, decision_rationale}, action, "
+        "target, parameters (object – use {} if no parameters), expected_outcome, verification {method, success_indicators, "
+        "failure_indicators}, fallback_plan {if_fails, alternative_sequence}, confidence, estimated_remaining_steps, adaptive_notes. "
+        "Never omit keys, avoid markdown code fences, and do not repeat the same failed action unless you change the approach."
+    )
+
+    WINDOW_SELECTION_TEMPLATE = (
+        "Target window: {target}\n"
+        "Windows (numbered):\n{windows_list}\n"
+        "Reply with a single number between 0 and {count}. Use 0 if none match."
     )
 
     @staticmethod
@@ -793,6 +841,10 @@ class PromptBuilder:
         system_configuration = _collect_system_configuration(context)
         if system_configuration:
             sections.append(system_configuration)
+
+        system_applications = _collect_system_applications()
+        if system_applications:
+            sections.append(system_applications)
 
         sections.extend([
             PromptBuilder.WINDOWS_CONTEXT,
@@ -875,7 +927,7 @@ class PromptBuilder:
         sections = [
             PromptBuilder.ELEMENT_LOCATION_TEMPLATE,
             f"Target description: \"{element_description}\".",
-            "Report JSON only.",
+            "Return strict JSON only; do not use markdown code fences or commentary.",
         ]
         return _join_sections(sections)
 
@@ -886,7 +938,7 @@ class PromptBuilder:
         sections = [
             PromptBuilder.VERIFICATION_TEMPLATE,
             f"Expected change: \"{expected_change}\".",
-            "Return JSON only; default to failure if evidence is unclear.",
+            "Return strict JSON only; default to failure if evidence is unclear or missing.",
         ]
         return _join_sections(sections)
 
@@ -902,9 +954,33 @@ class PromptBuilder:
             f"Goal: {goal}",
             f"Current state summary: {current_state}",
             f"Recent actions:\n{history_block}",
-            "Return JSON only.",
+            "Return strict JSON only; avoid markdown, bullet lists, or commentary.",
         ]
         return _join_sections(sections)
+
+    @staticmethod
+    def build_window_selection_prompt(target: str, windows: List[Dict[str, Any]]) -> str:
+        """Build a concise prompt for selecting a window from enumerated options."""
+
+        if not windows:
+            return PromptBuilder.WINDOW_SELECTION_TEMPLATE.format(target=target, windows_list="<no windows>", count=0)
+
+        lines = []
+        for index, window in enumerate(windows, start=1):
+            title = window.get("title", "<untitled>")
+            process_name = window.get("process_name") or "unknown"
+            size = f"{window.get('width', 0)}x{window.get('height', 0)}"
+            snippet = f"{index}. {title}"
+            if process_name and process_name.lower() != title.lower():
+                snippet += f" [{process_name}]"
+            snippet += f" ({size})"
+            lines.append(snippet)
+
+        return PromptBuilder.WINDOW_SELECTION_TEMPLATE.format(
+            target=target,
+            windows_list="\n".join(lines),
+            count=len(windows),
+        )
 
 
 class PromptOptimizer:

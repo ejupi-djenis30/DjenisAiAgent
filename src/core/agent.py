@@ -134,9 +134,11 @@ class EnhancedAIAgent:
                 logger.warning("🚨 EMERGENCY STOP ACTIVATED")
                 self.is_running = False
         
+        hotkey = (config.emergency_stop_key or "ctrl+shift+q").lower()
         try:
-            keyboard.add_hotkey('ctrl+shift+q', emergency_stop)
-            logger.info("Emergency stop: Press Ctrl+Shift+Q to abort")
+            keyboard.add_hotkey(hotkey, emergency_stop)
+            formatted = "+".join(part.upper() for part in hotkey.split("+"))
+            logger.info(f"Emergency stop: Press {formatted} to abort")
         except Exception as e:
             logger.warning(f"Could not setup emergency stop hotkey: {e}")
     
@@ -1220,7 +1222,9 @@ IMPORTANT: The agent must NOT continue with remaining original steps until this 
         print(f"🤖 AI Agent Starting Task")
         print(f"{'='*70}")
         print(f"Request: {request}")
-        print(f"Emergency Stop: Ctrl+Shift+Q")
+        hotkey = config.emergency_stop_key
+        display_hotkey = "+".join(part.upper() for part in hotkey.split("+")) if hotkey else "N/A"
+        print(f"Emergency Stop: {display_hotkey}")
         print(f"{'='*70}\n")
     
     def _display_plan(self, plan: Dict[str, Any]):
