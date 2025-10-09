@@ -61,12 +61,22 @@ Emergency Stop: Press Ctrl+Shift+Q during execution
         action="store_true",
         help="Disable overlay UI"
     )
+
+    parser.add_argument(
+        "--no-limit-mode",
+        action="store_true",
+        help="Disable safety ceilings (retries, timeouts, token limits) for long or complex runs"
+    )
     
     args = parser.parse_args()
     
     if args.debug:
         config.debug_mode = True
         logger.setLevel("DEBUG")
+
+    if args.no_limit_mode:
+        config.apply_no_limit_mode()
+        logger.warning("No-limit mode enabled: safety ceilings lifted")
     
     # Print banner
     print(f"""

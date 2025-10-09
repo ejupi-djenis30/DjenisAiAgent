@@ -43,6 +43,7 @@ class AgentConfig(BaseModel):
     # Safety
     emergency_stop_key: str = "ctrl+shift+esc"
     max_task_duration: int = 300  # seconds
+    no_limit_mode: bool = False
     
     class Config:
         arbitrary_types_allowed = True
@@ -58,6 +59,17 @@ class AgentConfig(BaseModel):
         if not self.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is required. Please set it in .env file.")
         return True
+
+    def apply_no_limit_mode(self) -> None:
+        """Elevate operational limits for unrestricted runs."""
+
+        self.no_limit_mode = True
+        self.gemini_max_output_tokens = max(self.gemini_max_output_tokens, 1_048_576)
+        self.max_retries = max(self.max_retries, 50)
+        self.mouse_max_attempts = max(self.mouse_max_attempts, 1_000)
+        self.mouse_path_segments = max(self.mouse_path_segments, 10)
+        self.max_task_duration = max(self.max_task_duration, 12 * 60 * 60)  # 12 hours
+        self.api_timeout = max(self.api_timeout, 600)
 
 
 # Global configuration instance
