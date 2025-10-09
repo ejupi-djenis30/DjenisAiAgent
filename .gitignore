@@ -45,3 +45,6 @@ recordings/
 # Cache
 .cache/
 *.cache
+
+setup_log.txt
+system_profile.json

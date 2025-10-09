@@ -5,6 +5,11 @@ from typing import Optional, List, Dict, Any
 import google.generativeai as genai
 from PIL import Image
 
+try:
+    RESAMPLE_LANCZOS = Image.Resampling.LANCZOS  # type: ignore[attr-defined]
+except AttributeError:  # pragma: no cover - fallback for older Pillow
+    RESAMPLE_LANCZOS = getattr(Image, "LANCZOS", Image.BICUBIC)  # type: ignore[attr-defined]
+
 from src.utils.logger import setup_logger
 from src.config.config import config
 from src.core.prompts import prompt_builder
@@ -40,10 +45,22 @@ class EnhancedGeminiClient:
         
         logger.info(f"Initialized Enhanced Gemini client with model: {self.model_name}")
     
-    def generate_task_plan(self, user_request: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def generate_task_plan(
+        self,
+        user_request: str,
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        complexity_hint: str = "auto",
+        include_examples: bool = True,
+    ) -> Dict[str, Any]:
         """Generate a comprehensive step-by-step execution plan."""
         
-        prompt = prompt_builder.build_task_planning_prompt(user_request, context)
+        prompt = prompt_builder.build_task_planning_prompt(
+            user_request,
+            context,
+            complexity_hint=complexity_hint,
+            include_examples=include_examples,
+        )
         
         text = ""  # Initialize to avoid unbound variable
         try:
@@ -76,13 +93,30 @@ class EnhancedGeminiClient:
             logger.error(f"Error generating task plan: {e}", exc_info=True)
             return self._create_fallback_plan(user_request, error=str(e))
     
-    def analyze_screen(self, screenshot: Image.Image, question: Optional[str] = None) -> str:
+    def analyze_screen(
+        self,
+        screenshot: Image.Image,
+        question: Optional[str] = None,
+        *,
+        additional_images: Optional[List[Image.Image]] = None,
+        focus_area: Optional[str] = None,
+    ) -> str:
         """Analyze a screenshot and answer questions about it."""
-        
-        prompt = prompt_builder.build_screen_analysis_prompt(question)
-        
+
+        prompt = prompt_builder.build_screen_analysis_prompt(
+            question,
+            focus_area=focus_area,
+        )
+
+        optimized_primary = self._prepare_image_for_model(screenshot)
+        inputs: List[Any] = [prompt, optimized_primary]
+
+        if additional_images:
+            optimized_extras = [self._prepare_image_for_model(img) for img in additional_images]
+            inputs.extend(optimized_extras)
+
         try:
-            response = self.model.generate_content([prompt, screenshot])
+            response = self.model.generate_content(inputs)
             analysis = response.text.strip()
             logger.debug(f"Screen analysis completed: {len(analysis)} chars")
             return analysis
@@ -95,9 +129,11 @@ class EnhancedGeminiClient:
         """Use vision to locate a UI element in a screenshot."""
         
         prompt = prompt_builder.build_element_location_prompt(element_description)
-        
+
+        prepared_image = self._prepare_image_for_model(screenshot)
+
         try:
-            response = self.model.generate_content([prompt, screenshot])
+            response = self.model.generate_content([prompt, prepared_image])
             text = response.text.strip()
             
             json_text = self._extract_json(text)
@@ -120,9 +156,12 @@ class EnhancedGeminiClient:
         """Compare before/after screenshots to verify an action succeeded."""
         
         prompt = prompt_builder.build_verification_prompt(expected_change)
-        
+
+        before_prepared = self._prepare_image_for_model(before_image)
+        after_prepared = self._prepare_image_for_model(after_image)
+
         try:
-            response = self.model.generate_content([prompt, before_image, after_image])
+            response = self.model.generate_content([prompt, before_prepared, after_prepared])
             text = response.text.strip()
             
             json_text = self._extract_json(text)
@@ -164,6 +203,51 @@ class EnhancedGeminiClient:
                 "target": "1 second",
                 "reasoning": f"Error occurred: {str(e)}"
             }
+
+    def _prepare_image_for_model(self, image: Image.Image) -> Image.Image:
+        """Downscale and normalize images before sending to the vision model."""
+
+        scale = config.vision_image_scale
+        max_dim = config.vision_image_max_dim
+        target_format = config.vision_image_format
+
+        processed = image.copy()
+        processed = self._resize_image(processed, scale=scale, max_dim=max_dim)
+
+        if target_format in {"jpeg", "webp"} and processed.mode not in ("RGB", "L"):
+            processed = processed.convert("RGB")
+
+        return processed
+
+    @staticmethod
+    def _resize_image(image: Image.Image, *, scale: float, max_dim: int) -> Image.Image:
+        """Resize image based on scale factor and maximum dimension."""
+
+        width, height = image.size
+        if width <= 0 or height <= 0:
+            return image
+
+        ratio = 1.0
+        if scale < 1.0:
+            ratio = min(ratio, max(scale, 0.05))
+
+        if max_dim > 0:
+            longest_side = max(width, height)
+            if longest_side > max_dim:
+                ratio = min(ratio, max_dim / longest_side)
+
+        if ratio >= 1.0:
+            return image
+
+        new_size = (
+            max(1, int(round(width * ratio))),
+            max(1, int(round(height * ratio))),
+        )
+
+        if new_size == image.size:
+            return image
+
+        return image.resize(new_size, RESAMPLE_LANCZOS)
     
     def _extract_json(self, text: str) -> str:
         """Extract JSON from text that may contain markdown code blocks."""

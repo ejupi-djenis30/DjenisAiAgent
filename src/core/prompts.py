@@ -1,1434 +1,938 @@
-"""
-Advanced Prompt Engineering for Gemini API.
-"""
+"""Prompt generation utilities for the Gemini client."""
 
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from src.core.actions import action_registry
 
 
-class PromptBuilder:
-    """Builds optimized prompts for Gemini API."""
-    
-    @staticmethod
-    def build_task_planning_prompt(user_request: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """Build an agentic, chain-of-thought task planning prompt optimized for Gemini's reasoning."""
-        
-        # Get system language
-        import locale
+def _join_sections(sections: List[str]) -> str:
+    """Join non-empty prompt sections with readable spacing."""
+
+    return "\n\n".join(section.strip() for section in sections if section and section.strip())
+
+
+def _detect_complexity(request: str) -> str:
+    """Detect task complexity from user request."""
+
+    words = len(request.split())
+    conditional_tokens = {"if", "when", "until", "while", "after", "before", "unless"}
+    conjunction_tokens = {"and", "then", "followed", "next"}
+    request_lower = request.lower()
+
+    has_conditionals = any(token in request_lower for token in conditional_tokens)
+    conjunction_count = sum(request_lower.count(token) for token in conjunction_tokens)
+
+    if has_conditionals or conjunction_count >= 2 or words > 25:
+        return "complex"
+    if words > 12 or conjunction_count >= 1:
+        return "medium"
+    return "simple"
+
+
+def _format_context(context: Dict[str, Any]) -> str:
+    """Format runtime context for inclusion in prompts."""
+
+    lines = ["CURRENT SYSTEM SNAPSHOT:"]
+
+    active_window = context.get("active_window")
+    if active_window:
+        lines.append(f"- Active Window: {active_window}")
+
+    screen_size = context.get("screen_size")
+    if screen_size:
+        lines.append(f"- Screen Size: {screen_size}")
+
+    processes = context.get("running_processes", [])
+    if processes:
+        limited_processes = ", ".join(processes[:8])
+        lines.append(f"- Running Apps: {limited_processes}")
+
+    timestamp = context.get("timestamp")
+    if timestamp:
+        lines.append(f"- Timestamp: {timestamp}")
+
+    agent_version = context.get("agent_version")
+    if agent_version:
+        lines.append(f"- Agent Version: {agent_version}")
+
+    # Only add language if we have other context data
+    if len(lines) > 1:
         try:
-            system_lang = locale.getlocale()[0] or "en_US"
-            
-            # Map Windows locale names to language codes
-            lang_map = {
-                "german": "de",
-                "deutsch": "de",
-                "spanish": "es",
-                "french": "fr",
-                "italian": "it",
-                "portuguese": "pt",
-                "russian": "ru",
-                "chinese": "zh",
-                "japanese": "ja",
-                "korean": "ko",
-                "english": "en"
-            }
-            
-            # Try to extract language code
-            lang_lower = system_lang.lower()
-            lang_code = "en"  # default
-            
-            for key, code in lang_map.items():
-                if key in lang_lower:
-                    lang_code = code
-                    break
-            
-            # Or try standard locale format (en_US, de_DE, etc.)
-            if '_' in system_lang:
-                lang_code = system_lang.split('_')[0]
-            
-            language_info = f"- System Language: {system_lang} ({lang_code.upper()})"
-            
-            # Add language-aware note
-            if lang_code != "en":
-                language_note = f"\n⚠️ CRITICAL: System language is {lang_code.upper()}. ALL window titles, button labels, menu items, and UI text will be in {lang_code.upper()}, NOT English! Examples:\n   • Calculator = Rechner (DE), Calculadora (ES), Calculatrice (FR)\n   • File = Datei (DE), Archivo (ES), Fichier (FR)\n   • Open = Öffnen (DE), Abrir (ES), Ouvrir (FR)\n   Always use {lang_code.upper()} names for UI elements!"
-            else:
-                language_note = "\n✓ System language is English. Use standard English names for UI elements."
-                
-        except Exception as e:
-            language_info = "- System Language: Unknown"
-            language_note = "\n⚠️ Could not detect system language. Window titles may vary."
+            import locale
+
+            locale_info = locale.getlocale()[0] or "en_US"
+            lines.append(f"- System Language: {locale_info}")
+        except Exception:
+            pass
+
+    if len(lines) == 1:
+        return ""
+
+    return "\n".join(lines)
+
+
+def _collect_system_configuration(context: Optional[Dict[str, Any]] = None) -> str:
+    """Gather detailed Windows configuration information for prompt inclusion."""
+
+    lines: List[str] = ["WINDOWS SYSTEM CONFIGURATION:"]
+
+    try:
+        import platform
+
+        system = platform.system()
+        release = platform.release()
+        version = platform.version()
+        architecture = platform.machine()
+        if system:
+            os_descriptor = f"{system} {release}".strip()
+            if version:
+                os_descriptor = f"{os_descriptor} (build {version})"
+            lines.append(f"- Operating System: {os_descriptor}")
+        if architecture:
+            lines.append(f"- System Architecture: {architecture}")
+        processor = platform.processor()
+        if processor:
+            lines.append(f"- Processor: {processor}")
+        if hasattr(platform, "win32_edition"):
+            try:
+                edition = platform.win32_edition()
+                if edition:
+                    lines.append(f"- Windows Edition: {edition}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        import locale
+
+        language, encoding = locale.getlocale()
+        if not language:
+            language = locale.getdefaultlocale()[0]
+        if language:
+            lines.append(f"- System Language: {language}")
+        preferred_encoding = encoding or locale.getpreferredencoding(False)
+        if preferred_encoding:
+            lines.append(f"- Preferred Encoding: {preferred_encoding}")
+    except Exception:
+        pass
+
+    try:
+        import time
+
+        timezone = " ".join([tz for tz in time.tzname if tz])
+        if timezone.strip():
+            lines.append(f"- Time Zone: {timezone.strip()}")
+    except Exception:
+        pass
+
+    try:
+        import os
+
+        shell_candidates = [
+            os.getenv("SHELL"),
+            os.getenv("ComSpec"),
+            os.getenv("COMSPEC"),
+            os.getenv("POWERSHELL_DISTRIBUTION_CHANNEL"),
+        ]
+        shell_names = [candidate for candidate in shell_candidates if candidate]
+        if shell_names:
+            lines.append("- Shell Candidates: " + ", ".join(dict.fromkeys(shell_names)))
+        processor_identifier = os.getenv("PROCESSOR_IDENTIFIER")
+        if processor_identifier:
+            lines.append(f"- Processor Identifier: {processor_identifier}")
+        user_locale_env = os.getenv("LANG") or os.getenv("LC_ALL") or os.getenv("LC_CTYPE")
+        if user_locale_env:
+            lines.append(f"- Environment Locale Variable: {user_locale_env}")
+        if os.getenv("USERPROFILE"):
+            lines.append(f"- User Profile Path: {os.getenv('USERPROFILE')}")
+    except Exception:
+        pass
+
+    screen_size = None
+    if context:
+        screen_size = context.get("screen_size")
+    if not screen_size:
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            if hasattr(user32, "SetProcessDPIAware"):
+                try:
+                    user32.SetProcessDPIAware()
+                except Exception:
+                    pass
+            width = user32.GetSystemMetrics(0)
+            height = user32.GetSystemMetrics(1)
+            if width and height:
+                screen_size = (width, height)
+        except Exception:
+            screen_size = None
+    if screen_size:
+        lines.append(f"- Primary Screen Size: {screen_size}")
+
+    if len(lines) == 1:
+        return ""
+
+    return "\n".join(lines)
+
+
+class PromptBuilder:
+    """Build optimized prompts for Gemini API calls."""
+
+    TASK_PLANNING_SYSTEM = (
+        "You are a specialized Windows UI Automation Agent with the following capabilities:\n"
+        "ROLE: Execute complex multi-step UI automation tasks on Windows 10/11 systems.\n"
+        "CAPABILITIES: Computer vision (screenshot analysis), mouse control (click/drag/scroll), "
+        "keyboard input (type/hotkeys), window management (focus/minimize/maximize), system commands.\n"
+        "OUTPUT: Structured JSON plans with executable actions, coordinates, timing, and verification steps.\n"
+        "GOAL: Transform natural language requests into precise, reliable automation sequences."
+    )
+
+    WINDOWS_CONTEXT = (
+        "═══════════════════════════════════════════════════════════\n"
+        "WINDOWS UI AUTOMATION ENVIRONMENT - TECHNICAL SPECIFICATIONS\n"
+        "═══════════════════════════════════════════════════════════\n\n"
         
-        # Context section
-        context_section = ""
-        if context:
-            context_section = f"""
-CURRENT SYSTEM CONTEXT:
-- Active Window: {context.get('active_window', 'Unknown')}
-- Screen Resolution: {context.get('screen_size', 'Unknown')}
-- Running Applications: {', '.join(context.get('running_processes', [])[:10])}
-- Timestamp: {context.get('timestamp', 'Unknown')}
-{language_info}{language_note}
-"""
+    "COORDINATE SYSTEM:\n"
+        "  • Origin: (0, 0) at top-left corner of primary screen\n"
+        "  • X-axis: Increases left → right (horizontal)\n"
+        "  • Y-axis: Increases top → bottom (vertical)\n"
+        "  • Units: Pixels (integer values only)\n"
+        "  • Multi-monitor: Each screen has independent coordinate space\n"
+        "  • Example: Center of 1920×1080 screen = (~960, ~540)\n\n"
         
-        # Actions section
-        actions_section = action_registry.to_prompt_string()
+    "EXECUTION REQUIREMENTS:\n"
+        "  • Window Focus: MANDATORY before ANY keyboard/typing action\n"
+        "  • Timing: Add 0.5-1s wait after window switches, 1-2s after app launches\n"
+        "  • Verification: Take screenshot after critical actions to confirm state\n"
+        "  • Precision: Mouse coordinates accurate within ±5px margin\n"
+        "  • Reliability: Always provide fallback alternatives for failure scenarios\n\n"
         
-        prompt = f"""You are an ADVANCED AUTONOMOUS AI AGENT specialized in Windows PC automation.
-
-# YOUR CAPABILITIES
-- 🧠 **Multi-Step Planning**: Break complex tasks into atomic, executable steps
-- 👁️ **Visual Intelligence**: Analyze screenshots to identify UI elements and coordinates
-- 🎯 **Precision Control**: 38+ actions for keyboard, mouse, window, and application control
-- 🔄 **Adaptive Execution**: Self-correct and adjust based on execution feedback
-- 🌍 **Cross-Language Support**: Handle UI elements in any language (EN, DE, ES, FR, etc.)
-
-# EXECUTION PHILOSOPHY
-
-1. **Reliability First**: Choose the most reliable action (keyboard > coordinates > navigation)
-2. **Verify Everything**: Confirm critical actions with screenshots and checks
-3. **Adapt Quickly**: If an approach fails, try alternatives immediately
-4. **Think Ahead**: Plan for failure scenarios with fallback strategies
-5. **Be Precise**: Provide exact coordinates, specific parameters, clear reasoning
-
-# AGENTIC WORKFLOW
-
-## PHASE 1: UNDERSTAND THE REQUEST
-
-Analyze the user's request:
-- **Core Intent**: What is the user truly trying to accomplish?
-- **Success State**: What does "done" look like?
-- **Ambiguities**: Are there unclear aspects requiring clarification?
-
-## PHASE 2: PLAN THE EXECUTION
-
-Break down the task:
-- **Decompose**: Split into atomic, verifiable sub-goals
-- **Sequence**: Identify dependencies and optimal order
-- **Select Actions**: Choose most reliable methods for each step
-- **Add Verification**: Include checks after critical actions
-- **Plan Fallbacks**: Prepare alternatives for likely failures
-
-{context_section}
-
-{actions_section}
-
-## USER REQUEST ANALYSIS
-
-**Request**: "{user_request}"
-
-### REASONING PROCESS (Think Step-by-Step):
-
-1. **What is the user asking for?**
-   - Literal interpretation: [describe]
-   - Likely intent: [describe]
-   - Success state: [describe]
-
-2. **What do I need to know about the current context?**
-   - Active window: {context.get('active_window', 'Unknown') if context else 'Unknown'}
-   - Running apps: {', '.join(context.get('running_processes', [])[:5]) if context else 'Unknown'}
-   - Screen size: {context.get('screen_size', 'Unknown') if context else 'Unknown'}
-
-3. **What is my execution strategy?**
-   - Primary approach: [describe]
-   - Key actions: [list 3-5 main actions]
-   - Failure scenarios: [list 2-3 potential issues]
-   - Mitigation: [how to handle failures]
-
-4. **How will I verify success?**
-   - Observable indicators: [list what to check]
-   - Visual confirmation: [what should be visible]
-   - Final state: [describe expected end state]
-
-## CRITICAL EXECUTION PRINCIPLES
-
-🎯 **PRIMARY STRATEGY: COORDINATE-BASED VISION + RELIABLE SHORTCUTS**
-
-**Best Practices Hierarchy** (Use in order of preference):
-
-1. **KEYBOARD SHORTCUTS** (Most Reliable)
-   - Opening apps: `Win+R` then type executable name
-   - Browser navigation: `Ctrl+L` (address bar), `Ctrl+T` (new tab)
-   - Text operations: `Ctrl+A/C/V/X/Z`
-   - Window management: `Alt+Tab`, `Win+Arrow`, `Alt+F4`
-
-2. **COORDINATE-BASED CLICKS** (For UI Elements)
-   - Take screenshot first to see current state
-   - Estimate element center coordinates
-   - Move to coordinates: `move_to(x, y)`
-   - Verify mouse position before clicking
-   - Execute click action
-   - Take screenshot to verify result
-
-3. **ADAPTIVE VERIFICATION** (After Critical Actions)
-   - Capture state before and after
-   - Verify expected changes occurred
-   - If failed, adjust coordinates or try alternative approach
-
-**Complete Workflow Example - YouTube Video Search**:
-```json
-Step 1: {{"action": "hotkey", "target": "win+r", "reasoning": "Most reliable app launcher"}}
-Step 2: {{"action": "type_text", "parameters": {{"text": "msedge"}}, "reasoning": "Launch Edge browser"}}
-Step 3: {{"action": "press_key", "parameters": {{"key": "enter"}}, "reasoning": "Execute command"}}
-Step 4: {{"action": "wait", "parameters": {{"seconds": 3}}, "reasoning": "Let browser fully load"}}
-Step 5: {{"action": "hotkey", "target": "ctrl+l", "reasoning": "Focus address bar - more reliable than clicking"}}
-Step 6: {{"action": "type_text", "parameters": {{"text": "youtube.com"}}, "reasoning": "Direct URL"}}
-Step 7: {{"action": "press_key", "parameters": {{"key": "enter"}}, "reasoning": "Navigate"}}
-Step 8: {{"action": "wait", "parameters": {{"seconds": 4}}, "reasoning": "Page load time"}}
-Step 9: {{"action": "click", "parameters": {{"x": 960, "y": 120}}, "reasoning": "Click search box (center-top, typical YouTube layout)"}}
-Step 10: {{"action": "type_text", "parameters": {{"text": "cat videos"}}, "reasoning": "Search query"}}
-Step 11: {{"action": "press_key", "parameters": {{"key": "enter"}}, "reasoning": "Submit search"}}
-```
-
-{language_note}
-
-⚠️ **COMMON MISTAKES TO AVOID**:
-- ❌ Using TAB navigation (slow, breaks easily)
-- ❌ Clicking without coordinates (always provide x, y)
-- ❌ Insufficient wait times (pages need 3-5s to load)
-- ❌ No verification steps (always verify critical actions)
-- ❌ Repeating same failed action (adapt instead)
-
-## COORDINATE ESTIMATION GUIDELINES
-
-**Screen Resolution Context**: {context.get('screen_size', 'Unknown') if context else 'Unknown'}
-
-**Standard Element Positions** (as percentage of screen):
-- **Search boxes**: 
-  - Browsers: ~50% horizontal, 8-15% vertical (center-top)
-  - File Explorer: ~75% horizontal, 5-10% vertical (upper-right)
-- **First list item**: ~20-40% horizontal, 30-50% vertical
-- **Buttons in dialogs**: 
-  - OK/Submit: ~60% horizontal, 80-90% vertical
-  - Cancel: ~40% horizontal, 80-90% vertical
-- **Menu items**: ~5-15% horizontal, 3-8% vertical (top-left)
-- **Taskbar icons**: bottom edge, distributed horizontally
-
-**Coordinate Calculation**:
-```
-Given screen size (W, H):
-- Center point: (W/2, H/2)
-- Search box (browser): (W/2, H * 0.12)
-- First result item: (W * 0.35, H * 0.40)
-- Dialog button: (W * 0.60, H * 0.85)
-```
-
-**Safety Margins**:
-- Keep 50px from screen edges
-- Center of elements is safest click target
-- Larger elements = more tolerance for error
-
-## WHEN TO USE KEYBOARD VS MOUSE
-
-**PREFER KEYBOARD** (Highest Reliability):
-- Opening apps: `Win+R` then type name (99% success rate)
-- Browser: `Ctrl+L` address bar, `Ctrl+T` new tab, `Alt+Left/Right` navigation  
-- Text: `Ctrl+C/V/X/A/Z`, `Ctrl+F` find
-- Windows: `Alt+Tab`, `Win+D` desktop, `Alt+F4` close
-- System: `Win` key for search/start menu
-
-**PREFER MOUSE WITH COORDINATES** (Good Reliability):
-- Clicking specific UI elements (buttons, links, icons)
-- Selecting from lists or grids
-- Drag and drop operations
-- Non-standard controls (custom UI elements)
-
-**AVOID** (Low Reliability):
-- TAB navigation (breaks easily, slow, unpredictable)
-- Blind clicking without coordinates
-- Screen scraping/OCR (not available)
-- Complex mouse gestures
-
-## OUTPUT FORMAT (JSON Schema)
-
-Respond with a **valid JSON object** following this structure:
-
-```json
-{{
-    "reasoning": {{
-        "understanding": "Deep analysis of user intent and request interpretation",
-        "context_analysis": "How current system state influences the plan",
-        "strategy": "High-level approach and key decision points",
-        "risks": ["Potential failure scenario 1", "Potential failure scenario 2"],
-        "success_criteria": "Observable indicators that task completed successfully"
-    }},
-    
-    "understood": true,
-    "confidence": 85,
-    "task_summary": "Concise description of what will be accomplished",
-    "complexity": "simple|moderate|complex",
-    "estimated_duration": "15",
-    
-    "prerequisites": ["Requirement 1", "Requirement 2"],
-    
-    "steps": [
-        {{
-            "step_number": 1,
-            "action": "take_screenshot",
-            "target": "current_state",
-            "parameters": {{}},
-            "expected_outcome": "Capture current screen to identify element positions",
-            "verification": "Screenshot file exists",
-            "reasoning": "Need visual context before interacting",
-            "fallback": "Proceed without screenshot if capture fails",
-            "estimated_time": "0.5"
-        }},
-        {{
-            "step_number": 2,
-            "action": "click",
-            "target": "search_box",
-            "parameters": {{"x": 1440, "y": 180}},
-            "expected_outcome": "Search box becomes focused, cursor visible",
-            "verification": "Screenshot shows focused input field",
-            "reasoning": "Direct coordinate click is most reliable method",
-            "fallback": "Use Ctrl+L as alternative for browser address bar",
-            "estimated_time": "1.0"
-        }},
-        {{
-            "step_number": 3,
-            "action": "type_text",
-            "target": "focused_field",
-            "parameters": {{"text": "user query here"}},
-            "expected_outcome": "Text appears in search box",
-            "verification": "Screenshot shows typed text",
-            "reasoning": "After focusing, typing is direct and reliable",
-            "fallback": "Clear field with Ctrl+A then retype",
-            "estimated_time": "1.5"
-        }}
-    ],
-    
-    "success_criteria": "Video player is visible and playing; progress bar shows movement",
-    "potential_issues": [
-        "Search box coordinates may vary by resolution",
-        "Page load time may exceed wait duration",
-        "Video autoplay might be disabled"
-    ],
-    "adaptive_strategies": [
-        "If search box not found: Use Ctrl+L for address bar",
-        "If page loads slowly: Add extra wait step",
-        "If click misses: Retry with adjusted coordinates"
-    ],
-    "clarification_needed": null
-}}
-```
-
-## CRITICAL REQUIREMENTS
-
-1. **Reasoning Chain**: ALWAYS include detailed `reasoning` object showing your thought process
-2. **Action Specificity**: Every action must have:
-   - Clear `target` description
-   - Precise `parameters` (especially x, y coordinates)
-   - Observable `expected_outcome`
-   - Concrete `verification` method
-   - Thoughtful `fallback` strategy
-   
-3. **Coordinate Precision**: When using `click` or `move_to`:
-   - Provide numeric x, y coordinates
-   - Consider screen resolution
-   - Estimate element centers, not edges
-   
-4. **Verification Steps**: After critical actions:
-   - Add `take_screenshot` to capture state
-   - Plan how to verify success visually
-   - Prepare corrective steps if verification fails
-
-5. **Adaptive Planning**: Include:
-   - Multiple fallback options
-   - Alternative action sequences
-   - Clear decision points for adaptation
-
-6. **Clarity Over Brevity**: Be thorough in reasoning and explanations
-
-## EXAMPLES OF EXCELLENT PLANNING
-
-### Example 1: Simple Task
-**Request**: "open calculator"
-
-**Good Response**:
-```json
-{{
-    "reasoning": {{
-        "understanding": "User wants to launch Windows Calculator application",
-        "context_analysis": "Calculator may not be running; need to launch it",
-        "strategy": "Use Win+R to open Run dialog, type 'calc', press Enter",
-        "risks": ["Run dialog might not open", "Calculator already running"],
-        "success_criteria": "Calculator window is visible and active"
-    }},
-    "understood": true,
-    "confidence": 95,
-    "task_summary": "Launch Windows Calculator application",
-    "complexity": "simple",
-    "estimated_duration": "3",
-    "steps": [
-        {{
-            "step_number": 1,
-            "action": "hotkey",
-            "target": "win+r",
-            "parameters": {{}},
-            "expected_outcome": "Run dialog opens",
-            "verification": "Small dialog box appears in lower-left",
-            "reasoning": "Win+R is fastest way to launch apps in Windows",
-            "fallback": "Use Windows Search (Win key) if Run fails",
-            "estimated_time": "0.5"
-        }},
-        {{
-            "step_number": 2,
-            "action": "type_text",
-            "target": "run_dialog",
-            "parameters": {{"text": "calc"}},
-            "expected_outcome": "Text 'calc' appears in Run dialog",
-            "verification": "Text is visible in input field",
-            "reasoning": "'calc' is universal command for Calculator",
-            "fallback": "Try 'calculator.exe' if 'calc' fails",
-            "estimated_time": "0.5"
-        }},
-        {{
-            "step_number": 3,
-            "action": "press_key",
-            "target": "enter",
-            "parameters": {{"key": "enter"}},
-            "expected_outcome": "Calculator window opens and becomes active",
-            "verification": "Calculator interface is visible on screen",
-            "reasoning": "Enter key submits the Run command",
-            "fallback": "Click OK button if Enter doesn't work",
-            "estimated_time": "2.0"
-        }}
-    ],
-    "success_criteria": "Calculator window is open, visible, and responsive",
-    "potential_issues": ["Calculator might already be open (minimized)"],
-    "clarification_needed": null
-}}
-```
-
-### Example 2: Complex Multi-Step Task
-**Request**: "open edge and search for python tutorials on youtube"
-
-**Excellent Response** (abbreviated):
-```json
-{{
-    "reasoning": {{
-        "understanding": "User wants to: 1) Launch Edge browser, 2) Navigate to YouTube, 3) Search for 'python tutorials'",
-        "strategy": "Launch Edge → Use Ctrl+L for address bar → Navigate to youtube.com → Use coordinate-based search box click → Type query → Submit",
-        "risks": ["Edge already open", "YouTube loads slowly", "Search box position varies"],
-        "success_criteria": "YouTube search results page showing 'python tutorials' videos"
-    }},
-    "steps": [
-        {{"action": "open_application", "target": "msedge.exe", "reasoning": "Launch browser first"}},
-        {{"action": "wait", "parameters": {{"seconds": 3}}, "reasoning": "Allow browser to fully load"}},
-        {{"action": "hotkey", "target": "ctrl+l", "reasoning": "Focus address bar (most reliable)"}},
-        {{"action": "type_text", "parameters": {{"text": "youtube.com"}}, "reasoning": "Direct URL navigation"}},
-        {{"action": "press_key", "parameters": {{"key": "enter"}}, "reasoning": "Navigate to YouTube"}},
-        {{"action": "wait", "parameters": {{"seconds": 5}}, "reasoning": "Wait for YouTube to load fully"}},
-        {{"action": "take_screenshot", "reasoning": "Identify search box coordinates"}},
-        {{"action": "click", "parameters": {{"x": 1440, "y": 180}}, "reasoning": "Click search box at estimated center"}},
-        {{"action": "type_text", "parameters": {{"text": "python tutorials"}}, "reasoning": "Enter search query"}},
-        {{"action": "press_key", "parameters": {{"key": "enter"}}, "reasoning": "Submit search"}},
-        {{"action": "wait", "parameters": {{"seconds": 3}}, "reasoning": "Allow results to load"}},
-        {{"action": "take_screenshot", "reasoning": "Verify search results appeared"}}
-    ],
-    "adaptive_strategies": [
-        "If Edge doesn't open: Try chrome.exe or iexplore.exe",
-        "If search box click misses: Use Tab key to cycle to search",
-        "If YouTube loads slowly: Increase wait time to 8 seconds"
-    ]
-}}
-```
-
-## NOW: ANALYZE THE USER REQUEST
-
-Process the request using the agentic workflow above:
-1. Deep understanding (intent, context, ambiguities)
-2. Strategic planning (decomposition, selection, risk assessment)
-3. Execution plan synthesis (detailed JSON with reasoning)
-
-**Remember**: 
-- Think deeply before acting
-- Reason through each decision
-- Plan for failures and adaptation
-- Use coordinates for precision
-- Verify after critical steps
-- Provide rich, detailed responses
-
-Generate your response now:"""
+    "APPLICATION IDENTIFICATION:\n"
+        "  • By Window Title: Partial matches allowed (\"Chrome\" matches \"Google Chrome - YouTube\")\n"
+        "  • By Process Name: Exact process name (\"chrome.exe\", \"notepad.exe\")\n"
+        "  • Case Sensitivity: Window titles are case-insensitive\n"
+        "  • Multi-instance: If multiple windows, focus most recent or specify criteria\n\n"
         
-        return prompt
-    
+    "KEYBOARD SHORTCUTS (Windows Standard):\n"
+        "  • Win: Open Start Menu\n"
+        "  • Win+R: Run dialog (fastest app launcher)\n"
+        "  • Win+D: Show Desktop (minimize all)\n"
+        "  • Alt+Tab: Switch between windows\n"
+        "  • Alt+F4: Close active window\n"
+        "  • Ctrl+Shift+Esc: Task Manager\n"
+        "  • Ctrl+C/V/X/A/Z: Copy/Paste/Cut/Select All/Undo\n"
+        "  • F5: Refresh (browsers/explorer)\n"
+        "  • Ctrl+F: Find/Search\n"
+        "  • Ctrl+T: New tab (browsers)\n"
+        "  • Ctrl+W: Close tab/window\n\n"
+        
+    "ELEMENT TARGETING HIERARCHY (Preference Order):\n"
+        "  1. KEYBOARD SHORTCUT (Most reliable, no coordinates needed)\n"
+        "     Example: Use Ctrl+T instead of clicking \"New Tab\"\n"
+        "  2. TAB + ENTER NAVIGATION (Accessible, no vision needed)\n"
+        "     Example: Tab 3 times, press Enter\n"
+        "  3. TEXT-BASED SEARCH (Use app's search if available)\n"
+        "     Example: Ctrl+F → type query → Enter\n"
+        "  4. VISUAL ELEMENT LOCATION (Requires screenshot analysis)\n"
+        "     Example: Identify button via vision, click at (~x, ~y)\n"
+        "  5. COORDINATE ESTIMATION (Last resort, lowest reliability)\n"
+        "     Example: Click at (~100, ~50) for top-left area\n\n"
+        
+    "SCREEN ANALYSIS CAPABILITIES:\n"
+        "  • Vision Model: Google Gemini (image understanding)\n"
+        "  • Input: PIL Image screenshots (RGB/RGBA)\n"
+        "  • Output: Element locations, text content, UI state\n"
+        "  • Accuracy: ±10-20px typical, confidence scores provided\n"
+        "  • Limitations: Small text may be unclear, overlapping elements challenging\n\n"
+        
+    "TIMING GUIDELINES:\n"
+        "  • Application Launch: 2-5 seconds (add 2s wait minimum)\n"
+        "  • Window Focus Switch: 0.5-1 second (add 0.5s wait)\n"
+        "  • Page Load (Browser): 2-10 seconds (verify loaded state)\n"
+        "  • File Dialog Open: 1-2 seconds\n"
+        "  • Context Menu: 0.3-0.5 seconds\n"
+        "  • Typing Speed: 50-100ms per character (configurable)\n\n"
+        
+    "COMMON FAILURE MODES & SOLUTIONS:\n"
+        "  • App Already Running: Check running processes → focus existing window\n"
+        "  • Wrong Window Focus: Verify active window title → refocus if needed\n"
+        "  • Element Not Found: Take screenshot → locate visually → adjust coordinates\n"
+        "  • Slow Loading: Add wait step → verify state → retry if needed\n"
+        "  • Coordinates Drift: UI scaling/DPI affects coordinates → use relative positioning\n"
+        "  • Popup Blocking: Check for unexpected dialogs → handle or dismiss\n"
+    )
+
+    EXECUTION_STRATEGIES = (
+        "═══════════════════════════════════════════════════════════\n"
+        "EXECUTION STRATEGY FRAMEWORK - STEP-BY-STEP METHODOLOGY\n"
+        "═══════════════════════════════════════════════════════════\n\n"
+        
+    "PRE-EXECUTION CHECKLIST:\n"
+    "  - Identify current system state (active window, running apps)\n"
+    "  - Verify prerequisites (required apps installed, files exist)\n"
+    "  - Plan verification points (how to confirm each step succeeded)\n"
+    "  - Define success criteria (final state description)\n"
+    "  - Prepare fallback strategies (what to do if step fails)\n\n"
+        
+    "ACTION EXECUTION PRINCIPLES:\n"
+        "  1. ATOMICITY: Each step should be a single, verifiable action\n"
+    "     Bad example: \"Open browser and search\"\n"
+    "     Good example: Step 1: \"Open browser\", Step 2: \"Navigate to search\", Step 3: \"Type query\"\n\n"
+        
+        "  2. DETERMINISM: Prefer actions with predictable outcomes\n"
+        "     Priority: Keyboard shortcuts > Tab navigation > Text search > Visual click > Coordinate guess\n\n"
+        
+        "  3. VERIFICATION: After each critical action, verify state changed\n"
+        "     Example: After \"open notepad\" → verify window title contains \"Notepad\"\n\n"
+        
+        "  4. TIMING: Always include wait steps where needed\n"
+        "     • After launch: wait 2s\n"
+        "     • After focus: wait 0.5s\n"
+        "     • After click: wait 0.3s\n"
+        "     • Before typing: verify focus + wait 0.5s\n\n"
+        
+        "  5. PRECISION: For coordinate-based actions, provide confidence\n"
+        "     Format: {\"x\": 960, \"y\": 540, \"confidence\": 85, \"margin\": 10}\n\n"
+        
+    "ADAPTIVE FAILURE HANDLING:\n"
+        "  IF action fails THEN:\n"
+        "    1. Analyze failure mode (timeout, not found, wrong state)\n"
+        "    2. Take screenshot to assess current state\n"
+        "    3. Choose recovery strategy:\n"
+        "       • App launch fail → Check if running → Focus existing OR Launch via Win+R\n"
+        "       • Click miss → Retry with adjusted coords (±20px) OR Use keyboard alternative\n"
+        "       • Typing fail → Verify focus → Clear field (Ctrl+A, Delete) → Retry\n"
+        "       • Window not found → Wait 2s → Enumerate windows → Match by partial title\n"
+        "       • Element hidden → Scroll to view → Retry locate → Use alternative path\n"
+        "    4. Update plan with recovery step\n"
+        "    5. Continue OR abort if unrecoverable\n\n"
+        
+    "VERIFICATION STRATEGIES:\n"
+        "  • Window Title Check: Active window title contains expected text\n"
+        "  • Visual Confirmation: Screenshot analysis shows expected element/state\n"
+        "  • Process Check: Target process running in process list\n"
+        "  • File System: Expected file exists at path\n"
+        "  • Clipboard: Clipboard contains expected content\n"
+        "  • State Indicator: Button/menu state changed (enabled/disabled/checked)\n\n"
+        
+    "RISK MITIGATION:\n"
+        "  • ALWAYS verify window focus before keyboard input (prevents typing in wrong window)\n"
+        "  • NEVER assume state (always verify with screenshot or query)\n"
+        "  • ALWAYS provide fallback for coordinate-based actions\n"
+        "  • LIMIT retry attempts (max 3) to avoid infinite loops\n"
+        "  • HANDLE unexpected dialogs (OK/Cancel/Close popups)\n"
+        "  • ESCAPE hatch: If stuck, press Esc or close window and restart\n\n"
+        
+    "OPTIMIZATION TECHNIQUES:\n"
+        "  • Batch operations: Group similar actions (type entire sentence vs char-by-char)\n"
+        "  • Parallel preparation: While waiting, plan next steps\n"
+        "  • State caching: Remember window positions, element locations\n"
+        "  • Smart waiting: Poll for state change vs fixed wait\n"
+        "  • Shortcut chains: Win+R → \"notepad\" → Enter (faster than Start menu)\n\n"
+        
+    "ACTION SPECIFICATION FORMAT:\n"
+        "  Every action MUST include:\n"
+        "  {\n"
+        "    \"action\": \"<action_name>\",           // From available actions registry\n"
+        "    \"target\": \"<target_description>\",   // What to interact with\n"
+        "    \"parameters\": {                      // Action-specific params\n"
+        "      \"x\": 960,                          // Coordinate X (if applicable)\n"
+        "      \"y\": 540,                          // Coordinate Y (if applicable)\n"
+        "      \"text\": \"hello\",                  // Text to type (if applicable)\n"
+        "      \"confidence\": 85                   // Your confidence 0-100\n"
+        "    },\n"
+        "    \"expected_outcome\": \"<what should happen>\",\n"
+        "    \"verification\": \"<how to verify success>\",\n"
+        "    \"fallback\": \"<alternative if fails>\",\n"
+        "    \"estimated_time\": \"<duration in seconds>\"\n"
+        "  }\n"
+    )
+
+    TASK_PLANNING_RULES = (
+        "═══════════════════════════════════════════════════════════\n"
+        "TASK PLANNING METHODOLOGY - SYSTEMATIC APPROACH\n"
+        "═══════════════════════════════════════════════════════════\n\n"
+        
+    "COGNITIVE PROCESS (Execute in order):\n"
+        "  1. UNDERSTAND: Parse user intent, identify key actions and goals\n"
+        "  2. DECOMPOSE: Break complex task into atomic, executable steps\n"
+        "  3. SEQUENCE: Order steps logically with dependencies\n"
+        "  4. SPECIFY: For each step, define action, target, parameters, verification\n"
+        "  5. VALIDATE: Check plan completeness, feasibility, edge cases\n"
+        "  6. OPTIMIZE: Combine steps where safe, add parallelization opportunities\n\n"
+        
+    "STEP REQUIREMENTS (Each step MUST have):\n"
+        "  • Unique step_number (sequential integers starting from 1)\n"
+        "  • Valid action name (from provided actions registry)\n"
+        "  • Clear target description (window name, element, coordinates)\n"
+        "  • Complete parameters object (all required fields for action)\n"
+        "  • Expected outcome (what should happen if successful)\n"
+        "  • Verification method (how to confirm step worked)\n"
+        "  • Fallback strategy (what to try if step fails)\n"
+        "  • Time estimate (realistic duration in seconds)\n\n"
+        
+    "REASONING REQUIREMENTS:\n"
+        "  • Be EXPLICIT: State your assumptions and logic\n"
+        "  • Be CONCISE: Avoid unnecessary verbosity\n"
+        "  • Be TECHNICAL: Use precise terminology (window focus, process name, coordinates)\n"
+        "  • Be REALISTIC: Consider Windows UI limitations and timing\n"
+        "  • Be DEFENSIVE: Anticipate failures and plan mitigations\n\n"
+        
+    "ACTIONS REGISTRY USAGE:\n"
+        "  • ONLY use actions from the provided registry\n"
+        "  • Match action names EXACTLY (case-sensitive)\n"
+        "  • Provide ALL required parameters for each action\n"
+        "  • Reference examples to understand proper usage\n"
+        "  • If uncertain, choose simpler action (keyboard over mouse)\n\n"
+        
+    "COMPLEXITY ASSESSMENT:\n"
+        "  • SIMPLE: 1-3 steps, single app, no branching (e.g., \"open calculator\")\n"
+        "  • MEDIUM: 4-8 steps, multiple apps or navigation (e.g., \"open browser, search, click result\")\n"
+        "  • COMPLEX: 9+ steps, conditionals, verification loops (e.g., \"search, filter, extract data, save file\")\n\n"
+        
+    "SUCCESS CRITERIA DEFINITION:\n"
+    "  Define OBSERVABLE, VERIFIABLE conditions that indicate task completion:\n"
+    "  - Example success criterion: \"Edge browser is closed (not visible in window list)\"\n"
+    "  - Example success criterion: \"YouTube video is playing (audio detected or visual confirmation)\"\n"
+    "  - Example of insufficient criterion: \"Task is done\"\n"
+    "  - Example of insufficient criterion: \"Everything worked\"\n\n"
+        
+    "PREREQUISITE IDENTIFICATION:\n"
+        "  List what MUST be true before task can start:\n"
+        "  • Required applications installed (e.g., \"Edge browser must be installed\")\n"
+        "  • Network connectivity (e.g., \"Internet connection required for YouTube\")\n"
+        "  • Permissions (e.g., \"Administrator rights for system settings\")\n"
+        "  • Files/folders exist (e.g., \"Download folder must be accessible\")\n"
+        "  • Screen state (e.g., \"Desktop visible, no fullscreen apps blocking\")\n\n"
+        
+    "RISK ASSESSMENT:\n"
+        "  Identify potential_issues that could cause failure:\n"
+        "  • UI timing (app slow to load, page slow to render)\n"
+        "  • Coordinate accuracy (button moved, window resized)\n"
+        "  • State assumptions (app already open, unexpected dialog)\n"
+        "  • External factors (network latency, system performance)\n"
+        "  • User interruption (focus stolen by notification/popup)\n"
+    )
+
+    TASK_PLANNING_OUTPUT = (
+        "Return JSON only matching this schema:\n"
+        "{\n"
+        "  \"understood\": bool,\n"
+        "  \"confidence\": int (0-100),\n"
+        "  \"task_summary\": string,\n"
+        "  \"complexity\": \"simple\"|\"medium\"|\"complex\",\n"
+        "  \"estimated_duration\": string (e.g., \"2 minutes\"),\n"
+        "  \"success_criteria\": [string],\n"
+        "  \"prerequisites\": [string],\n"
+        "  \"steps\": [\n"
+        "    {\n"
+        "      \"step_number\": int,\n"
+        "      \"action\": string,\n"
+        "      \"target\": string,\n"
+        "      \"parameters\": object,\n"
+        "      \"expected_outcome\": string,\n"
+        "      \"verification\": string,\n"
+        "      \"fallback\": string,\n"
+        "      \"estimated_time\": string\n"
+        "    }\n"
+        "  ],\n"
+        "  \"potential_issues\": [string],\n"
+        "  \"adaptive_strategies\": [string],\n"
+        "  \"clarification_needed\": string|null\n"
+        "}"
+    )
+
+    CHAIN_OF_THOUGHT = (
+        "═══════════════════════════════════════════════════════════\n"
+        "STRUCTURED REASONING PROTOCOL - THINK BEFORE YOU ACT\n"
+        "═══════════════════════════════════════════════════════════\n\n"
+        
+        "Before generating your JSON plan, reason through these phases:\n\n"
+        
+        "PHASE 1 - TASK COMPREHENSION:\n"
+        "  → What is the user asking me to do? (Goal identification)\n"
+        "  → What are the key verbs/actions? (open, search, click, type, close)\n"
+        "  → What are the target objects? (applications, URLs, elements)\n"
+        "  → What are the constraints? (timing, order, conditions)\n"
+        "  → What is the desired end state? (Success definition)\n"
+        "  Example: \"Open Edge and search YouTube for cat videos\"\n"
+        "    → Goal: Navigate to YouTube, search for content\n"
+        "    → Actions: open, navigate, search, input\n"
+        "    → Targets: Edge browser, youtube.com, search bar\n"
+        "    → End state: YouTube search results for 'cat videos' displayed\n\n"
+        
+        "PHASE 2 - STATE ANALYSIS:\n"
+        "  → What is the current system state? (from context)\n"
+        "  → Which applications are running?\n"
+        "  → What window is active?\n"
+        "  → Screen resolution and layout?\n"
+        "  → Any blockers or prerequisites missing?\n"
+        "  Example Context: {active_window: 'Desktop', running: ['explorer.exe']}\n"
+        "    → Currently on desktop, no apps open\n"
+        "    → Need to launch Edge from scratch\n"
+        "    → Screen space available for new window\n\n"
+        
+        "PHASE 3 - GAP ANALYSIS:\n"
+        "  → What needs to change to reach goal? (Delta from current to desired state)\n"
+        "  → Which intermediate states must we pass through?\n"
+        "  → What are the dependencies between states?\n"
+        "  Example: Current=Desktop, Goal=YouTube search results\n"
+        "    → Gap 1: No browser open → Need to launch Edge\n"
+        "    → Gap 2: At start page → Need to navigate to youtube.com\n"
+        "    → Gap 3: At homepage → Need to locate search, type query\n"
+        "    → Gap 4: Query typed → Need to submit search\n"
+        "    → Gap 5: Results showing → Goal achieved\n\n"
+        
+        "PHASE 4 - ACTION SELECTION:\n"
+        "  → For each gap, what actions bridge it?\n"
+        "  → Which action type is most reliable? (Refer to targeting hierarchy)\n"
+        "  → What parameters does each action need?\n"
+        "  → What could go wrong with each action?\n"
+        "  Example: Gap 1 (Launch Edge)\n"
+        "    → Option A: open_application (target='edge') - BEST (simple, reliable)\n"
+        "    → Option B: Win+R → type 'msedge' → Enter - ALTERNATIVE (if A fails)\n"
+        "    → Option C: Click Start → search → click icon - LAST RESORT (slow)\n"
+        "    → Chosen: open_application with fallback to Option B\n\n"
+        
+        "PHASE 5 - RISK & FALLBACK PLANNING:\n"
+        "  → What can fail at each step?\n"
+        "  → How will I detect failure?\n"
+        "  → What's the recovery strategy?\n"
+        "  → When should I abort vs. retry?\n"
+        "  Example Risks:\n"
+        "    → Edge launch fails: Check if already running → focus existing OR use Win+R\n"
+        "    → Navigation slow: Add wait step → verify page loaded → timeout after 10s\n"
+        "    → Search not found: Take screenshot → locate visually → use keyboard nav (Tab)\n"
+        "    → Click wrong element: Verify outcome → undo if possible → retry with adjusted coords\n\n"
+        
+        "PHASE 6 - VERIFICATION STRATEGY:\n"
+        "  → After each step, how do I confirm success?\n"
+        "  → What should I observe in screenshot?\n"
+        "  → What window title should appear?\n"
+        "  → What elements should be visible?\n"
+        "  → How do I know the ENTIRE task succeeded?\n"
+        "  Example Verifications:\n"
+        "    → After launch Edge: Window title contains \"Microsoft Edge\"\n"
+        "    → After navigate: URL bar shows \"youtube.com\"\n"
+        "    → After search: Results list visible, video thumbnails present\n"
+        "    → Task complete: Specific video playing OR results page stable for 2s\n\n"
+        
+    "LEARNING FROM EXAMPLES:\n"
+        "  Study the provided action examples to understand:\n"
+        "  • Correct parameter formats\n"
+        "  • Expected input/output patterns\n"
+        "  • Common use cases and variations\n"
+        "  • How to combine actions into workflows\n\n"
+        
+        "After completing all phases, synthesize your reasoning into the JSON plan.\n"
+    )
+
+    # Common UI automation patterns for specific scenarios
+    BROWSER_AUTOMATION_GUIDE = (
+    "BROWSER AUTOMATION PATTERNS:\n"
+        "  Navigation:\n"
+        "    1. Open browser → wait 2s for launch\n"
+        "    2. Focus address bar (Ctrl+L or Alt+D)\n"
+        "    3. Type URL → press Enter\n"
+        "    4. Wait for page load (2-10s, verify by checking for element)\n"
+        "  \n"
+        "  Searching:\n"
+        "    1. Locate search box (visual or Ctrl+F)\n"
+        "    2. Click to focus OR use Tab navigation\n"
+        "    3. Type search query\n"
+        "    4. Press Enter OR click search button\n"
+        "    5. Wait for results (verify by checking for result items)\n"
+        "  \n"
+        "  Clicking Elements:\n"
+        "    1. Take screenshot of current page\n"
+        "    2. Locate element visually (get coordinates)\n"
+        "    3. Scroll into view if needed\n"
+        "    4. Click at coordinates with margin\n"
+        "    5. Verify action (check URL change, new content appears)\n"
+        "  \n"
+        "  Common Issues:\n"
+        "    • Lazy loading: Wait for content → scroll to trigger load\n"
+        "    • Popups/Cookies: Dismiss with Esc or locate 'Accept/Close' button\n"
+        "    • Redirects: Allow time for redirect, verify final URL\n"
+    )
+
+    FILE_OPERATIONS_GUIDE = (
+    "FILE & FOLDER OPERATIONS:\n"
+        "  Opening Files:\n"
+        "    Method 1 (Direct): Win+R → type full path → Enter\n"
+        "    Method 2 (Explorer): Open explorer → navigate → double-click file\n"
+        "    Method 3 (App): Open app → Ctrl+O → navigate → select → open\n"
+        "  \n"
+        "  Saving Files:\n"
+        "    1. Ctrl+S to open save dialog\n"
+        "    2. Wait for dialog (1-2s)\n"
+        "    3. Type filename in name field\n"
+        "    4. Navigate to folder if needed (click folders or type path)\n"
+        "    5. Click Save button OR press Enter\n"
+        "    6. Verify file exists (check file system or title bar update)\n"
+        "  \n"
+        "  File Dialog Navigation:\n"
+        "    • Address bar: Click → type path → Enter (fastest)\n"
+        "    • Folder tree: Click folder icons to expand/navigate\n"
+        "    • Quick access: Use pinned folders on left sidebar\n"
+        "    • Recent files: Look in Recent Files section\n"
+    )
+
+    TEXT_EDITING_GUIDE = (
+    "TEXT EDITING PATTERNS:\n"
+        "  Entering Text:\n"
+        "    1. Focus target window (focus_window action)\n"
+        "    2. Click text field OR Tab to it\n"
+        "    3. Verify cursor in field (check for blinking cursor)\n"
+        "    4. Type text (use type_text action)\n"
+        "    5. Verify text appears (visual check)\n"
+        "  \n"
+        "  Editing Existing Text:\n"
+        "    1. Select all (Ctrl+A) OR triple-click\n"
+        "    2. Delete (Backspace) OR just start typing (overwrites)\n"
+        "    3. Use Ctrl+Z to undo if needed\n"
+        "  \n"
+        "  Common Shortcuts:\n"
+        "    • Ctrl+A: Select all\n"
+        "    • Ctrl+C/V/X: Copy/Paste/Cut\n"
+        "    • Ctrl+Z/Y: Undo/Redo\n"
+        "    • Ctrl+F: Find\n"
+        "    • Ctrl+Home/End: Jump to start/end\n"
+    )
+
+    WINDOW_MANAGEMENT_GUIDE = (
+    "WINDOW MANAGEMENT STRATEGIES:\n"
+        "  Finding Windows:\n"
+        "    1. Query running processes (get list of .exe)\n"
+        "    2. Query window titles (get all open windows)\n"
+        "    3. Match by partial title (case-insensitive)\n"
+        "    4. If multiple matches, choose most recent OR specific criteria\n"
+        "  \n"
+        "  Focusing Windows:\n"
+        "    Method 1: focus_window action with title\n"
+        "    Method 2: Alt+Tab to cycle (if you know position)\n"
+        "    Method 3: Click taskbar icon (requires coordinates)\n"
+        "  \n"
+        "  Arranging Windows:\n"
+        "    • Snap left: Win+Left Arrow\n"
+        "    • Snap right: Win+Right Arrow\n"
+        "    • Maximize: Win+Up Arrow OR double-click title bar\n"
+        "    • Minimize: Win+Down Arrow OR click minimize button\n"
+        "  \n"
+        "  Closing Windows:\n"
+        "    Priority:\n"
+        "      1. Alt+F4 (closes active window, reliable)\n"
+        "      2. close_application action (by name)\n"
+        "      3. Click X button (requires coordinates)\n"
+    )
+
+    SCREEN_ANALYSIS_TEMPLATE = (
+        "═══════════════════════════════════════════════════════════\n"
+        "WINDOWS UI SCREEN ANALYSIS - VISION TASK\n"
+        "═══════════════════════════════════════════════════════════\n\n"
+        
+        "You are analyzing a Windows desktop screenshot for UI automation purposes.\n"
+        "Your goal: Provide actionable information for a bot to interact with this screen.\n\n"
+        
+        "ANALYSIS STRUCTURE (Use this exact format):\n\n"
+        
+    "### PRIMARY CONTEXT\n"
+        "1-2 sentences describing what is visible and happening on screen.\n"
+        "Example: \"Microsoft Edge browser is open showing YouTube homepage. Search bar is visible at top center.\"\n\n"
+        
+    "### APPLICATION DETAILS\n"
+        "  • Application: [Name and version if visible]\n"
+        "  • Window Title: [Exact title bar text]\n"
+        "  • Window State: [Maximized/Windowed/Minimized]\n"
+        "  • Focus State: [Active/Inactive]\n"
+        "  • Visible Area: [Approximate percentage of screen]\n\n"
+        
+    "### INTERACTIVE ELEMENTS\n"
+        "List ALL interactive elements with precise details:\n"
+        "Format: [Type] \"Text/Label\" at (~X, ~Y) - [State] - [Confidence%]\n"
+        "Examples:\n"
+        "  • Button \"Search\" at (~1200, ~150) - Enabled - 95%\n"
+        "  • Text Field \"Enter query\" at (~600, ~200) - Empty, Focused - 90%\n"
+        "  • Checkbox \"Remember me\" at (~400, ~500) - Unchecked - 85%\n"
+        "  • Link \"Sign In\" at (~1400, ~80) - Clickable - 98%\n"
+        "  • Dropdown \"Language\" at (~1500, ~100) - Collapsed - 92%\n\n"
+        
+        "Element Types to identify:\n"
+        "  - Buttons (regular, icon, toggle)\n"
+        "  - Text fields (input, password, search, textarea)\n"
+        "  - Links (hyperlinks, navigation)\n"
+        "  - Checkboxes and radio buttons\n"
+        "  - Dropdowns and combo boxes\n"
+        "  - Menus (menu bar, context menu, dropdown menu)\n"
+        "  - Tabs and navigation items\n"
+        "  - Icons and toolbar items\n"
+        "  - Scroll bars\n\n"
+        
+    "### ACTIONABLE ITEMS (Priority Order)\n"
+        "List top 5-10 actions bot could take RIGHT NOW:\n"
+        "Format: [Priority] [Action] on [Target] at (~X, ~Y) → [Outcome] [Confidence%]\n"
+        "Examples:\n"
+        "  1. CLICK on \"Search\" button at (~1200, ~150) → Open search → 95%\n"
+        "  2. TYPE in search field at (~600, ~200) → Enter search query → 90%\n"
+        "  3. HOTKEY Ctrl+T → Open new tab → 100%\n"
+        "  4. SCROLL down 500px → View more content → 85%\n"
+        "  5. CLICK on video thumbnail at (~400, ~600) → Play video → 88%\n\n"
+        
+        "Action Methods:\n"
+        "  - CLICK: Direct mouse click at coordinates\n"
+        "  - DOUBLE_CLICK: Double-click for opening items\n"
+        "  - RIGHT_CLICK: Context menu\n"
+        "  - TYPE: Keyboard input into focused field\n"
+        "  - HOTKEY: Keyboard shortcut (most reliable)\n"
+        "  - TAB: Navigate to element via Tab key\n"
+        "  - SCROLL: Scroll viewport\n"
+        "  - DRAG: Drag and drop operation\n\n"
+        
+    "### COORDINATE ANCHORS\n"
+        "List 5-10 reliable reference points for navigation:\n"
+        "Format: (~X, ~Y) - [Description] - [Reliability]\n"
+        "Examples:\n"
+        "  • (~0, ~0) - Top-left corner of window - 100%\n"
+        "  • (~960, ~540) - Screen center (1920×1080) - 100%\n"
+        "  • (~1200, ~150) - Search button center - 95%\n"
+        "  • (~50, ~100) - Window icon/menu area - 98%\n"
+        "  • (~1400, ~80) - Top-right corner utilities - 90%\n\n"
+        
+        "Coordinate Guidelines:\n"
+        "  - Origin (0,0) is top-left of PRIMARY screen\n"
+        "  - X increases left to right\n"
+        "  - Y increases top to bottom\n"
+        "  - Always provide center point of element (not edge)\n"
+        "  - Include margin of error (typically ±5-20px)\n"
+        "  - Flag low confidence (<70%) coordinates\n\n"
+        
+    "### STATIC TEXT CONTENT\n"
+        "List important text visible on screen:\n"
+        "  • Page Title: [Main heading]\n"
+        "  • Key Labels: [Important text labels]\n"
+        "  • Status Messages: [Any status/error messages]\n"
+        "  • Instructions: [User-facing instructions]\n\n"
+        
+    "### AUTOMATION CONSIDERATIONS\n"
+        "Risks, challenges, and recommendations:\n"
+        "  • Element Overlap: [Any elements obscuring others?]\n"
+        "  • Dynamic Content: [Loading indicators, animations?]\n"
+        "  • Timing Issues: [Delays expected before interaction?]\n"
+        "  • Accessibility: [Can element be reached via keyboard?]\n"
+        "  • State Dependencies: [Prerequisites before action?]\n"
+        "  • Verification Points: [How to confirm action succeeded?]\n"
+        "  • Alternative Paths: [Backup methods if primary fails?]\n\n"
+        
+    "CRITICAL RULES:\n"
+    "  - Estimate coordinates as accurately as possible\n"
+    "  - Provide confidence scores (0-100%) for all estimates\n"
+    "  - Flag elements that are partially visible or unclear\n"
+    "  - Note any pop-ups, dialogs, or overlays\n"
+    "  - Identify fastest or most reliable interaction method\n"
+    "  - Consider keyboard alternatives for every mouse action\n"
+    "  - Be specific about element states (enabled, disabled, focused)\n"
+    )
+
+    ELEMENT_LOCATION_TEMPLATE = (
+        "You are a spatial reasoning assistant. Return JSON with: reasoning {search_strategy, identification, confidence_basis, "
+        "alternatives_considered}, found (bool), confidence (0-100), x, y (pixel center), margin_of_error_px, element_type, "
+        "position {description}, pixel_estimate {width_px, height_px}, visual_characteristics {visible_text, icon_description, "
+        "color, styling}, surrounding_context {above, below, left, right}, interaction_guidance {click_target, hover_sensitive, "
+        "keyboard_alternative}, risks (list), suggestions (list). If not found set found=false, confidence=0, explain why, and "
+        "suggest how to reveal it or alternatives."
+    )
+
+    VERIFICATION_TEMPLATE = (
+        "You are verifying whether an action achieved the expected change. Compare BEFORE vs AFTER. "
+        "Return JSON with keys: success (bool), confidence (0-100), issue (blank if success), observed_state (short summary), "
+        "evidence {supporting, missing}, next_step. Mark success false if evidence is incomplete or ambiguous."
+    )
+
+    NEXT_ACTION_TEMPLATE = (
+        "You are an adaptive planner. Use current state and recent history to choose the safest next action. Return JSON with: "
+        "reasoning {situation_summary, progress_estimate, analysis, strategy, alternatives_considered, decision_rationale}, "
+        "action, target, parameters, expected_outcome, verification {method, success_indicators, failure_indicators}, "
+        "fallback_plan {if_fails, alternative_sequence}, confidence, estimated_remaining_steps, adaptive_notes. "
+        "Avoid repeating the same failed action without a change in approach."
+    )
+
     @staticmethod
-    def build_screen_analysis_prompt(question: Optional[str] = None) -> str:
-        """Build an agentic prompt for deep visual analysis using chain-of-thought reasoning."""
-        
-        default_question = """You are an EXPERT COMPUTER VISION ANALYST with advanced spatial reasoning capabilities.
+    def build_task_planning_prompt(
+        user_request: str,
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        complexity_hint: str = "auto",
+        include_examples: bool = True,
+    ) -> str:
+        """Build a comprehensive task-planning prompt with specialized guidance."""
 
-# TASK: COMPREHENSIVE SCREEN ANALYSIS
+        if complexity_hint == "auto":
+            complexity = _detect_complexity(user_request)
+        else:
+            complexity = complexity_hint
 
-Analyze this screenshot with EXTREME PRECISION using multi-stage reasoning:
+        # Analyze request for specialized guidance
+        request_lower = user_request.lower()
+        needs_browser_guide = any(word in request_lower for word in 
+                                   ['browser', 'edge', 'chrome', 'firefox', 'youtube', 'google', 
+                                    'search', 'website', 'url', 'navigate', 'web', 'page', 'link'])
+        needs_file_guide = any(word in request_lower for word in 
+                                ['file', 'folder', 'save', 'open', 'document', 'explorer', 
+                                 'directory', 'path', 'download'])
+        needs_text_guide = any(word in request_lower for word in 
+                                ['type', 'write', 'text', 'notepad', 'edit', 'word', 'input', 
+                                 'typing', 'enter'])
+        needs_window_guide = any(word in request_lower for word in 
+                                  ['window', 'close', 'minimize', 'maximize', 'focus', 'switch',
+                                   'alt+tab', 'taskbar'])
 
-## STAGE 1: GLOBAL CONTEXT (Top-Down Analysis)
+        sections = [PromptBuilder.TASK_PLANNING_SYSTEM]
 
-**Primary Questions**:
-1. What is the MAIN application/window visible?
-   - Application name and version (if visible)
-   - Current state (idle, loading, active, error)
-   - Window decorations and title bar text
+        system_configuration = _collect_system_configuration(context)
+        if system_configuration:
+            sections.append(system_configuration)
 
-2. What is the OVERALL LAYOUT pattern?
-   - Single window, multiple windows, or complex overlay?
-   - Screen regions: header, sidebar, content area, footer
-   - Visual hierarchy and focus areas
+        sections.extend([
+            PromptBuilder.WINDOWS_CONTEXT,
+            PromptBuilder.TASK_PLANNING_RULES,
+            f"═══════════════════════════════════════════════════════════\n"
+            f"USER REQUEST: \"{user_request}\"\n"
+            f"═══════════════════════════════════════════════════════════",
+        ])
 
-3. What is the USER'S APPARENT WORKFLOW STATE?
-   - Just opened the app?
-   - In middle of a task?
-   - Waiting for something?
-   - Error or blocked state?
+        if context:
+            formatted_context = _format_context(context)
+            if formatted_context:
+                sections.append(formatted_context)
 
-## STAGE 2: DETAILED ELEMENT INVENTORY (Bottom-Up Analysis)
+        # Add specialized guides based on task type OR if specific keywords detected
+        if complexity in {"medium", "complex"} or any([needs_browser_guide, needs_file_guide, 
+                                                         needs_text_guide, needs_window_guide]):
+            if complexity not in {"medium", "complex"}:
+                # Add execution strategies for keyword-triggered guides
+                sections.append(PromptBuilder.EXECUTION_STRATEGIES)
+            
+            # Add relevant specialized guides
+            if needs_browser_guide:
+                sections.append(PromptBuilder.BROWSER_AUTOMATION_GUIDE)
+            if needs_file_guide:
+                sections.append(PromptBuilder.FILE_OPERATIONS_GUIDE)
+            if needs_text_guide:
+                sections.append(PromptBuilder.TEXT_EDITING_GUIDE)
+            if needs_window_guide:
+                sections.append(PromptBuilder.WINDOW_MANAGEMENT_GUIDE)
 
-For each UI element, provide:
+        if complexity == "complex":
+            sections.append(PromptBuilder.CHAIN_OF_THOUGHT)
 
-**Interactive Elements**:
-- Buttons: [List all visible buttons with labels and positions]
-- Input fields: [Text boxes, dropdowns, checkboxes - describe each]
-- Links/hyperlinks: [Clickable text and their locations]
-- Menu items: [Visible menu options]
-- Icons: [Toolbar icons, status icons, action icons]
+        sections.append(PromptBuilder.TASK_PLANNING_OUTPUT)
 
-**Informational Elements**:
-- Text labels and descriptions
-- Status indicators (progress bars, spinners, badges)
-- Images and graphics
-- Data displays (tables, lists, cards)
+        if complexity == "simple":
+            sections.append(action_registry.to_compact_prompt_string())
+        else:
+            sections.append(
+                action_registry.to_prompt_string(
+                    max_per_category=10 if complexity == "complex" else 6,
+                    include_examples=include_examples,
+                )
+            )
 
-**Positional Metadata**:
-For each element, estimate:
-- Absolute position: (approximate x, y from top-left)
-- Relative position: (top-left, center, bottom-right, etc.)
-- Size: (small/medium/large)
-- Visibility: (fully visible, partially obscured, highlighted)
+        return _join_sections(sections)
 
-## STAGE 3: STATE ANALYSIS (Understanding Current Situation)
+    @staticmethod
+    def build_screen_analysis_prompt(
+        question: Optional[str] = None,
+        *,
+        focus_area: Optional[str] = None,
+    ) -> str:
+        """Build a screen analysis prompt."""
 
-**System State Indicators**:
-- Loading states: [Any spinners, progress indicators, "Loading..." text]
-- Error states: [Error messages, red indicators, warning icons]
-- Success states: [Green checkmarks, confirmation messages]
-- Focus states: [Which element has keyboard focus - indicated by outline, cursor]
+        focus_map = {
+            "center": "Focus on the central 60% of the screen where interaction is likely.",
+            "top": "Focus on the top 25% of the screen (menu bars, navigation headers).",
+            "bottom": "Focus on the bottom 25% (status bars, footers).",
+            "left": "Focus on the left third (navigation panels).",
+            "right": "Focus on the right third (details panels).",
+            "full": "Analyze the entire screen from edge to edge.",
+        }
 
-**Application-Specific Context**:
-- Browser: Which page/URL? Scroll position? Tabs visible?
-- Text editor: Cursor position? Selected text? File name?
-- Dialog: Modal or modeless? Primary action buttons?
-- Desktop: Which apps running? System tray icons?
+        focus_note = focus_map.get(focus_area or "", "")
+        question_note = f"Answer this question explicitly: {question}" if question else ""
+        sections = [
+            PromptBuilder.SCREEN_ANALYSIS_TEMPLATE,
+            "Estimate coordinates in pixels from the top-left origin, e.g., (~960,~180), and flag low confidence.",
+            focus_note,
+            question_note,
+        ]
+        return _join_sections(sections)
 
-## STAGE 4: ACTIONABLE INTELLIGENCE (What Can Be Done)
-
-**Immediate Actions Available**:
-1. [Action 1]: Click on [element] at approximately (x, y)
-   - Expected outcome: [describe]
-   - Confidence: [high/medium/low]
-
-2. [Action 2]: Type into [field] at approximately (x, y)
-   - Current value: [if visible]
-   - Suggested input: [if applicable]
-
-3. [Action 3]: Keyboard shortcut [keys]
-   - Alternative to clicking [element]
-
-**Next Logical Steps**:
-Given current state, suggest 2-3 logical next actions a user might take.
-
-## STAGE 5: COORDINATE ESTIMATION (Precision Guidance)
-
-For the TOP 5 most important interactive elements:
-
-```
-Element 1: [Name/Description]
-  - Type: [button/link/input/icon]
-  - Position: (~x, ~y) where screen is (0,0) at top-left
-  - Size: ~Wpx × ~Hpx
-  - Confidence: [high/medium/low]
-  - Visual cues: [color, icon, text that identifies it]
-
-Element 2: [Name/Description]
-  ...
-```
-
-## STAGE 6: RISK ASSESSMENT (Potential Issues)
-
-**Obstacles to Automation**:
-- Overlapping elements that might block clicks
-- Elements that appear clickable but aren't
-- Dynamic content that might change position
-- Modal dialogs or popups that could intercept actions
-
-**Recommendations**:
-- Best click targets (large, stable, easy to identify)
-- Elements to avoid (ambiguous, too small, dynamic)
-- Verification points (what to check after action)
-
-## OUTPUT FORMAT
-
-Provide a structured response:
-
-```markdown
-### 🎯 PRIMARY CONTEXT
-[Single sentence summary]
-
-### 🖥️ APPLICATION DETAILS
-- Name: [app name]
-- State: [current state]
-- Title: [window title if visible]
-
-### 📊 ELEMENT INVENTORY
-#### Interactive Elements
-1. [Element 1 - type, position, purpose]
-2. [Element 2 - type, position, purpose]
-...
-
-#### Key Text Content
-- [Important visible text]
-- [Labels, headings, messages]
-
-### 🎬 CURRENT STATE
-- Focus: [which element has focus]
-- Activity: [loading/idle/error/active]
-- Indicators: [progress bars, status icons]
-
-### ⚡ ACTIONABLE ITEMS
-**Top Actions Available**:
-1. **[Action name]**
-   - Target: [element description]
-   - Location: (~x, ~y)
-   - Method: [click/type/keyboard]
-   - Outcome: [expected result]
-
-2. **[Action name]**
-   ...
-
-### 📍 PRECISE COORDINATES (Top 5 Elements)
-```
-[Element]: (est_x, est_y) - [description]
-[Element]: (est_x, est_y) - [description]
-...
-```
-
-### 🚨 AUTOMATION CONSIDERATIONS
-- Warnings: [things to watch out for]
-- Best targets: [most reliable elements]
-- Verification: [how to confirm success]
-```
-
-**CRITICAL**: Be precise with coordinate estimates. Consider screen resolution context if provided. Provide confidence levels for uncertain elements."""
-        
-        return question or default_question
-    
     @staticmethod
     def build_element_location_prompt(element_description: str) -> str:
-        """Build an agentic prompt for precise element location using spatial reasoning."""
-        
-        return f"""You are a SPATIAL INTELLIGENCE EXPERT with pixel-perfect coordinate estimation capabilities.
+        """Build a locator prompt for a specific UI element."""
 
-# MISSION: LOCATE UI ELEMENT WITH MAXIMUM PRECISION
+        sections = [
+            PromptBuilder.ELEMENT_LOCATION_TEMPLATE,
+            f"Target description: \"{element_description}\".",
+            "Report JSON only.",
+        ]
+        return _join_sections(sections)
 
-## TARGET ELEMENT
-**Description**: "{element_description}"
-
-## REASONING FRAMEWORK (Chain-of-Thought)
-
-### STEP 1: VISUAL SEARCH STRATEGY
-1. **Decompose Description**:
-   - Primary identifier: [text, icon, color, shape]
-   - Secondary features: [size, position hint, context]
-   - Distinguishing characteristics: [unique attributes]
-
-2. **Search Pattern**:
-   - Start where? [top-left, center, specific region]
-   - What to look for first? [text label, icon, color block]
-   - Scanning order: [left-to-right, top-to-bottom, or spiral]
-
-### STEP 2: ELEMENT IDENTIFICATION
-1. **Pattern Matching**:
-   - Does visible text match description?
-   - Does icon/symbol match expectations?
-   - Does color/styling match typical UI patterns?
-
-2. **Context Validation**:
-   - Is element in logical position for its type?
-   - Are surrounding elements consistent?
-   - Does it fit the application's layout pattern?
-
-3. **Confidence Assessment**:
-   - **HIGH**: Exact text match + expected position + clear visibility
-   - **MEDIUM**: Partial match OR expected position OR somewhat obscured
-   - **LOW**: Ambiguous match OR unexpected position OR multiple candidates
-
-### STEP 3: COORDINATE CALCULATION
-
-**Screen Coordinate System**:
-- Origin (0, 0): Top-left corner
-- X-axis: Increases rightward → Maximum = screen_width
-- Y-axis: Increases downward → Maximum = screen_height
-
-**Element Center Estimation**:
-```
-Given element bounds:
-  - Left edge at X_left
-  - Right edge at X_right
-  - Top edge at Y_top
-  - Bottom edge at Y_bottom
-
-Center coordinates:
-  - X_center = (X_left + X_right) / 2
-  - Y_center = (Y_top + Y_bottom) / 2
-```
-
-**Precision Techniques**:
-1. Identify element's bounding box visually
-2. Estimate pixel coordinates of corners
-3. Calculate center point
-4. Apply confidence-based adjustments
-5. Provide margin of error estimate
-
-### STEP 4: POSITION DESCRIPTION
-
-Describe location using:
-- **Absolute terms**: "~X pixels from left, ~Y pixels from top"
-- **Relative terms**: "upper-right quadrant, near top edge"
-- **Contextual terms**: "below the menu bar, to the left of the search button"
-
-### STEP 5: ALTERNATIVE IDENTIFIERS
-
-If exact match uncertain, provide:
-- Similar elements that could be confused with target
-- Disambiguating features to confirm correct element
-- Fallback identification strategies
-
-## OUTPUT SCHEMA (JSON)
-
-```json
-{{
-    "reasoning": {{
-        "search_strategy": "Description of how you searched for the element",
-        "identification": "How you identified and confirmed this is the correct element",
-        "confidence_basis": "Why you assigned this confidence level",
-        "alternatives_considered": "Other elements that were ruled out"
-    }},
-    
-    "found": true,
-    "confidence": 85,
-    
-    "element_type": "button|textfield|menu|icon|link|image|label|checkbox|...",
-    
-    "position": {{
-        "x_percent": 45.5,
-        "y_percent": 12.3,
-        "description": "Upper-center region, below menu bar, left of toolbar"
-    }},
-    
-    "pixel_estimate": {{
-        "x": 1310,
-        "y": 236,
-        "margin_of_error_px": 25,
-        "explanation": "Center point of element based on visible boundaries"
-    }},
-    
-    "size": "small|medium|large|x-large",
-    "dimensions_estimate": {{
-        "width_px": 120,
-        "height_px": 35
-    }},
-    
-    "visual_characteristics": {{
-        "visible_text": "Exact text visible on/near element",
-        "icon_description": "Icon symbol or image present",
-        "color": "Primary color of element",
-        "styling": "Rounded corners, flat, 3D, bordered, etc."
-    }},
-    
-    "surrounding_context": {{
-        "above": "Element directly above target",
-        "below": "Element directly below target",
-        "left": "Element to the left",
-        "right": "Element to the right"
-    }},
-    
-    "alternative_descriptions": [
-        "Other way to describe this element",
-        "Alternative search terms that would find it"
-    ],
-    
-    "interaction_guidance": {{
-        "click_target": "Where exactly to click for best results",
-        "hover_sensitive": false,
-        "keyboard_alternative": "Keyboard shortcut if available"
-    }},
-    
-    "risks": [
-        "Dynamic element that might move",
-        "Could be confused with similar element nearby",
-        "Might be partially obscured at different resolutions"
-    ]
-}}
-```
-
-## IF ELEMENT NOT FOUND
-
-```json
-{{
-    "reasoning": {{
-        "search_effort": "Describe comprehensive search performed",
-        "why_not_found": "Explain why element doesn't appear to be visible",
-        "checked_regions": ["Regions of screen that were examined"]
-    }},
-    
-    "found": false,
-    "confidence": 0,
-    
-    "possible_reasons": [
-        "Element might be off-screen or scrolled out of view",
-        "Element might be hidden behind another window",
-        "Element description might not match visible elements",
-        "Element might not exist in current application state"
-    ],
-    
-    "suggestions": [
-        "Action to take to make element visible",
-        "Alternative element that might achieve same goal",
-        "Verification step to confirm application state"
-    ],
-    
-    "similar_elements": [
-        {{
-            "description": "Element that partially matches",
-            "confidence": 30,
-            "why_not_exact": "Missing feature X"
-        }}
-    ]
-}}
-```
-
-## EXAMPLES
-
-### Example 1: High Confidence Button
-```json
-{{
-    "reasoning": {{
-        "search_strategy": "Scanned top toolbar area for buttons with text labels",
-        "identification": "Found button with exact text 'Save' in expected location",
-        "confidence_basis": "Perfect text match + standard toolbar position + clear visibility",
-        "alternatives_considered": "Ruled out 'Save As' button (different text) and menu item (different style)"
-    }},
-    "found": true,
-    "confidence": 95,
-    "element_type": "button",
-    "position": {{"x_percent": 15.2, "y_percent": 5.8}},
-    "pixel_estimate": {{"x": 438, "y": 111, "margin_of_error_px": 10}},
-    "visual_characteristics": {{"visible_text": "Save", "icon_description": "Floppy disk icon", "color": "Blue background"}},
-    "interaction_guidance": {{"click_target": "Center of button for reliable click"}}
-}}
-```
-
-### Example 2: Medium Confidence Search Box
-```json
-{{
-    "reasoning": {{
-        "search_strategy": "Looked for text input with search icon in header area",
-        "identification": "Found input field with magnifying glass icon, no visible text label",
-        "confidence_basis": "Visual pattern matches search box but no explicit 'Search' text",
-        "alternatives_considered": "Address bar ruled out (different styling)"
-    }},
-    "found": true,
-    "confidence": 75,
-    "element_type": "textfield",
-    "position": {{"x_percent": 50.0, "y_percent": 8.5}},
-    "pixel_estimate": {{"x": 1440, "y": 163, "margin_of_error_px": 30}},
-    "visual_characteristics": {{"icon_description": "Magnifying glass on left side", "styling": "Rounded corners, light gray border"}},
-    "interaction_guidance": {{"click_target": "Center of text field, avoiding the icon"}}
-}}
-```
-
-## NOW: ANALYZE THE SCREENSHOT
-
-Using the reasoning framework above:
-1. Systematically search for: "{element_description}"
-2. Identify and validate the element
-3. Calculate precise coordinates
-4. Assess confidence level
-5. Provide comprehensive JSON response
-
-**Be ruthlessly precise with coordinates. A 50px error can mean missing the target entirely.**"""
-    
     @staticmethod
     def build_verification_prompt(expected_change: str) -> str:
-        """Build an agentic prompt for precise action verification with differential analysis."""
-        
-        return f"""You are an EXPERT VERIFICATION ANALYST specializing in detecting UI state changes with precision.
+        """Build a verification prompt for before/after comparison."""
 
-# MISSION: VERIFY ACTION OUTCOME
-
-## CONTEXT
-**Expected Change**: "{expected_change}"
-
-You will analyze TWO screenshots:
-- **BEFORE**: Screen state before action execution
-- **AFTER**: Screen state after action execution
-
-## VERIFICATION METHODOLOGY (Rigorous Analysis)
-
-### PHASE 1: DIFFERENTIAL ANALYSIS
-
-**Systematic Comparison**:
-1. **Global Changes**:
-   - New windows/dialogs appeared?
-   - Existing windows closed/minimized?
-   - Focus changed to different window?
-   - Overall layout shift?
-
-2. **Regional Changes**:
-   - Specific UI elements appeared/disappeared?
-   - Element states changed (enabled→disabled, unchecked→checked)?
-   - Text content updated?
-   - Colors/styling modified?
-
-3. **Pixel-Level Changes**:
-   - Cursor position moved?
-   - Input field gained/lost focus (cursor blink)?
-   - Progress indicators updated?
-   - Subtle visual feedback (hover effects, highlights)?
-
-### PHASE 2: EXPECTATION MATCHING
-
-**Compare Detected Changes vs. Expected Change**:
-
-**Scoring Criteria**:
-- ✅ **Perfect Match** (100%): Observed change exactly matches expectation
-- ✅ **Strong Match** (80-99%): Main change present + minor additional changes
-- ⚠️ **Partial Match** (50-79%): Some expected changes present, some missing
-- ⚠️ **Weak Match** (20-49%): Minimal evidence of expected change
-- ❌ **No Match** (0-19%): Expected change not detected at all
-
-**Evidence Collection**:
-- List all changes that support success
-- List all changes that contradict success
-- Note absence of expected changes
-- Identify unexpected side effects
-
-### PHASE 3: CONFIDENCE ASSESSMENT
-
-**Factors Increasing Confidence**:
-- Multiple confirming indicators
-- Clear visual evidence
-- Expected behavior matches application norms
-- No contradictory signals
-
-**Factors Decreasing Confidence**:
-- Ambiguous changes (could be coincidental)
-- Missing expected indicators
-- Unexpected state changes
-- Image quality issues affecting analysis
-
-**Confidence Levels**:
-- **95-100%**: Undeniable success - multiple clear indicators
-- **80-94%**: Very likely success - primary indicators present
-- **60-79%**: Probable success - some supporting evidence
-- **40-59%**: Uncertain - mixed or weak signals
-- **20-39%**: Probably failed - missing key indicators
-- **0-19%**: Clear failure - no evidence of success
-
-### PHASE 4: ROOT CAUSE ANALYSIS (If Failed)
-
-If expected change didn't occur:
-
-**Why It Failed**:
-1. **Timing Issues**:
-   - Action too fast (UI not ready)?
-   - Not enough wait time for response?
-   - Animation/transition still in progress?
-
-2. **Targeting Issues**:
-   - Wrong element clicked?
-   - Click coordinates missed target?
-   - Element was disabled/inactive?
-
-3. **State Issues**:
-   - Application in wrong state for action?
-   - Modal dialog blocking?
-   - Focus on wrong window?
-
-4. **External Factors**:
-   - Network latency (for web apps)?
-   - System resources slow?
-   - Permission denied?
-
-**Corrective Recommendations**:
-- What should be tried next?
-- How to adjust the approach?
-- Alternative action sequence?
-
-## OUTPUT SCHEMA (JSON)
-
-```json
-{{
-    "reasoning": {{
-        "differential_analysis": "Detailed description of all changes detected between BEFORE and AFTER",
-        "expectation_comparison": "How detected changes align with expected change",
-        "confidence_justification": "Why this confidence level was assigned",
-        "failure_hypothesis": "If failed, most likely reason why (null if succeeded)"
-    }},
-    
-    "success": true,
-    "confidence": 88,
-    
-    "changes_detected": [
-        {{
-            "type": "window_focus|element_state|text_content|visual_feedback|layout|other",
-            "description": "Specific change observed",
-            "region": "Where on screen (coordinates or description)",
-            "supports_success": true,
-            "importance": "critical|high|medium|low"
-        }}
-    ],
-    
-    "expected_vs_actual": {{
-        "expected": "{expected_change}",
-        "actual": "What actually happened",
-        "match_percentage": 85,
-        "discrepancies": [
-            "Expected X but saw Y",
-            "Missing expected indicator Z"
+        sections = [
+            PromptBuilder.VERIFICATION_TEMPLATE,
+            f"Expected change: \"{expected_change}\".",
+            "Return JSON only; default to failure if evidence is unclear.",
         ]
-    }},
-    
-    "success_indicators": [
-        "✓ Search results page loaded",
-        "✓ Query visible in search box",
-        "✓ Page title changed to reflect search"
-    ],
-    
-    "failure_indicators": [
-        "✗ No video thumbnails visible (expected on results page)",
-        "✗ URL did not change to search results URL"
-    ],
-    
-    "recommendations": {{
-        "if_retry": "Suggestion if retrying this action",
-        "alternative_approach": "Different way to achieve same goal",
-        "next_step": "What should happen next in the workflow"
-    }},
-    
-    "temporal_notes": {{
-        "appears_in_progress": false,
-        "likely_needs_more_wait": false,
-        "animation_detected": false
-    }},
-    
-    "visual_evidence": {{
-        "screenshot_quality": "clear|somewhat_blurry|very_blurry",
-        "occlusions": ["Elements blocking view of critical areas"],
-        "analysis_limitations": ["Factors that reduced analysis confidence"]
-    }}
-}}
-```
+        return _join_sections(sections)
 
-## EXAMPLES
-
-### Example 1: Clear Success
-**Expected**: "Text 'hello world' appears in notepad"
-**Analysis**: BEFORE shows empty notepad, AFTER shows "hello world" text
-
-```json
-{{
-    "reasoning": {{
-        "differential_analysis": "BEFORE: Empty white canvas with blinking cursor at top-left. AFTER: Text 'hello world' visible in top-left, cursor after 'd'",
-        "expectation_comparison": "Perfect match - exact expected text appears exactly where typed text should be",
-        "confidence_justification": "Text is clearly visible, matches exactly, appropriate cursor position",
-        "failure_hypothesis": null
-    }},
-    "success": true,
-    "confidence": 98,
-    "changes_detected": [
-        {{"type": "text_content", "description": "Text 'hello world' now visible", "supports_success": true, "importance": "critical"}},
-        {{"type": "element_state", "description": "Cursor moved from position 0 to position 11", "supports_success": true, "importance": "high"}}
-    ],
-    "expected_vs_actual": {{
-        "match_percentage": 100,
-        "discrepancies": []
-    }},
-    "success_indicators": ["✓ Text 'hello world' clearly visible", "✓ Cursor positioned after text"],
-    "failure_indicators": [],
-    "recommendations": {{"next_step": "Proceed with next action in workflow"}}
-}}
-```
-
-### Example 2: Clear Failure
-**Expected**: "Video player opens and starts playing"
-**Analysis**: Both screenshots show YouTube search results page, no video player
-
-```json
-{{
-    "reasoning": {{
-        "differential_analysis": "BEFORE: YouTube search results page with video thumbnails. AFTER: Same page, no significant changes detected",
-        "expectation_comparison": "Complete mismatch - expected video player interface but still on search results",
-        "confidence_justification": "No evidence of video player, page state unchanged",
-        "failure_hypothesis": "Most likely: Video thumbnail was not clicked, or click missed target"
-    }},
-    "success": false,
-    "confidence": 2,
-    "changes_detected": [],
-    "expected_vs_actual": {{
-        "expected": "Video player interface with playback controls",
-        "actual": "Still on search results page",
-        "match_percentage": 0,
-        "discrepancies": ["No video player visible", "URL unchanged", "Page layout identical"]
-    }},
-    "success_indicators": [],
-    "failure_indicators": [
-        "✗ No video player interface",
-        "✗ Still showing search results grid",
-        "✗ URL still /results, not /watch"
-    ],
-    "recommendations": {{
-        "if_retry": "Take screenshot to identify video thumbnail coordinates, ensure accurate click on center of thumbnail",
-        "alternative_approach": "Use keyboard navigation: Tab to video thumbnail, then Enter",
-        "next_step": "Retry click with verified coordinates"
-    }},
-    "temporal_notes": {{"appears_in_progress": false, "likely_needs_more_wait": false}}
-}}
-```
-
-### Example 3: Partial Success (Uncertain)
-**Expected**: "Browser navigates to YouTube homepage"
-**Analysis**: Page loading, partially rendered
-
-```json
-{{
-    "reasoning": {{
-        "differential_analysis": "BEFORE: Blank browser with address bar. AFTER: Page partially loaded, YouTube logo visible but content area still loading",
-        "expectation_comparison": "Partial match - navigation initiated and YouTube domain confirmed, but page not fully loaded",
-        "confidence_justification": "Strong indicators of success but incomplete - likely needs more time",
-        "failure_hypothesis": null
-    }},
-    "success": true,
-    "confidence": 72,
-    "changes_detected": [
-        {{"type": "layout", "description": "YouTube header with logo now visible", "supports_success": true, "importance": "high"}},
-        {{"type": "visual_feedback", "description": "Loading spinner in content area", "supports_success": true, "importance": "medium"}}
-    ],
-    "expected_vs_actual": {{
-        "expected": "Fully loaded YouTube homepage",
-        "actual": "YouTube homepage loading in progress",
-        "match_percentage": 70,
-        "discrepancies": ["Content area not fully rendered", "Recommended videos not visible yet"]
-    }},
-    "success_indicators": ["✓ YouTube logo and header present", "✓ URL shows youtube.com", "✓ Loading indicator active"],
-    "failure_indicators": ["✗ Content not fully loaded"],
-    "recommendations": {{"next_step": "Wait additional 2-3 seconds for page to fully load"}},
-    "temporal_notes": {{"appears_in_progress": true, "likely_needs_more_wait": true, "animation_detected": true}}
-}}
-```
-
-## NOW: PERFORM VERIFICATION
-
-Analyze the BEFORE and AFTER screenshots:
-1. Identify all differences systematically
-2. Match changes against expected outcome
-3. Assess confidence rigorously
-4. Provide detailed reasoning
-5. Generate comprehensive JSON response
-
-**Critical**: Be harsh in your assessment. Optimism leads to cascading failures. Only mark as success if evidence is CLEAR."""
-    
     @staticmethod
-    def build_next_action_prompt(current_state: str, goal: str, history: list) -> str:
-        """Build an agentic prompt for intelligent next-action selection with adaptive reasoning."""
-        
-        history_str = "\n".join([f"{i+1}. {a}" for i, a in enumerate(history[-5:])]) if history else "None"
-        
-        return f"""You are an ADAPTIVE PLANNING AGENT with real-time decision-making capabilities.
+    def build_next_action_prompt(current_state: str, goal: str, history: List[str]) -> str:
+        """Build a next-action selection prompt."""
 
-# SITUATION BRIEFING
+        recent_history = history[-5:] if history else []
+        history_block = "\n".join(f"{idx + 1}. {item}" for idx, item in enumerate(recent_history)) or "None"
 
-## OBJECTIVE
-**Goal**: {goal}
-
-## CURRENT STATE
-**Observed State**: {current_state}
-
-## EXECUTION HISTORY (Last 5 Actions)
-{history_str}
-
----
-
-# ADAPTIVE DECISION FRAMEWORK
-
-## PHASE 1: SITUATION ASSESSMENT
-
-**Context Analysis**:
-1. **Progress Evaluation**:
-   - How far are we toward the goal? (0-100%)
-   - What has been accomplished so far?
-   - What remains to be done?
-
-2. **State Understanding**:
-   - What is the current system/application state?
-   - Are we on the expected path?
-   - Any unexpected deviations?
-
-3. **History Pattern Recognition**:
-   - Are actions succeeding or failing?
-   - Is there a pattern in failures?
-   - Are we making forward progress or stuck?
-
-## PHASE 2: STRATEGY FORMULATION
-
-**Decision Tree**:
-
-```
-IF goal already achieved:
-    → Verify success, then STOP
-ELSE IF significant progress made:
-    → Continue with next logical step
-ELSE IF stuck/failing repeatedly:
-    → Change approach entirely
-ELSE IF minor obstacle:
-    → Try alternative action for same goal
-ELSE IF unclear state:
-    → Take screenshot to assess situation
-```
-
-**Action Selection Principles**:
-1. **Directness**: Prefer actions that directly advance toward goal
-2. **Reliability**: Choose proven actions over experimental ones
-3. **Efficiency**: Minimize steps while maintaining reliability
-4. **Adaptability**: Be ready to pivot based on feedback
-5. **Verification**: Include checks after critical steps
-
-## PHASE 3: ACTION REASONING
-
-For the selected action, explain:
-- **Why this action**: How it moves us toward goal
-- **Why not alternatives**: Considered options and why rejected
-- **Expected outcome**: What should happen after execution
-- **Success criteria**: How to verify it worked
-- **Failure handling**: What to do if it doesn't work
-
-## AVAILABLE ACTIONS
-
-{action_registry.to_prompt_string()}
-
----
-
-## OUTPUT SCHEMA (JSON)
-
-```json
-{{
-    "reasoning": {{
-        "situation_summary": "Brief assessment of where we are now",
-        "progress_estimate": 45,
-        "analysis": "Detailed analysis of current state and history",
-        "strategy": "High-level approach for next action",
-        "alternatives_considered": [
-            {{
-                "action": "alternative_action_1",
-                "pros": ["Advantage 1", "Advantage 2"],
-                "cons": ["Disadvantage 1", "Disadvantage 2"],
-                "why_not_chosen": "Specific reason for rejection"
-            }}
-        ],
-        "decision_rationale": "Why the selected action is the best choice"
-    }},
-    
-    "action": "selected_action_name",
-    "target": "specific_target_description",
-    "parameters": {{
-        "key": "value"
-    }},
-    
-    "expected_outcome": "What should happen after this action executes",
-    
-    "verification": {{
-        "method": "How to check if action succeeded",
-        "success_indicators": ["What to look for"],
-        "failure_indicators": ["What would indicate failure"]
-    }},
-    
-    "fallback_plan": {{
-        "if_fails": "What to try if this action fails",
-        "max_retries": 2,
-        "alternative_sequence": ["action_1", "action_2", "action_3"]
-    }},
-    
-    "confidence": 82,
-    
-    "estimated_remaining_steps": 3,
-    
-    "adaptive_notes": [
-        "Observation or insight about current situation",
-        "Pattern noticed in execution history",
-        "Risk to be aware of"
-    ]
-}}
-```
-
-## DECISION EXAMPLES
-
-### Example 1: Clear Path Forward
-**Goal**: "Open calculator"
-**Current State**: "{{'active_window': 'Desktop'}}"
-**History**: None
-
-```json
-{{
-    "reasoning": {{
-        "situation_summary": "Starting from clean slate, no actions taken yet",
-        "progress_estimate": 0,
-        "analysis": "Need to launch calculator application. Desktop is active, which is expected starting point.",
-        "strategy": "Use Win+R run dialog for reliable app launching",
-        "alternatives_considered": [
-            {{
-                "action": "open_application",
-                "pros": ["Direct approach"],
-                "cons": ["May not work if executable path unclear"],
-                "why_not_chosen": "Win+R is more reliable across Windows versions"
-            }}
-        ],
-        "decision_rationale": "Win+R is fastest and most reliable way to launch apps in Windows"
-    }},
-    "action": "hotkey",
-    "target": "win+r",
-    "parameters": {{}},
-    "expected_outcome": "Run dialog opens in bottom-left corner",
-    "verification": {{
-        "method": "Check if small dialog with text input appeared",
-        "success_indicators": ["Run dialog visible", "Text field has focus"],
-        "failure_indicators": ["No dialog appeared", "Different window opened"]
-    }},
-    "confidence": 95,
-    "estimated_remaining_steps": 2
-}}
-```
-
-### Example 2: Stuck Situation - Adaptive Response
-**Goal**: "Click submit button"
-**Current State**: "{{'step_error': 'Click at (800, 500) failed - element not found'}}"
-**History**: ["click at (800,500) → ✗", "click at (800,500) → ✗", "click at (800,500) → ✗"]
-
-```json
-{{
-    "reasoning": {{
-        "situation_summary": "Stuck - same click action failing repeatedly",
-        "progress_estimate": 0,
-        "analysis": "Three consecutive failures at same coordinates suggests: 1) Coordinates are wrong, 2) Element moved, 3) Element doesn't exist. Need to reassess visually.",
-        "strategy": "STOP repeating failed action. Take screenshot to identify actual button position.",
-        "alternatives_considered": [
-            {{
-                "action": "click",
-                "why_not_chosen": "Already failed 3 times, definition of insanity"
-            }},
-            {{
-                "action": "hotkey",
-                "pros": ["Might trigger submission via Enter"],
-                "cons": ["Assumes button is default action"],
-                "why_not_chosen": "Need to confirm button exists first"
-            }}
-        ],
-        "decision_rationale": "Must get fresh visual information to identify correct target before attempting more clicks"
-    }},
-    "action": "take_screenshot",
-    "target": "current_state",
-    "parameters": {{}},
-    "expected_outcome": "Capture current screen to identify submit button location",
-    "verification": {{"method": "Screenshot file created successfully"}},
-    "fallback_plan": {{
-        "if_fails": "Try keyboard shortcut Enter as last resort",
-        "alternative_sequence": ["press_key enter", "hotkey ctrl+s"]
-    }},
-    "confidence": 75,
-    "estimated_remaining_steps": 4,
-    "adaptive_notes": [
-        "Pattern detected: Repeated failure at same coordinates",
-        "Strategy shift: From blind clicking to visual identification",
-        "Risk: Button might not exist - may need to change entire approach"
-    ]
-}}
-```
-
-### Example 3: Near Goal - Final Push
-**Goal**: "Search for python tutorials on YouTube"
-**Current State**: "{{'active_window': 'YouTube - Search Results'}}"
-**History**: ["open msedge → ✅", "navigate to youtube.com → ✅", "click search box → ✅", "type 'python tutorials' → ✅", "press enter → ✅"]
-
-```json
-{{
-    "reasoning": {{
-        "situation_summary": "Goal nearly achieved - search completed successfully",
-        "progress_estimate": 95,
-        "analysis": "All steps executed successfully. Search query submitted and results page loaded. Goal is essentially complete.",
-        "strategy": "Verify success and conclude task",
-        "decision_rationale": "Task is complete - search results for 'python tutorials' are displayed"
-    }},
-    "action": "wait",
-    "target": "final_verification",
-    "parameters": {{"seconds": 1}},
-    "expected_outcome": "Allow page to fully stabilize for verification",
-    "verification": {{
-        "method": "Check that search results page is stable and videos are visible",
-        "success_indicators": ["Video thumbnails visible", "Search query in search box", "Results count shown"],
-        "failure_indicators": ["Still loading", "Error message", "Blank page"]
-    }},
-    "confidence": 98,
-    "estimated_remaining_steps": 0,
-    "adaptive_notes": ["Task completed successfully through all planned steps"]
-}}
-```
-
----
-
-## NOW: MAKE YOUR DECISION
-
-Analyze the situation using the framework above:
-1. Assess progress and current state
-2. Review execution history for patterns
-3. Formulate strategy (continue, adapt, or pivot)
-4. Select best next action with full reasoning
-5. Provide comprehensive JSON response
-
-**Remember**: 
-- Don't repeat failing actions blindly
-- Take screenshots when uncertain
-- Adapt strategy based on feedback
-- Provide rich reasoning for decisions
-- Include fallback plans for failures
-
-Generate your decision now:"""
+        sections = [
+            PromptBuilder.NEXT_ACTION_TEMPLATE,
+            f"Goal: {goal}",
+            f"Current state summary: {current_state}",
+            f"Recent actions:\n{history_block}",
+            "Return JSON only.",
+        ]
+        return _join_sections(sections)
 
 
 class PromptOptimizer:
-    """Optimizes prompts for better performance."""
-    
+    """Lightweight helpers for prompt manipulation."""
+
     @staticmethod
     def compress_context(context: Dict[str, Any], max_items: int = 10) -> Dict[str, Any]:
-        """Compress context to essential information."""
-        compressed = context.copy()
-        
-        if 'running_processes' in compressed:
-            compressed['running_processes'] = compressed['running_processes'][:max_items]
-        
+        """Trim large context payloads to the most relevant data."""
+
+        compressed = dict(context)
+        if "running_processes" in compressed:
+            compressed["running_processes"] = compressed["running_processes"][:max_items]
         return compressed
-    
+
     @staticmethod
-    def add_few_shot_examples(prompt: str, examples: list) -> str:
-        """Add few-shot learning examples to prompt."""
+    def add_few_shot_examples(prompt: str, examples: List[Dict[str, str]]) -> str:
+        """Append few-shot examples to a prompt when needed."""
+
         if not examples:
             return prompt
-        
-        examples_section = "\n\nEXAMPLES:\n\n"
-        for i, example in enumerate(examples, 1):
-            examples_section += f"Example {i}:\n"
-            examples_section += f"Request: {example['request']}\n"
-            examples_section += f"Response: {example['response']}\n\n"
-        
-        return prompt + examples_section
+
+        example_lines = ["EXAMPLES:"]
+        for index, example in enumerate(examples, start=1):
+            example_lines.append(f"Example {index}:")
+            example_lines.append(f"Request: {example.get('request', '')}")
+            example_lines.append(f"Response: {example.get('response', '')}\n")
+
+        return prompt + "\n\n" + "\n".join(example_lines)
 
 
-# Global prompt builder instance
 prompt_builder = PromptBuilder()

@@ -60,6 +60,8 @@ Execution Flow:
 - 🔄 **Advanced Error Handling**: Adaptive failure handling with AI consultation and structured retry logic
 - 📊 **Structured Telemetry**: ActionResult dataclass with timing, metadata, and execution context
 - 🎭 **Agentic Prompting**: Multi-phase reasoning prompts that exploit Gemini's full capabilities
+- 🧩 **Context-Rich Prompting**: Injects Windows environment details, action schemas, and fallback strategies with complexity-aware token budgets
+- 🪄 **Few-Shot Action Examples**: Supplies Gemini with structured examples of tool usage for higher-precision plans
 - 🌍 **AI Window Identification**: Finds windows across languages (Calculator→Rechner/Calculadora/Calculatrice)
 - ⚡ **38+ Built-in Actions**: Mouse, keyboard, window management, clipboard, and more
 - 🛡️ **Safety Features**: Emergency stop (Ctrl+Shift+Q), timeouts, and screenshot-aware UI
@@ -250,6 +252,9 @@ ACTION_DELAY=0.5          # Delay between actions in seconds
 
 # Features
 ENABLE_SCREEN_RECORDING=false  # Save before/after screenshots for each action
+SCREEN_FOCUS_SIZE=420          # Focus crop dimension (pixels) for AI corrections
+SCREEN_FOCUS_HISTORY=3         # How many focus crops to reuse per step
+SCREEN_RECORDING_DELAY=0.2     # Delay (s) before capturing after-action screenshot
 ```
 
 ### Available Gemini Models
@@ -277,6 +282,9 @@ GEMINI_MODEL=gemini-2.0-flash-exp
 | `MAX_RETRIES` | `3` | Max retry attempts for failed actions |
 | `ACTION_DELAY` | `0.5` | Delay between actions (seconds) |
 | `ENABLE_SCREEN_RECORDING` | `false` | Save screenshots before/after each action |
+| `SCREEN_FOCUS_SIZE` | `420` | Square pixel size for focus crops shared with AI |
+| `SCREEN_FOCUS_HISTORY` | `3` | Number of recent focus crops retained for reasoning |
+| `SCREEN_RECORDING_DELAY` | `0.2` | Delay after an action before the "after" capture |
 
 ### Advanced Configuration
 
