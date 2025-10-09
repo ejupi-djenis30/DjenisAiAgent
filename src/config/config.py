@@ -16,6 +16,7 @@ class AgentConfig(BaseModel):
     # API Configuration
     gemini_api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     gemini_model: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-flash-latest"))
+    gemini_max_output_tokens: int = Field(default_factory=lambda: int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "32768")))
     
     # Behavior Configuration
     debug_mode: bool = Field(default_factory=lambda: os.getenv("DEBUG_MODE", "false").lower() == "true")
@@ -25,6 +26,12 @@ class AgentConfig(BaseModel):
     # Performance Configuration
     max_retries: int = Field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
     action_delay: float = Field(default_factory=lambda: float(os.getenv("ACTION_DELAY", "0.5")))
+    mouse_tolerance_px: int = Field(default_factory=lambda: int(os.getenv("MOUSE_TOLERANCE_PX", "2")))
+    mouse_max_attempts: int = Field(default_factory=lambda: int(os.getenv("MOUSE_MAX_ATTEMPTS", "100")))
+    mouse_path_segments: int = Field(default_factory=lambda: int(os.getenv("MOUSE_PATH_SEGMENTS", "2")))
+    mouse_curve_jitter: int = Field(default_factory=lambda: int(os.getenv("MOUSE_CURVE_JITTER", "18")))
+    mouse_base_duration: float = Field(default_factory=lambda: float(os.getenv("MOUSE_BASE_DURATION", "0.35")))
+    mouse_micro_correction_duration: float = Field(default_factory=lambda: float(os.getenv("MOUSE_MICRO_CORRECTION_DURATION", "0.08")))
     api_timeout: int = 30
     screenshot_quality: int = 85
     
