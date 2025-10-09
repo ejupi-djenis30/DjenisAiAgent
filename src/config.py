@@ -71,12 +71,12 @@ class AgentConfig:
     max_loop_turns: int = field(default_factory=lambda: _env_int("DJENIS_MAX_LOOP_TURNS", 50))
     action_timeout: int = field(default_factory=lambda: _env_int("DJENIS_ACTION_TIMEOUT", 30))
     screenshot_interval: float = field(
-        default_factory=lambda: _env_float("DJENIS_SCREENSHOT_INTERVAL", 1.0)
+        default_factory=lambda: _env_float("DJENIS_SCREENSHOT_INTERVAL", 0.2)
     )
 
     # Model Parameters
-    temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.7))
-    max_tokens: int = field(default_factory=lambda: _env_int("DJENIS_MAX_TOKENS", 4096))
+    temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.5))
+    max_tokens: int = field(default_factory=lambda: _env_int("DJENIS_MAX_TOKENS", 60096))
 
     # Logging Configuration
     log_level: str = field(default_factory=lambda: os.getenv("DJENIS_LOG_LEVEL", "INFO"))
@@ -86,10 +86,22 @@ class AgentConfig:
 
     # Screen Capture Settings
     screenshot_quality: int = field(
-        default_factory=lambda: _env_int("DJENIS_SCREENSHOT_QUALITY", 85)
+        default_factory=lambda: _env_int("DJENIS_SCREENSHOT_QUALITY", 100)
     )
     screenshot_format: str = field(
         default_factory=lambda: os.getenv("DJENIS_SCREENSHOT_FORMAT", "PNG")
+    )
+    stream_resize_factor: float = field(
+        default_factory=lambda: _env_float("DJENIS_STREAM_RESIZE_FACTOR", 1.0)
+    )
+    stream_frame_quality: int = field(
+        default_factory=lambda: _env_int("DJENIS_STREAM_FRAME_QUALITY", 88)
+    )
+    stream_max_fps: int = field(
+        default_factory=lambda: _env_int("DJENIS_STREAM_MAX_FPS", 20)
+    )
+    perception_downscale: float = field(
+        default_factory=lambda: _env_float("DJENIS_PERCEPTION_DOWNSCALE", 1.0)
     )
 
     # Miscellaneous
@@ -105,6 +117,9 @@ class AgentConfig:
     transcription_sample_rate: int = field(
         default_factory=lambda: _env_int("DJENIS_TRANSCRIPTION_SAMPLE_RATE", 16000)
     )
+
+    # Performance profile
+    profile: str = field(default_factory=lambda: os.getenv("DJENIS_PROFILE", "default").lower())
 
     def validate(self) -> bool:
         """Validate configuration settings and ensure secrets are present."""
@@ -123,6 +138,18 @@ class AgentConfig:
         if not 1 <= self.screenshot_quality <= 100:
             raise ValueError("DJENIS_SCREENSHOT_QUALITY must be between 1 and 100")
 
+        if not 50 <= self.stream_frame_quality <= 100:
+            raise ValueError("DJENIS_STREAM_FRAME_QUALITY must be between 50 and 100")
+
+        if not 1 <= self.stream_max_fps <= 60:
+            raise ValueError("DJENIS_STREAM_MAX_FPS must be between 1 and 60")
+
+        if not 0.2 <= self.stream_resize_factor <= 1.0:
+            raise ValueError("DJENIS_STREAM_RESIZE_FACTOR must be between 0.2 and 1.0")
+
+        if not 0.3 <= self.perception_downscale <= 1.0:
+            raise ValueError("DJENIS_PERCEPTION_DOWNSCALE must be between 0.3 and 1.0")
+
         if self.enable_local_transcription and not self.vosk_model_path.strip():
             raise ValueError(
                 "DJENIS_LOCAL_TRANSCRIPTION è abilitato ma DJENIS_VOSK_MODEL_PATH non è impostato"
@@ -138,6 +165,28 @@ class AgentConfig:
             data["gemini_api_key"] = "***redacted***"
         return data
 
+    def apply_profile(self) -> None:
+        """Apply performance presets for ultra-fast or quality-focused modes."""
+
+        profile = self.profile.strip().lower()
+
+        if profile in {"performance", "turbo", "fast"}:
+            self.screenshot_interval = min(self.screenshot_interval, 0.5)
+            self.action_timeout = min(self.action_timeout, 20)
+            self.stream_resize_factor = min(self.stream_resize_factor, 0.75)
+            self.stream_frame_quality = max(self.stream_frame_quality, 92)
+            self.stream_max_fps = max(self.stream_max_fps, 15)
+            self.perception_downscale = min(self.perception_downscale, 0.85)
+            self.screenshot_quality = max(self.screenshot_quality, 92)
+            self.screenshot_format = "JPEG"
+        elif profile in {"quality", "hires"}:
+            self.screenshot_interval = max(self.screenshot_interval, 1.0)
+            self.stream_resize_factor = 1.0
+            self.stream_frame_quality = max(self.stream_frame_quality, 95)
+            self.perception_downscale = 1.0
+            self.screenshot_quality = max(self.screenshot_quality, 95)
+            self.screenshot_format = "PNG"
+
 
 def load_config(dotenv_path: Optional[os.PathLike[str]] = None) -> AgentConfig:
     """Load configuration from the environment, optionally pointing to a specific .env file."""
@@ -145,6 +194,7 @@ def load_config(dotenv_path: Optional[os.PathLike[str]] = None) -> AgentConfig:
     path = Path(dotenv_path) if dotenv_path is not None else None
     _load_dotenv(path)
     config_obj = AgentConfig()
+    config_obj.apply_profile()
     if path is not None:
         config_obj.config_source = str(path)
     return config_obj

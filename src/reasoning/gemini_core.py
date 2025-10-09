@@ -26,11 +26,45 @@ SYSTEM_PROMPT = """<system_prompt>
         Your primary goal is to accurately and efficiently achieve the user's stated objective. Analyze the provided screenshot for visual context and the UI element list for structural information to decide on the best next action.
     </goal>
 
+    <available_tools>
+        You have access to the following categories of tools:
+        
+        **UI Interaction:**
+        - element_id: Find UI elements by query
+        - click, double_click, right_click: Mouse actions on elements
+        - type_text: Type text into input fields
+        - get_text: Read text from UI elements
+        
+        **Navigation & Control:**
+        - scroll: Scroll in any direction (up, down, left, right)
+        - press_hotkey: Press keyboard shortcuts (e.g., 'enter', 'ctrl+c', 'alt+tab')
+        - move_mouse: Move cursor to specific coordinates
+        - wait_seconds: Pause execution for 1-30 seconds
+        
+        **Window Management:**
+        - minimize_window, maximize_window, close_window: Control active window
+        - switch_window: Change focus to a different window by title
+        
+        **Clipboard:**
+        - copy_to_clipboard, paste_from_clipboard: Standard copy/paste operations
+        - get_clipboard_text, set_clipboard_text: Direct clipboard access
+        
+        **Applications & Files:**
+        - start_application: Launch apps (e.g., 'notepad', 'calc')
+        - open_file: Open files with default application
+        - open_url: Open URLs in browser
+        - take_screenshot: Capture screen to file
+        
+        **Task Management:**
+        - finish_task: Signal task completion with summary
+    </available_tools>
+
     <rules>
         1.  **Chain of Thought:** You MUST reason step-by-step before acting. In your thought process, break down the problem, state your hypothesis for the next action, and then select a tool. This is a form of Chain-of-Thought prompting that helps in debugging and transparency[cite: 1202, 1207].
         2.  **Tool Exclusivity:** You can ONLY interact with the system using the provided tools. Do not invent actions or assume you can perform actions for which no tool is available.
         3.  **Completion:** Once the user's objective is fully completed, you MUST call the `finish_task` tool to end the operation.
         4.  **Efficiency:** When possible, prefer using keyboard shortcuts (`press_hotkey` tool) over a sequence of mouse clicks, as they are more reliable and efficient[cite: 1277, 1279]. For example, use Ctrl+S to save instead of clicking the 'File' then 'Save' menu items[cite: 1281].
+        5.  **Direct Actions:** For simple tasks like opening Calculator, prefer using `start_application` with 'calc' instead of navigating through the Start menu.
     </rules>
 
     <constraints>
@@ -217,6 +251,13 @@ def decide_next_action(
         
         candidate = response.candidates[0]
         
+        # Check finish_reason for errors before processing
+        finish_reason = getattr(candidate, "finish_reason", None)
+        if finish_reason == 10:  # INVALID_FUNCTION_CALL
+            error_msg = "Errore: Il modello ha generato una chiamata a funzione non valida. Riprovo..."
+            logger.warning(error_msg)
+            return error_msg
+        
         # Check if response contains a function call
         if candidate.content.parts:
             for part in candidate.content.parts:
@@ -226,11 +267,15 @@ def decide_next_action(
                     logger.debug("Function arguments: %s", dict(function_call.args))
                     return function_call
         
-        # If no function call, extract text response
-        if getattr(response, "text", None):
-            logger.info("Model responded with text instead of function call")
-            logger.debug(f"Response text: {response.text[:100]}...")
-            return response.text
+        # If no function call, extract text response safely
+        try:
+            if hasattr(response, "text") and response.text:
+                logger.info("Model responded with text instead of function call")
+                logger.debug(f"Response text: {response.text[:100]}...")
+                return response.text
+        except ValueError:
+            # response.text raised ValueError, try alternative extraction
+            logger.debug("response.text not accessible, trying content.parts")
 
         if candidate.content.parts:
             text_parts = [getattr(part, "text", "") for part in candidate.content.parts]
