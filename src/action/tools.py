@@ -6,45 +6,54 @@ using pywinauto and performing automated actions. Each tool is designed to be
 robust, handle errors gracefully, and provide clear feedback for the ReAct loop.
 """
 
-from typing import Optional
-from pywinauto import Desktop
+from typing import Any, Optional
+
+import logging
+
+from pywinauto.application import Application
+from pywinauto.findbestmatch import MatchError
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError as PywinautoTimeoutError
-import logging
 
 logger = logging.getLogger(__name__)
 
 
-def _get_active_window() -> Optional[object]:
+def _get_active_window() -> Optional[Any]:
     """
-    Get a handle to the currently active window with uia/win32 fallback.
-    
-    This private helper centralizes the logic for connecting to the active window,
-    attempting first with the modern UIA backend and falling back to Win32 for
-    legacy applications.
-    
+    Get a handle to the currently active window with UIA/Win32 fallback.
+
     Returns:
-        A pywinauto window object if successful, None if no active window is found.
+        The top window wrapper if connection succeeds, otherwise ``None``.
     """
-    try:
-        # Attempt connection with UIA backend (modern, recommended)
-        logger.debug("Attempting to connect to active window using UIA backend")
-        desktop = Desktop(backend="uia")
-        active_window = desktop.windows()[0]  # Get first window (typically active)
-        logger.debug(f"Successfully connected to window: {active_window.window_text()}")
-        return active_window
-    except (TimeoutError, RuntimeError, IndexError, ElementNotFoundError) as e:
-        logger.debug(f"UIA backend failed: {e}. Attempting Win32 fallback")
-        
+
+    for backend in ("uia", "win32"):
         try:
-            # Fallback to Win32 backend for legacy applications
-            desktop = Desktop(backend="win32")
-            active_window = desktop.windows()[0]
-            logger.debug(f"Successfully connected via Win32: {active_window.window_text()}")
-            return active_window
-        except (TimeoutError, RuntimeError, IndexError, ElementNotFoundError) as e:
-            logger.error(f"Failed to connect to active window with both backends: {e}")
-            return None
+            logger.debug(
+                "Attempting to connect to active window using '%s' backend", backend
+            )
+            app = Application(backend=backend)
+            app.connect(active_only=True, timeout=5)
+            window = app.top_window()
+            logger.debug(
+                "Connected to window '%s' via backend '%s'",
+                window.window_text(),
+                backend,
+            )
+            return window
+        except (PywinautoTimeoutError, RuntimeError, ElementNotFoundError, MatchError) as exc:
+            logger.debug(
+                "Backend '%s' failed to attach to active window: %s", backend, exc
+            )
+        except Exception as unexpected:
+            logger.warning(
+                "Unexpected error while attaching with backend '%s': %s",
+                backend,
+                unexpected,
+                exc_info=True,
+            )
+
+    logger.error("No active window detected via UIA or Win32 backends")
+    return None
 
 
 def click(element_id: str) -> str:
@@ -78,9 +87,15 @@ def click(element_id: str) -> str:
         logger.info(f"Successfully clicked element: {element_id}")
         return f"Elemento '{element_id}' cliccato con successo."
         
-    except (ElementNotFoundError, PywinautoTimeoutError, Exception) as e:
+    except (ElementNotFoundError, PywinautoTimeoutError, MatchError) as e:
         error_msg = f"Errore: Impossibile trovare o interagire con l'elemento '{element_id}'. Dettagli: {str(e)}"
         logger.error(error_msg)
+        return error_msg
+    except Exception as e:  # pragma: no cover - safety net for unexpected issues
+        error_msg = (
+            f"Errore imprevisto durante il click su '{element_id}'. Dettagli: {str(e)}"
+        )
+        logger.error(error_msg, exc_info=True)
         return error_msg
 
 
@@ -116,9 +131,15 @@ def type_text(element_id: str, text: str) -> str:
         logger.info(f"Successfully typed text into element: {element_id}")
         return f"Testo '{text}' digitato con successo in '{element_id}'."
         
-    except (ElementNotFoundError, PywinautoTimeoutError, Exception) as e:
+    except (ElementNotFoundError, PywinautoTimeoutError, MatchError) as e:
         error_msg = f"Errore: Impossibile trovare o digitare in '{element_id}'. Dettagli: {str(e)}"
         logger.error(error_msg)
+        return error_msg
+    except Exception as e:  # pragma: no cover - safety net for unexpected issues
+        error_msg = (
+            f"Errore imprevisto durante la digitazione in '{element_id}'. Dettagli: {str(e)}"
+        )
+        logger.error(error_msg, exc_info=True)
         return error_msg
 
 
@@ -153,9 +174,15 @@ def get_text(element_id: str) -> str:
         logger.info(f"Successfully retrieved text from element: {element_id}")
         return f"Testo recuperato da '{element_id}': '{text}'"
         
-    except (ElementNotFoundError, PywinautoTimeoutError, Exception) as e:
+    except (ElementNotFoundError, PywinautoTimeoutError, MatchError) as e:
         error_msg = f"Errore: Impossibile recuperare testo da '{element_id}'. Dettagli: {str(e)}"
         logger.error(error_msg)
+        return error_msg
+    except Exception as e:  # pragma: no cover - safety net for unexpected issues
+        error_msg = (
+            f"Errore imprevisto durante il recupero del testo da '{element_id}'. Dettagli: {str(e)}"
+        )
+        logger.error(error_msg, exc_info=True)
         return error_msg
 
 
@@ -171,7 +198,7 @@ def scroll(direction: str, amount: int = 3) -> str:
         A string message indicating the result.
     """
     # TODO: Implement scroll functionality in subsequent steps
-    return f"Tool non implementato: scroll({direction}, {amount})"
+    return "Tool not implemented yet."
 
 
 def press_hotkey(keys: str) -> str:
@@ -185,7 +212,7 @@ def press_hotkey(keys: str) -> str:
         A string message indicating the result.
     """
     # TODO: Implement hotkey functionality in subsequent steps
-    return f"Tool non implementato: press_hotkey({keys})"
+    return "Tool not implemented yet."
 
 
 def finish_task(summary: str) -> str:

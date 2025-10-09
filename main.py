@@ -85,7 +85,7 @@ def main():
             )
         
         # Configure the Gemini SDK with the API key
-        genai.configure(api_key=gemini_api_key)
+        genai.configure(api_key=gemini_api_key)  # type: ignore[attr-defined]
         logger.info("Gemini API configured successfully")
         
         # Validate additional configuration
@@ -166,5 +166,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
     main()
