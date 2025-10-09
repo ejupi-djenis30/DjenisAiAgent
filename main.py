@@ -26,15 +26,33 @@ import pyautogui
 
 from src.config import config
 from src.orchestration.agent_loop import run_agent_loop, agent_loop
+from src.perception.audio_transcription import (
+    TranscriptionError,
+    transcribe_wav_bytes,
+)
 
 # FastAPI imports (only used in web mode)
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from fastapi import FastAPI as FastAPIType, WebSocket as WebSocketType, WebSocketDisconnect as WebSocketDisconnectType
+    from fastapi import (
+        FastAPI as FastAPIType,
+        WebSocket as WebSocketType,
+        WebSocketDisconnect as WebSocketDisconnectType,
+        UploadFile as UploadFileType,
+        File as FileType,
+        HTTPException as HTTPExceptionType,
+    )
     from fastapi.responses import HTMLResponse as HTMLResponseType, StreamingResponse as StreamingResponseType
     import uvicorn as UvicornType
 
 try:
-    from fastapi import FastAPI as FastAPIRuntime, WebSocket as WebSocketRuntime, WebSocketDisconnect as WebSocketDisconnectRuntime
+    from fastapi import (
+        FastAPI as FastAPIRuntime,
+        WebSocket as WebSocketRuntime,
+        WebSocketDisconnect as WebSocketDisconnectRuntime,
+        UploadFile as UploadFileRuntime,
+        File as FileRuntime,
+        HTTPException as HTTPExceptionRuntime,
+    )
     from fastapi.responses import HTMLResponse as HTMLResponseRuntime, StreamingResponse as StreamingResponseRuntime
     import uvicorn as uvicorn_runtime
     FASTAPI_AVAILABLE = True
@@ -49,6 +67,9 @@ WebSocket = WebSocketRuntime
 WebSocketDisconnect = WebSocketDisconnectRuntime
 HTMLResponse = HTMLResponseRuntime
 StreamingResponse = StreamingResponseRuntime
+UploadFile = UploadFileRuntime
+File = FileRuntime
+HTTPException = HTTPExceptionRuntime
 uvicorn = uvicorn_runtime
 
 # Global asyncio queues for web mode communication
@@ -325,6 +346,33 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
         manager.disconnect(websocket)
+
+
+@app.post("/api/transcribe")
+async def transcribe_audio_endpoint(file: UploadFile = File(...)):
+    """Receive an audio clip (WAV) and return its local transcription."""
+
+    if not config.enable_local_transcription:
+        raise HTTPException(
+            status_code=503,
+            detail="La trascrizione locale è disabilitata. Configura DJENIS_LOCAL_TRANSCRIPTION=1 per abilitarla.",
+        )
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Payload audio vuoto.")
+
+    try:
+        text = await asyncio.get_event_loop().run_in_executor(
+            None, transcribe_wav_bytes, audio_bytes
+        )
+    except TranscriptionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - unexpected failures
+        logging.getLogger(__name__).error("Errore inatteso durante la trascrizione audio", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno durante la trascrizione audio.") from exc
+
+    return {"transcript": text}
 
 
 async def screen_generator():

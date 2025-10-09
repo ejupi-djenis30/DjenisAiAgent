@@ -60,6 +60,51 @@
             color: var(--muted);
         }
 
+        .status-badges {
+            margin-top: 1rem;
+            display: flex;
+            justify-content: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .badge {
+            padding: 0.35rem 0.9rem;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--text);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            transition: background 0.3s ease, color 0.3s ease, border 0.3s ease;
+        }
+
+        .badge.online {
+            background: rgba(34, 197, 94, 0.18);
+            color: #bbf7d0;
+            border-color: rgba(34, 197, 94, 0.4);
+        }
+
+        .badge.offline {
+            background: rgba(239, 68, 68, 0.2);
+            color: #fecaca;
+            border-color: rgba(239, 68, 68, 0.35);
+        }
+
+        .badge.neutral {
+            background: rgba(148, 163, 184, 0.2);
+            color: #e2e8f0;
+            border-color: rgba(148, 163, 184, 0.35);
+        }
+
+        .badge.local {
+            background: rgba(56, 189, 248, 0.2);
+            color: #bae6fd;
+            border-color: rgba(56, 189, 248, 0.4);
+        }
+
         .content {
             display: grid;
             grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
@@ -345,6 +390,11 @@
                 font-size: 0.95rem;
             }
 
+            .status-badges {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
             .panel {
                 padding: 1.25rem;
             }
@@ -366,6 +416,35 @@
                 width: 100%;
             }
         }
+
+        @media (max-width: 480px) {
+            body {
+                padding: 1.5rem 0.75rem;
+            }
+
+            header h1 {
+                font-size: 1.75rem;
+            }
+
+            .stream-wrapper {
+                aspect-ratio: 3 / 4;
+            }
+
+            .status-panel h2,
+            .transcript-panel h2,
+            .controls h2 {
+                font-size: 1.05rem;
+            }
+
+            pre {
+                max-height: 180px;
+            }
+
+            .badge {
+                width: 100%;
+                text-align: center;
+            }
+        }
     </style>
 </head>
 <body>
@@ -373,6 +452,10 @@
         <header>
             <h1>DjenisAiAgent Control Center</h1>
             <p>Monitor, guide, and collaborate with your automation agent in real time.</p>
+            <div class="status-badges" role="status">
+                <span id="statusConnection" class="badge offline" aria-live="polite">Disconnected</span>
+                <span id="statusAudioMode" class="badge neutral">Web Speech</span>
+            </div>
         </header>
         <main class="content">
             <section class="stream-container">
@@ -417,6 +500,215 @@
     </div>
 
     <script>
+        const AUDIO_MODE = Object.freeze({
+            WEB: "web-speech",
+            LOCAL: "local"
+        });
+
+        class LocalAudioTranscriber {
+            constructor({ targetSampleRate = 16000 } = {}) {
+                this.targetSampleRate = targetSampleRate;
+                this.stream = null;
+                this.audioContext = null;
+                this.sourceNode = null;
+                this.processorNode = null;
+                this.silenceNode = null;
+                this.chunks = [];
+                this.isRecording = false;
+                this.sampleRate = targetSampleRate;
+            }
+
+            async prepare() {
+                if (!navigator.mediaDevices?.getUserMedia) {
+                    throw new Error("MediaDevices.getUserMedia non è supportato da questo browser.");
+                }
+
+                if (!this.audioContext) {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            channelCount: 1,
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        }
+                    });
+
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    if (!AudioCtx) {
+                        stream.getTracks().forEach((track) => track.stop());
+                        throw new Error("AudioContext non supportato.");
+                    }
+
+                    this.stream = stream;
+                    this.audioContext = new AudioCtx({ sampleRate: this.targetSampleRate });
+                    this.sampleRate = this.audioContext.sampleRate;
+                    this.sourceNode = this.audioContext.createMediaStreamSource(stream);
+                    this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
+                    this.processorNode.onaudioprocess = (event) => {
+                        if (!this.isRecording) {
+                            return;
+                        }
+                        const channelData = event.inputBuffer.getChannelData(0);
+                        this.chunks.push(channelData.slice(0));
+                    };
+                    this.silenceNode = this.audioContext.createGain();
+                    this.silenceNode.gain.value = 0;
+                    this.sourceNode.connect(this.processorNode);
+                    this.processorNode.connect(this.silenceNode);
+                    this.silenceNode.connect(this.audioContext.destination);
+                }
+
+                if (this.audioContext.state === "suspended") {
+                    await this.audioContext.resume();
+                }
+            }
+
+            async start() {
+                await this.prepare();
+                this.chunks = [];
+                this.isRecording = true;
+            }
+
+            async stop() {
+                if (!this.isRecording) {
+                    return "";
+                }
+                this.isRecording = false;
+
+                const samples = this._mergeChunks();
+                if (!samples.length) {
+                    return "";
+                }
+
+                const resampled = this._resample(samples, this.sampleRate, this.targetSampleRate);
+                const wavBlob = this._encodeWav(resampled, this.targetSampleRate);
+                return this._transcribe(wavBlob);
+            }
+
+            cancel() {
+                this.isRecording = false;
+                this.chunks = [];
+            }
+
+            dispose() {
+                this.cancel();
+                if (this.processorNode) {
+                    this.processorNode.disconnect();
+                    this.processorNode = null;
+                }
+                if (this.silenceNode) {
+                    this.silenceNode.disconnect();
+                    this.silenceNode = null;
+                }
+                if (this.sourceNode) {
+                    this.sourceNode.disconnect();
+                    this.sourceNode = null;
+                }
+                if (this.audioContext) {
+                    this.audioContext.close();
+                    this.audioContext = null;
+                }
+                if (this.stream) {
+                    this.stream.getTracks().forEach((track) => track.stop());
+                    this.stream = null;
+                }
+            }
+
+            _mergeChunks() {
+                if (!this.chunks.length) {
+                    return new Float32Array(0);
+                }
+                const totalLength = this.chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+                const merged = new Float32Array(totalLength);
+                let offset = 0;
+                this.chunks.forEach((chunk) => {
+                    merged.set(chunk, offset);
+                    offset += chunk.length;
+                });
+                return merged;
+            }
+
+            _resample(samples, inSampleRate, outSampleRate) {
+                if (inSampleRate === outSampleRate) {
+                    return samples;
+                }
+                const ratio = inSampleRate / outSampleRate;
+                const newLength = Math.round(samples.length / ratio);
+                const resampled = new Float32Array(newLength);
+                for (let i = 0; i < newLength; i += 1) {
+                    const idx = i * ratio;
+                    const lower = Math.floor(idx);
+                    const upper = Math.min(samples.length - 1, lower + 1);
+                    const weight = idx - lower;
+                    const value = samples[lower] * (1 - weight) + samples[upper] * weight;
+                    resampled[i] = value;
+                }
+                return resampled;
+            }
+
+            _encodeWav(samples, sampleRate) {
+                const buffer = new ArrayBuffer(44 + samples.length * 2);
+                const view = new DataView(buffer);
+
+                const writeString = (dataView, offset, string) => {
+                    for (let i = 0; i < string.length; i += 1) {
+                        dataView.setUint8(offset + i, string.charCodeAt(i));
+                    }
+                };
+
+                const floatTo16BitPCM = (dataView, offset, input) => {
+                    for (let i = 0; i < input.length; i += 1, offset += 2) {
+                        let s = Math.max(-1, Math.min(1, input[i]));
+                        s = s < 0 ? s * 0x8000 : s * 0x7fff;
+                        dataView.setInt16(offset, s, true);
+                    }
+                };
+
+                writeString(view, 0, "RIFF");
+                view.setUint32(4, 36 + samples.length * 2, true);
+                writeString(view, 8, "WAVE");
+                writeString(view, 12, "fmt ");
+                view.setUint32(16, 16, true);
+                view.setUint16(20, 1, true);
+                view.setUint16(22, 1, true);
+                view.setUint32(24, sampleRate, true);
+                view.setUint32(28, sampleRate * 2, true);
+                view.setUint16(32, 2, true);
+                view.setUint16(34, 16, true);
+                writeString(view, 36, "data");
+                view.setUint32(40, samples.length * 2, true);
+
+                floatTo16BitPCM(view, 44, samples);
+                return new Blob([view.buffer], { type: "audio/wav" });
+            }
+
+            async _transcribe(blob) {
+                const formData = new FormData();
+                formData.append("file", blob, "command.wav");
+
+                const response = await fetch("/api/transcribe", {
+                    method: "POST",
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    let detail = "Errore durante la trascrizione locale.";
+                    try {
+                        const payload = await response.json();
+                        if (payload?.detail) {
+                            detail = payload.detail;
+                        }
+                    } catch (error) {
+                        console.warn("Impossibile analizzare la risposta della trascrizione", error);
+                    }
+                    throw new Error(detail);
+                }
+
+                const payload = await response.json();
+                return (payload?.transcript || "").trim();
+            }
+        }
+
         const controlBtn = document.getElementById("controlBtn");
         const deleteTaskBtn = document.getElementById("deleteTaskBtn");
         const sendTextBtn = document.getElementById("sendTextBtn");
@@ -426,24 +718,31 @@
         const transcript = document.getElementById("transcript");
         const stream = document.getElementById("stream");
         const streamPlaceholder = document.getElementById("streamPlaceholder");
+    const statusConnectionBadge = document.getElementById("statusConnection");
+    const statusAudioModeBadge = document.getElementById("statusAudioMode");
 
-        const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-        const wsEndpoint = `${wsProtocol}://${window.location.host}/ws`;
-        const streamUrl = new URL("/stream", window.location.origin);
-        const reconnectDelayMs = 3000;
+    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsEndpoint = `${wsProtocol}://${window.location.host}/ws`;
+    const streamUrl = new URL("/stream", window.location.origin);
+    const reconnectDelayMs = 3000;
 
-        let socket;
-        let reconnectTimer;
-        let recognition;
-        let isRecognizing = false;
-        let resumeAfterProcessing = false;
-        let processingTimeout;
-        let isWebSocketOpen = false;
-        const transcriptHistory = [];
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let audioMode = SpeechRecognition ? AUDIO_MODE.WEB : AUDIO_MODE.LOCAL;
+    let localTranscriber = null;
+    let localTranscriberReady = false;
+    const LOCAL_TARGET_SAMPLE_RATE = 16000;
 
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        const PROCESSING_TIMEOUT_MS = 15000;
-        const TRANSCRIPT_HISTORY_LIMIT = 50;
+    let socket;
+    let reconnectTimer;
+    let recognition;
+    let isRecognizing = false;
+    let resumeAfterProcessing = false;
+    let processingTimeout;
+    let isWebSocketOpen = false;
+    const transcriptHistory = [];
+
+    const PROCESSING_TIMEOUT_MS = 15000;
+    const TRANSCRIPT_HISTORY_LIMIT = 50;
 
         const setConnectivity = (connected) => {
             isWebSocketOpen = connected;
@@ -452,6 +751,12 @@
 
             if (controlBtn.dataset.state !== "disabled") {
                 controlBtn.disabled = !connected || controlBtn.dataset.state === "processing";
+            }
+
+            if (statusConnectionBadge) {
+                statusConnectionBadge.textContent = connected ? "Connected" : "Disconnected";
+                statusConnectionBadge.classList.toggle("online", connected);
+                statusConnectionBadge.classList.toggle("offline", !connected);
             }
 
             if (!connected) {
@@ -463,6 +768,10 @@
                     } catch (error) {
                         console.warn("Recognition stop failed during disconnect", error);
                     }
+                }
+                if (audioMode === AUDIO_MODE.LOCAL && localTranscriber) {
+                    localTranscriber.cancel();
+                    isRecognizing = false;
                 }
             }
         };
@@ -489,10 +798,71 @@
             }
         };
 
+        const ensureLocalTranscriber = async () => {
+            if (!localTranscriber) {
+                localTranscriber = new LocalAudioTranscriber({ targetSampleRate: LOCAL_TARGET_SAMPLE_RATE });
+            }
+            if (!localTranscriberReady) {
+                try {
+                    await localTranscriber.prepare();
+                    localTranscriberReady = true;
+                } catch (error) {
+                    console.error("Impossibile inizializzare la trascrizione locale", error);
+                    logStatus(`Impossibile accedere al microfono: ${error.message}`, "error");
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        const switchToLocalTranscription = async (reason = "") => {
+            const previousMode = audioMode;
+            audioMode = AUDIO_MODE.LOCAL;
+            if (recognition) {
+                try {
+                    recognition.stop();
+                } catch (error) {
+                    console.warn("Errore durante lo stop della Web Speech API", error);
+                }
+                recognition = null;
+            }
+            const ready = await ensureLocalTranscriber();
+            if (!ready) {
+                audioMode = previousMode;
+                return false;
+            }
+            updateHintForMode();
+            if (reason) {
+                logStatus(reason, "warn");
+            } else {
+                logStatus("Speech API non disponibile. Passaggio alla trascrizione locale.", "warn");
+            }
+            setButtonState("idle", "Start Voice Control");
+            return true;
+        };
+
         const logStatus = (message, level = "info") => {
             const prefix = level === "error" ? "[error]" : level === "warn" ? "[warn]" : "[info]";
             const timestamp = new Date().toLocaleTimeString();
             agentStatus.textContent = `${timestamp} ${prefix} ${message}`;
+        };
+
+        const updateHintForMode = () => {
+            if (audioMode === AUDIO_MODE.WEB) {
+                controlHint.innerHTML = "Voice commands are transcribed locally in your browser using the Web Speech API. You can also send manual instructions or cancel the current task.";
+                if (statusAudioModeBadge) {
+                    statusAudioModeBadge.textContent = "Web Speech";
+                    statusAudioModeBadge.classList.add("neutral");
+                    statusAudioModeBadge.classList.remove("local");
+                }
+            } else {
+                controlHint.innerHTML = "Voice commands are processed on-device. Press start to record, then tap again to send the command to the agent.";
+                if (statusAudioModeBadge) {
+                    statusAudioModeBadge.textContent = "Local Vosk";
+                    statusAudioModeBadge.classList.add("local");
+                    statusAudioModeBadge.classList.remove("neutral");
+                }
+            }
         };
 
         const updateTranscript = (interim = "") => {
@@ -535,7 +905,7 @@
             logStatus(`Command sent (${source}): "${payload}"`);
 
             if (source === "voice") {
-                resumeAfterProcessing = true;
+                resumeAfterProcessing = audioMode === AUDIO_MODE.WEB;
             } else {
                 resumeAfterProcessing = false;
                 transcriptHistory.push(`📝 Manual: ${payload}`);
@@ -645,6 +1015,10 @@
         };
 
         const initialiseSpeechRecognition = () => {
+            if (audioMode !== AUDIO_MODE.WEB) {
+                return false;
+            }
+
             if (!SpeechRecognition) {
                 controlBtn.classList.remove("idle", "listening", "processing");
                 controlBtn.classList.add("disabled");
@@ -722,12 +1096,9 @@
                 logStatus(`Speech recognition error: ${event.error}`, "error");
                 isRecognizing = false;
                 resumeAfterProcessing = false;
-                if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-                    controlBtn.classList.add("disabled");
-                    controlBtn.dataset.state = "disabled";
-                    controlBtn.disabled = true;
-                    controlBtn.textContent = "Microphone Access Blocked";
-                    controlHint.textContent = "Microphone access denied. Update browser permissions and reload.";
+                const fallbackErrors = ["not-allowed", "service-not-allowed", "network"];
+                if (fallbackErrors.includes(event.error)) {
+                    switchToLocalTranscription("Permessi microfono negati o servizio non disponibile. Uso trascrizione locale.");
                 }
             };
 
@@ -763,34 +1134,92 @@
             return true;
         };
 
-        controlBtn.addEventListener("click", () => {
+        controlBtn.addEventListener("click", async () => {
             const state = controlBtn.dataset.state || "idle";
             if (state === "processing" || state === "disabled") {
                 return;
             }
 
-            if (!recognition && !initialiseSpeechRecognition()) {
+            if (!isWebSocketOpen) {
+                logStatus("WebSocket offline. Connect before starting voice control.", "warn");
                 return;
             }
 
-            if (!recognition) {
+            if (audioMode === AUDIO_MODE.WEB) {
+                if (!recognition && !initialiseSpeechRecognition()) {
+                    return;
+                }
+
+                if (!recognition) {
+                    await switchToLocalTranscription("Impossibile inizializzare la Web Speech API. Passaggio alla trascrizione locale.");
+                    return;
+                }
+
+                if (state === "idle") {
+                    isRecognizing = true;
+                    resumeAfterProcessing = false;
+                    try {
+                        recognition.start();
+                    } catch (error) {
+                        console.error("Recognition start failed", error);
+                        logStatus("Impossibile avviare la trascrizione vocale del browser.", "error");
+                        await switchToLocalTranscription("Errore di avvio della Web Speech API. Uso trascrizione locale.");
+                    }
+                } else if (state === "listening") {
+                    isRecognizing = false;
+                    resumeAfterProcessing = false;
+                    try {
+                        recognition.stop();
+                    } catch (error) {
+                        console.warn("Recognition stop failed", error);
+                    }
+                    setButtonState("idle", "Start Voice Control");
+                    logStatus("Voice control paused.");
+                }
+                return;
+            }
+
+            const ready = await ensureLocalTranscriber();
+            if (!ready) {
                 return;
             }
 
             if (state === "idle") {
-                if (!isWebSocketOpen) {
-                    logStatus("WebSocket offline. Connect before starting voice control.", "warn");
-                    return;
+                try {
+                    await localTranscriber.start();
+                    isRecognizing = true;
+                    setButtonState("listening", "Recording… Tap to stop");
+                    logStatus("Recording… tap stop to transcribe.");
+                } catch (error) {
+                    console.error("Local recording start failed", error);
+                    logStatus(`Impossibile avviare la registrazione: ${error.message}`, "error");
+                    setButtonState("idle", "Start Voice Control");
                 }
-                isRecognizing = true;
-                resumeAfterProcessing = false;
-                recognition.start();
             } else if (state === "listening") {
-                isRecognizing = false;
-                resumeAfterProcessing = false;
-                recognition.stop();
-                setButtonState("idle", "Start Voice Control");
-                logStatus("Voice control paused.");
+                try {
+                    setButtonState("processing", "Trascrizione in corso…");
+                    const transcriptText = await localTranscriber.stop();
+                    if (!transcriptText) {
+                        logStatus("Nessuna trascrizione rilevata. Ripeti il comando.", "warn");
+                        setButtonState("idle", "Start Voice Control");
+                        return;
+                    }
+                    transcriptHistory.push(transcriptText);
+                    if (transcriptHistory.length > TRANSCRIPT_HISTORY_LIMIT) {
+                        transcriptHistory.shift();
+                    }
+                    updateTranscript();
+                    const dispatched = sendCommand(transcriptText, { source: "voice" });
+                    if (!dispatched) {
+                        setButtonState("idle", "Start Voice Control");
+                    }
+                } catch (error) {
+                    console.error("Local transcription failed", error);
+                    logStatus(`Errore trascrizione: ${error.message}`, "error");
+                    setButtonState("idle", "Start Voice Control");
+                } finally {
+                    isRecognizing = false;
+                }
             }
         });
 
@@ -831,6 +1260,10 @@
                     console.warn("Unable to stop recognition during cancellation", error);
                 }
             }
+            if (audioMode === AUDIO_MODE.LOCAL && localTranscriber && isRecognizing) {
+                localTranscriber.cancel();
+                isRecognizing = false;
+            }
             setButtonState("processing", "Cancelling current task…");
             logStatus("Cancellation request sent to agent.");
         });
@@ -846,12 +1279,16 @@
             streamPlaceholder.style.display = "none";
         }
 
+        updateHintForMode();
         setButtonState("idle", "Start Voice Control");
         setConnectivity(false);
         connectWebSocket();
-        const speechReady = initialiseSpeechRecognition();
-        if (speechReady && isWebSocketOpen) {
-            setButtonState("idle", "Start Voice Control");
+
+        if (audioMode === AUDIO_MODE.WEB) {
+            const speechReady = initialiseSpeechRecognition();
+            if (speechReady && isWebSocketOpen) {
+                setButtonState("idle", "Start Voice Control");
+            }
         }
 
         window.addEventListener("beforeunload", () => {
@@ -861,6 +1298,9 @@
             if (recognition && isRecognizing) {
                 isRecognizing = false;
                 recognition.stop();
+            }
+            if (localTranscriber) {
+                localTranscriber.dispose();
             }
         });
     </script>

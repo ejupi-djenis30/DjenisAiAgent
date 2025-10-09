@@ -181,6 +181,7 @@ def _execute_agent_task(
     
     # Map tool names to actual functions from action module
     AVAILABLE_TOOLS: Dict[str, Callable[..., str]] = {
+        "element_id": action_tools.element_id,
         "click": action_tools.click,
         "type_text": action_tools.type_text,
         "get_text": action_tools.get_text,

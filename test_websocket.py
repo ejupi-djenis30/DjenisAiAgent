@@ -12,12 +12,19 @@ Usage:
 import asyncio
 import sys
 
+import pytest
+
 try:
     import websockets
 except ImportError:
     print("Error: websockets library not installed")
     print("Install it with: pip install websockets")
     sys.exit(1)
+
+
+pytestmark = pytest.mark.skip(
+    reason="WebSocket smoke test requires a running server and user confirmation."
+)
 
 
 async def test_websocket_connection():
