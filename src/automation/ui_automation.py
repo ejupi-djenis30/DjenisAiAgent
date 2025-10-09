@@ -1,25 +1,53 @@
 """UI Automation engine for Windows."""
 
+import math
+import random
 import time
-import pyautogui
-import pywinauto
-from pywinauto import Application
-from pywinauto.findwindows import ElementNotFoundError
-from PIL import Image, ImageGrab
+from dataclasses import dataclass, field
+from typing import Optional, Tuple, List, Dict, Any
+
 import cv2
 import numpy as np
-from typing import Optional, Tuple, List, Dict, Any
-import pytesseract
 import psutil
+import pyautogui
+import pywinauto
+import pytesseract
+from PIL import Image, ImageGrab
+from pywinauto import Application
+from pywinauto.findwindows import ElementNotFoundError
 
-from src.utils.logger import setup_logger
 from src.config.config import config
+from src.utils.logger import setup_logger
 
 logger = setup_logger("UIAutomation")
 
 # Configure PyAutoGUI
 pyautogui.FAILSAFE = True  # Move mouse to corner to abort
 pyautogui.PAUSE = config.action_delay
+
+
+@dataclass
+class MouseTrajectoryPoint:
+    """Single waypoint recorded during a mouse move."""
+
+    timestamp: float
+    x: int
+    y: int
+    duration: float
+
+
+@dataclass
+class MouseMoveTelemetry:
+    """Detailed telemetry about a mouse movement."""
+
+    success: bool
+    attempts: int
+    target: Tuple[int, int]
+    final_position: Tuple[int, int]
+    residual_offset: Tuple[int, int]
+    tolerance: int
+    path: List[MouseTrajectoryPoint] = field(default_factory=list)
+    corrections_applied: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class UIAutomationEngine:
@@ -29,6 +57,47 @@ class UIAutomationEngine:
         """Initialize the UI automation engine."""
         self.screen_size = pyautogui.size()
         logger.info(f"Initialized UI automation engine. Screen size: {self.screen_size}")
+        self._default_tolerance = config.mouse_tolerance_px
+        self._max_attempts = config.mouse_max_attempts
+        self._path_segments = max(0, config.mouse_path_segments)
+        self._curve_jitter = config.mouse_curve_jitter
+        self._base_duration = config.mouse_base_duration
+        self._micro_correction = config.mouse_micro_correction_duration
+
+    @staticmethod
+    def _distance(a: Tuple[int, int], b: Tuple[int, int]) -> float:
+        """Return Euclidean distance between two points."""
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    def _compute_segment_duration(self, start: Tuple[int, int], end: Tuple[int, int], base_duration: float) -> float:
+        """Scale movement duration relative to travelled distance."""
+        distance = self._distance(start, end)
+        screen_diag = self._distance((0, 0), self.screen_size)
+        normalized = distance / screen_diag if screen_diag else 0.0
+        duration = max(base_duration * (0.5 + normalized * 3.2), 0.035)
+        return min(duration, 1.8)
+
+    def _generate_mouse_path(self, start: Tuple[int, int], end: Tuple[int, int], segments: int) -> List[Tuple[int, int]]:
+        """Generate a curved path between two points to mimic human motion."""
+        if segments <= 0:
+            return []
+
+        mid_x = (start[0] + end[0]) / 2
+        mid_y = (start[1] + end[1]) / 2
+        jitter = self._curve_jitter
+
+        control_x = mid_x + random.uniform(-jitter, jitter)
+        control_y = mid_y + random.uniform(-jitter, jitter)
+
+        path: List[Tuple[int, int]] = []
+        for index in range(1, segments + 1):
+            t = index / (segments + 1)
+            one_minus = 1 - t
+            x = int(round(one_minus * one_minus * start[0] + 2 * one_minus * t * control_x + t * t * end[0]))
+            y = int(round(one_minus * one_minus * start[1] + 2 * one_minus * t * control_y + t * t * end[1]))
+            path.append((x, y))
+
+        return path
         
     def take_screenshot(self, region: Optional[Tuple[int, int, int, int]] = None) -> Image.Image:
         """Take a screenshot of the screen or a specific region."""
@@ -114,19 +183,192 @@ class UIAutomationEngine:
         """Right-click at specified coordinates."""
         return self.click(x, y, button='right')
     
-    def move_mouse(self, x: int, y: int, duration: float = 0.5) -> bool:
-        """Move mouse to specified coordinates."""
-        try:
-            pyautogui.moveTo(x, y, duration=duration)
-            logger.debug(f"Moved mouse to ({x}, {y})")
-            return True
-        except Exception as e:
-            logger.error(f"Mouse move failed: {e}")
-            return False
+    def move_mouse_precise(
+        self,
+        x: int,
+        y: int,
+        *,
+        tolerance: Optional[int] = None,
+        max_attempts: Optional[int] = None,
+        base_duration: Optional[float] = None,
+        path_segments: Optional[int] = None,
+    ) -> MouseMoveTelemetry:
+        """Move the mouse towards a target with adaptive corrections."""
+
+        tolerance = tolerance if tolerance is not None else self._default_tolerance
+        max_attempts = max_attempts if max_attempts is not None else self._max_attempts
+        base_duration = base_duration if base_duration is not None else self._base_duration
+        path_segments = path_segments if path_segments is not None else self._path_segments
+
+        target = (int(x), int(y))
+        attempts = 0
+        path_trace: List[MouseTrajectoryPoint] = []
+        corrections: List[Dict[str, Any]] = []
+
+        while attempts < max_attempts:
+            attempts += 1
+            start_pos = self.get_mouse_position()
+            current_pos = start_pos
+            logger.debug(
+                f"Mouse move attempt {attempts}/{max_attempts} → target {target} (current: {start_pos})"
+            )
+
+            try:
+                tween = getattr(pyautogui, "easeInOutQuad", None)
+            except AttributeError:
+                tween = None
+
+            waypoints = self._generate_mouse_path(start_pos, target, path_segments)
+            for waypoint in [*waypoints, target]:
+                duration = self._compute_segment_duration(current_pos, waypoint, base_duration)
+                try:
+                    if tween:
+                        pyautogui.moveTo(waypoint[0], waypoint[1], duration=duration, tween=tween)
+                    else:
+                        pyautogui.moveTo(waypoint[0], waypoint[1], duration=duration)
+                except Exception as exc:
+                    logger.error(f"Mouse move failure during path traversal: {exc}")
+                    return MouseMoveTelemetry(
+                        success=False,
+                        attempts=attempts,
+                        target=target,
+                        final_position=self.get_mouse_position(),
+                        residual_offset=(target[0] - current_pos[0], target[1] - current_pos[1]),
+                        tolerance=tolerance,
+                        path=path_trace,
+                        corrections_applied=corrections,
+                    )
+
+                current_pos = waypoint
+                path_trace.append(
+                    MouseTrajectoryPoint(time.time(), waypoint[0], waypoint[1], duration)
+                )
+
+            final_pos = self.get_mouse_position()
+            offset = (target[0] - final_pos[0], target[1] - final_pos[1])
+
+            if abs(offset[0]) <= tolerance and abs(offset[1]) <= tolerance:
+                logger.debug(f"Mouse arrived within tolerance {tolerance}px at {final_pos}")
+                return MouseMoveTelemetry(
+                    success=True,
+                    attempts=attempts,
+                    target=target,
+                    final_position=final_pos,
+                    residual_offset=offset,
+                    tolerance=tolerance,
+                    path=path_trace,
+                    corrections_applied=corrections,
+                )
+
+            # Apply micro correction relative to residual offset
+            logger.debug(f"Residual offset detected {offset} – applying micro correction")
+            correction_duration = max(self._micro_correction, base_duration * 0.4)
+
+            try:
+                if tween:
+                    pyautogui.moveRel(offset[0], offset[1], duration=correction_duration, tween=tween)
+                else:
+                    pyautogui.moveRel(offset[0], offset[1], duration=correction_duration)
+            except Exception as exc:
+                logger.error(f"Micro correction failed: {exc}")
+                break
+
+            corrected_pos = self.get_mouse_position()
+            corrected_offset = (target[0] - corrected_pos[0], target[1] - corrected_pos[1])
+            corrections.append(
+                {
+                    "attempt": attempts,
+                    "initial_offset": offset,
+                    "post_correction_offset": corrected_offset,
+                    "duration": correction_duration,
+                    "timestamp": time.time(),
+                }
+            )
+            path_trace.append(
+                MouseTrajectoryPoint(time.time(), corrected_pos[0], corrected_pos[1], correction_duration)
+            )
+
+            if abs(corrected_offset[0]) <= tolerance and abs(corrected_offset[1]) <= tolerance:
+                logger.debug(
+                    f"Micro correction succeeded – final position {corrected_pos} within tolerance"
+                )
+                return MouseMoveTelemetry(
+                    success=True,
+                    attempts=attempts,
+                    target=target,
+                    final_position=corrected_pos,
+                    residual_offset=corrected_offset,
+                    tolerance=tolerance,
+                    path=path_trace,
+                    corrections_applied=corrections,
+                )
+
+            # Reduce duration gradually for successive attempts to avoid oscillation
+            base_duration = max(base_duration * 0.65, self._micro_correction)
+
+        logger.warning(
+            f"Unable to position mouse within tolerance after {attempts} attempts; "
+            f"final position {corrected_pos if 'corrected_pos' in locals() else final_pos}"  # type: ignore[name-defined]
+        )
+
+        last_pos = self.get_mouse_position()
+        final_offset = (target[0] - last_pos[0], target[1] - last_pos[1])
+        return MouseMoveTelemetry(
+            success=False,
+            attempts=attempts,
+            target=target,
+            final_position=last_pos,
+            residual_offset=final_offset,
+            tolerance=tolerance,
+            path=path_trace,
+            corrections_applied=corrections,
+        )
+
+    def move_mouse(
+        self,
+        x: int,
+        y: int,
+        duration: float = 0.5,
+        *,
+        tolerance: Optional[int] = None,
+        max_attempts: Optional[int] = None,
+        return_telemetry: bool = False,
+    ) -> bool | MouseMoveTelemetry:
+        """Move mouse to specified coordinates with adaptive correction."""
+
+        telemetry = self.move_mouse_precise(
+            x,
+            y,
+            tolerance=tolerance,
+            max_attempts=max_attempts,
+            base_duration=duration,
+        )
+
+        if return_telemetry:
+            return telemetry
+
+        return telemetry.success
     
-    def move_to(self, x: int, y: int, duration: float = 0.5) -> bool:
-        """Alias for move_mouse."""
-        return self.move_mouse(x, y, duration)
+    def move_to(
+        self,
+        x: int,
+        y: int,
+        duration: float = 0.5,
+        *,
+        tolerance: Optional[int] = None,
+        max_attempts: Optional[int] = None,
+        return_telemetry: bool = False,
+    ) -> bool | MouseMoveTelemetry:
+        """Alias for move_mouse with telemetry support."""
+
+        return self.move_mouse(
+            x,
+            y,
+            duration,
+            tolerance=tolerance,
+            max_attempts=max_attempts,
+            return_telemetry=return_telemetry,
+        )
     
     def get_mouse_position(self) -> Tuple[int, int]:
         """Get current mouse position."""

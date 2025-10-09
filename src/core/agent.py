@@ -96,7 +96,7 @@ class EnhancedAIAgent:
         # Initialize components
         self.gemini = EnhancedGeminiClient()
         self.ui = UIAutomationEngine()
-        self.executor = ActionExecutor(self.ui)
+        self.executor = ActionExecutor(self.ui, self.gemini)
         
         # UI Overlay
         self.use_ui = use_ui
@@ -428,10 +428,27 @@ class EnhancedAIAgent:
         """Attempt to recover from an action failure."""
 
         result = ctx.last_result
-        error_msg = result.error if result else "Unknown error"
+        error_msg = result.error if result and result.error else "Unknown error"
 
-        logger.warning(f"   ⚠️  Step execution failed: {error_msg}")
-        ctx.add_note(f"Failure: {error_msg}")
+        enriched_issue = error_msg
+        metadata = result.metadata if result else {}
+        mouse_meta = metadata.get("mouse") if isinstance(metadata, dict) else None
+        if mouse_meta:
+            residual = mouse_meta.get("residual_offset")
+            final_position = mouse_meta.get("final_position")
+            target_coords = mouse_meta.get("target")
+            attempts = mouse_meta.get("attempts")
+            if residual is not None:
+                enriched_issue += f" | residual_offset={residual}"
+            if final_position is not None:
+                enriched_issue += f" | final_position={final_position}"
+            if target_coords is not None:
+                enriched_issue += f" | target={target_coords}"
+            if attempts is not None:
+                enriched_issue += f" | mouse_attempts={attempts}"
+
+        logger.warning(f"   ⚠️  Step execution failed: {enriched_issue}")
+        ctx.add_note(f"Failure: {enriched_issue}")
 
         if self.overlay:
             self.overlay.update_step_detail(self._format_step_detail(ctx))
@@ -471,7 +488,7 @@ class EnhancedAIAgent:
         # Exhausted retries – ask for corrective actions
         corrective_steps = self._generate_corrective_steps(
             failed_step=ctx.raw,
-            issue=error_msg,
+            issue=enriched_issue,
             screenshot=after_screenshot or before_screenshot,
             original_goal=ctx.raw.get("expected_outcome", ctx.target)
         )

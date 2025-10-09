@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING
 import time
 from datetime import datetime
 import difflib
 
 from src.utils.logger import setup_logger
 from src.config.config import config
-from src.automation.ui_automation import UIAutomationEngine
+from src.automation.ui_automation import UIAutomationEngine, MouseMoveTelemetry
 from src.core.actions import action_registry
 
 logger = setup_logger("ActionExecutor")
+
+if TYPE_CHECKING:
+    from src.core.gemini_client import EnhancedGeminiClient
 
 
 @dataclass
@@ -52,9 +55,14 @@ class ActionResult:
 class ActionExecutor:
     """Executes automation actions with comprehensive error handling."""
     
-    def __init__(self, ui_engine: UIAutomationEngine):
+    def __init__(
+        self,
+        ui_engine: UIAutomationEngine,
+        gemini_client: Optional["EnhancedGeminiClient"] = None,
+    ):
         """Initialize action executor."""
         self.ui = ui_engine
+        self.gemini = gemini_client
         logger.info("Action executor initialized")
     
     def execute(
@@ -154,6 +162,146 @@ class ActionExecutor:
     
     # Application Actions
     
+    def _serialize_mouse_telemetry(self, telemetry: MouseMoveTelemetry) -> Dict[str, Any]:
+        """Convert telemetry dataclass into JSON-friendly dict."""
+
+        return {
+            "success": telemetry.success,
+            "attempts": telemetry.attempts,
+            "target": telemetry.target,
+            "final_position": telemetry.final_position,
+            "residual_offset": telemetry.residual_offset,
+            "tolerance": telemetry.tolerance,
+            "path": [
+                {
+                    "timestamp": point.timestamp,
+                    "x": point.x,
+                    "y": point.y,
+                    "duration": point.duration,
+                }
+                for point in telemetry.path
+            ],
+            "corrections_applied": telemetry.corrections_applied,
+        }
+
+    def _auto_correct_mouse_target(
+        self,
+        description: str,
+        requested_target: Tuple[int, int],
+        telemetry: MouseMoveTelemetry,
+        params: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Use vision model to propose corrected mouse coordinates."""
+
+        if not self.gemini:
+            logger.debug("Gemini client unavailable – skipping auto mouse correction")
+            return None
+
+        try:
+            screenshot = self.ui.take_screenshot()
+        except Exception as exc:  # pragma: no cover - hardware dependent
+            logger.debug(f"Failed to capture screenshot for auto correction: {exc}")
+            return None
+
+        path_excerpt = [
+            {"x": pt.x, "y": pt.y, "duration": round(pt.duration, 4)}
+            for pt in telemetry.path[-10:]
+        ]
+
+        prompt = f"""We attempted to align the mouse cursor with a target.
+
+TARGET DESCRIPTION: {description}
+REQUESTED COORDINATES: {requested_target}
+FINAL POSITION REACHED: {telemetry.final_position}
+RESIDUAL OFFSET (target - final): {telemetry.residual_offset}
+TOLERANCE: ±{telemetry.tolerance}px
+MOVEMENT ATTEMPTS: {telemetry.attempts}
+PATH TRACE (last points): {path_excerpt}
+
+Analyze the screenshot and report refined coordinates for the target if visible.
+
+Respond with JSON only, using this schema:
+{{
+  "found": true/false,
+  "x": <int>,
+  "y": <int>,
+  "confidence": "high|medium|low",
+  "reason": "Detailed reasoning about the correction",
+  "notes": "Any advice for future attempts"
+}}
+
+If the target cannot be identified, set "found" to false and explain in "reason"."""
+
+        response = self.gemini.analyze_screen(screenshot, prompt)
+
+        import json
+
+        candidate: Optional[Dict[str, Any]] = None
+        try:
+            json_blob = response
+            if "```json" in response:
+                json_blob = response.split("```json")[1].split("```", 1)[0].strip()
+            elif "```" in response:
+                json_blob = response.split("```", 1)[1].split("```", 1)[0].strip()
+            candidate = json.loads(json_blob)
+        except Exception as exc:
+            logger.debug(f"Auto correction JSON parse failed: {exc}")
+            logger.debug(f"Gemini response: {response[:400]}")
+            return None
+
+        if not candidate or not candidate.get("found"):
+            logger.info("Gemini could not identify better coordinates for target")
+            return {
+                "suggestion": candidate,
+                "telemetry": telemetry,
+            }
+
+        try:
+            suggested_x = int(candidate["x"])
+            suggested_y = int(candidate["y"])
+        except (KeyError, ValueError, TypeError):
+            logger.debug(f"Invalid coordinate suggestion returned: {candidate}")
+            return None
+
+        logger.info(
+            f"Gemini suggests refined mouse coordinates ({suggested_x}, {suggested_y}) "
+            f"with confidence {candidate.get('confidence', 'unknown')}"
+        )
+
+        refined_telemetry = self.ui.move_to(
+            suggested_x,
+            suggested_y,
+            duration=float(params.get("duration", config.mouse_base_duration)),
+            tolerance=params.get("tolerance"),
+            max_attempts=params.get("max_attempts"),
+            return_telemetry=True,
+        )
+
+        if isinstance(refined_telemetry, MouseMoveTelemetry):
+            return {
+                "suggestion": candidate,
+                "telemetry": refined_telemetry,
+            }
+
+        # move_to returning bool indicates failure to fetch telemetry; wrap into dict for consistency
+        current_pos = self.ui.get_mouse_position()
+        return {
+            "suggestion": candidate,
+            "telemetry": MouseMoveTelemetry(
+                success=bool(refined_telemetry),
+                attempts=telemetry.attempts,
+                target=(suggested_x, suggested_y),
+                final_position=current_pos,
+                residual_offset=(
+                    suggested_x - current_pos[0],
+                    suggested_y - current_pos[1],
+                ),
+                tolerance=params.get("tolerance", config.mouse_tolerance_px),
+                path=[],
+                corrections_applied=[],
+            ),
+        }
+
     def _execute_open_application(self, target: str, params: Dict) -> Dict[str, Any]:
         """Open or launch an application."""
         success = self.ui.open_application(target)
@@ -233,39 +381,87 @@ class ActionExecutor:
                 else:
                     return {"success": False, "error": f"Could not find element: {target}"}
         
-        # Move mouse to target position first
-        logger.info(f"Moving mouse to ({x}, {y})")
-        self.ui.move_to(x, y)
-        time.sleep(0.3)  # Brief pause for mouse to move
-        
-        # Verify mouse is at expected position
-        current_pos = self.ui.get_mouse_position()
-        if current_pos:
-            actual_x, actual_y = current_pos
-            # Allow small tolerance (±5 pixels)
-            if abs(actual_x - x) > 5 or abs(actual_y - y) > 5:
-                logger.warning(f"Mouse position mismatch! Expected ({x}, {y}), got ({actual_x}, {actual_y})")
-                logger.warning(f"Offset: ({actual_x - x}, {actual_y - y})")
-                print(f"   ⚠️  Mouse position verification:")
-                print(f"      Expected: ({x}, {y})")
-                print(f"      Actual: ({actual_x}, {actual_y})")
-                print(f"      Offset: ({actual_x - x}, {actual_y - y})")
-                
-                # Return position info for AI to adjust
-                return {
-                    "success": False,
-                    "error": "Mouse position mismatch",
-                    "expected": (x, y),
-                    "actual": (actual_x, actual_y),
-                    "offset": (actual_x - x, actual_y - y)
-                }
-            else:
-                logger.info(f"✓ Mouse position verified at ({actual_x}, {actual_y})")
-                print(f"   ✓ Mouse position verified")
-        
-        # Click at current position
-        success = self.ui.click(x, y)
-        return {"success": success}
+        move_duration = float(params.get("duration", config.mouse_base_duration or 0.5))
+        telemetry_attempts: List[MouseMoveTelemetry] = []
+
+        telemetry_raw = self.ui.move_to(
+            x,
+            y,
+            duration=move_duration,
+            tolerance=params.get("tolerance"),
+            max_attempts=params.get("max_attempts"),
+            return_telemetry=True,
+        )
+
+        if isinstance(telemetry_raw, MouseMoveTelemetry):
+            telemetry = telemetry_raw
+        else:
+            logger.warning("Telemetry unavailable from move_to; falling back to simple click")
+            telemetry = MouseMoveTelemetry(
+                success=bool(telemetry_raw),
+                attempts=1,
+                target=(x, y),
+                final_position=self.ui.get_mouse_position(),
+                residual_offset=(0, 0),
+                tolerance=params.get("tolerance", config.mouse_tolerance_px),
+                path=[],
+                corrections_applied=[],
+            )
+        telemetry_attempts.append(telemetry)
+
+        auto_correction_result: Optional[Dict[str, Any]] = None
+
+        if not telemetry.success and params.get("auto_correct", True):
+            logger.warning(
+                "Mouse failed to reach target within tolerance; requesting AI correction"
+            )
+            auto_correction_result = self._auto_correct_mouse_target(
+                target,
+                (x, y),
+                telemetry,
+                params,
+            )
+
+            if auto_correction_result and "telemetry" in auto_correction_result:
+                refined = auto_correction_result["telemetry"]
+                if isinstance(refined, MouseMoveTelemetry):
+                    telemetry = refined
+                    telemetry_attempts.append(refined)
+                else:
+                    logger.debug("Auto correction did not return telemetry dataclass")
+
+        serialized_history = [self._serialize_mouse_telemetry(t) for t in telemetry_attempts]
+        current_metadata = self._serialize_mouse_telemetry(telemetry)
+        current_metadata["history"] = serialized_history
+        current_metadata["auto_correction"] = (
+            auto_correction_result.get("suggestion") if auto_correction_result else None
+        )
+
+        if telemetry.success:
+            final_x, final_y = telemetry.final_position
+            logger.info(
+                f"✓ Mouse positioned within ±{telemetry.tolerance}px at {telemetry.final_position}"
+            )
+            print(
+                f"   ✓ Mouse locked at {telemetry.final_position} (offset {telemetry.residual_offset})"
+            )
+            success = self.ui.click(final_x, final_y)
+            return {
+                "success": success,
+                "mouse": current_metadata,
+            }
+
+        logger.warning(
+            f"Mouse remained outside tolerance after corrections. Residual offset: {telemetry.residual_offset}"
+        )
+        print(
+            f"   ⚠️ Mouse offset still {telemetry.residual_offset} beyond ±{telemetry.tolerance}px"
+        )
+        return {
+            "success": False,
+            "error": "Mouse position mismatch",
+            "mouse": current_metadata,
+        }
     
     def _execute_move_to(self, target: str, params: Dict) -> Dict[str, Any]:
         """Move mouse to coordinates with position verification."""
@@ -283,25 +479,40 @@ class ActionExecutor:
             else:
                 return {"success": False, "error": f"Invalid coordinates: {target}"}
         
-        # Move mouse
-        logger.info(f"Moving mouse to ({x}, {y})")
-        success = self.ui.move_to(x, y)
-        time.sleep(0.2)
-        
-        # Verify position
-        current_pos = self.ui.get_mouse_position()
-        if current_pos:
-            actual_x, actual_y = current_pos
-            logger.info(f"Mouse moved to ({actual_x}, {actual_y})")
-            print(f"   📍 Mouse at ({actual_x}, {actual_y})")
-            
-            return {
-                "success": success,
-                "position": (actual_x, actual_y),
-                "target": (x, y)
-            }
-        
-        return {"success": success}
+        telemetry_raw = self.ui.move_to(
+            x,
+            y,
+            duration=float(params.get("duration", config.mouse_base_duration or 0.5)),
+            tolerance=params.get("tolerance"),
+            max_attempts=params.get("max_attempts"),
+            return_telemetry=True,
+        )
+
+        if isinstance(telemetry_raw, MouseMoveTelemetry):
+            telemetry = telemetry_raw
+        else:
+            telemetry = MouseMoveTelemetry(
+                success=bool(telemetry_raw),
+                attempts=1,
+                target=(x, y),
+                final_position=self.ui.get_mouse_position(),
+                residual_offset=(0, 0),
+                tolerance=params.get("tolerance", config.mouse_tolerance_px),
+                path=[],
+                corrections_applied=[],
+            )
+
+        metadata = self._serialize_mouse_telemetry(telemetry)
+        print(
+            f"   📍 Mouse at {telemetry.final_position} (offset {telemetry.residual_offset}, tolerance ±{telemetry.tolerance}px)"
+        )
+
+        return {
+            "success": telemetry.success,
+            "position": telemetry.final_position,
+            "target": (x, y),
+            "mouse": metadata,
+        }
     
     def _execute_double_click(self, target: str, params: Dict) -> Dict[str, Any]:
         """Double-click on an element."""
