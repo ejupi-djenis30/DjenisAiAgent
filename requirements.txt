@@ -1,0 +1,15 @@
+# DjenisAiAgent Dependencies
+# Core AI/ML Library
+google-generativeai
+
+# Windows UI Automation
+pywinauto
+
+# Image Processing
+Pillow
+
+# Environment Variables Management
+python-dotenv
+
+# Screen Capture and Basic Automation
+pyautogui
