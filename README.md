@@ -40,6 +40,8 @@ This cycle repeats until the task is completed or max turns is reached.
 - **Error handling**: No crashes—failed actions return descriptive messages for self-correction
 - **Dynamic UI support**: Waits for elements to be ready before interaction
 - **Locator caching**: Use the `element_id` tool to mint stable tokens (e.g. `element:abc123`) that work across `click`, `type_text` and `get_text`
+- **Timeout protection**: Automatic 8-second timeout prevents pywinauto from blocking on complex windows
+- **Browser fallback**: Seamless switch to Selenium when pywinauto times out in browsers
 
 ### 🎙️ Local Voice Transcription (optional)
 - **Browser-first**: Uses the Web Speech API when available for zero-setup voice commands
@@ -65,6 +67,34 @@ py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+> **⚠️ Browser Automation Setup (Required for web interactions)**
+>
+> DjenisAiAgent uses Selenium to interact with web content (YouTube, Google, etc.) because pywinauto cannot access elements inside browser pages. To enable this feature:
+>
+> 1. **Start your browser with remote debugging** (required before running the agent):
+>
+>    **Quick Method (Windows):**
+>    - Double-click `start_edge_debug.bat` (for Edge)
+>    - OR double-click `start_chrome_debug.bat` (for Chrome)
+>
+>    **Manual Method:**
+>    
+>    **For Microsoft Edge:**
+>    ```powershell
+>    & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
+>    ```
+>
+>    **For Google Chrome:**
+>    ```powershell
+>    & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+>    ```
+>
+> 2. **Leave the browser window open** - the agent will connect to it automatically
+>
+> 3. If you skip this step, the agent will still work for Windows UI automation, but web interactions will be limited
+>
+> 💡 **Pro Tip**: Create a desktop shortcut to the `.bat` file for easy access
 
 ### 2. Configure secrets
 
@@ -118,11 +148,14 @@ The agent can call these tools via Gemini Function Calling:
 | `click` | Click a UI element | `element_id: str` |
 | `type_text` | Type text into an input field | `element_id: str, text: str` |
 | `get_text` | Read text from a UI element | `element_id: str` |
+| `browser_search` | **Search within a website (YouTube, Google, etc.)** | `query: str, search_term: str` |
 | `scroll` | Scroll in a direction | `direction: str, amount: int` |
 | `press_hotkey` | Send keyboard shortcuts | `keys: str` |
 | `finish_task` | Mark task as complete | `summary: str` |
 
 > ℹ️ Each UI tree line is prefixed with an index `[n]`. You can resolve a control by running `element_id(query="#12")` or combine filters such as `element_id(query="Save", control_type="Button")`.
+>
+> 🌐 **Browser interactions**: When working with web content, the agent automatically uses Selenium as a fallback if `element_id` fails. You can also explicitly use `browser_search` for reliable searches within websites.
 
 ## Configuration Options
 
@@ -147,6 +180,15 @@ Make sure you've copied `.env.example` to `.env` and added your actual API key.
 
 ### "Nessuna finestra attiva trovata"
 The agent needs an active window to interact with. Open an application before running commands.
+
+### Browser interactions not working
+1. Make sure you started the browser with `--remote-debugging-port=9222`
+2. Check that the browser is still open when you run the agent
+3. Verify Selenium is installed: `pip list | findstr selenium`
+4. If you see "Selenium non disponibile", reinstall: `pip install selenium webdriver-manager`
+
+### "element_id" fails to find elements in browser
+This is expected! The agent will automatically use Selenium as a fallback. Alternatively, use the `browser_search` tool directly for more reliable web interactions.
 
 ### Tool execution fails
 Check the observation message—the agent logs detailed errors. Common issues:

@@ -69,14 +69,22 @@ class AgentConfig:
 
     # Agent Behavior Parameters
     max_loop_turns: int = field(default_factory=lambda: _env_int("DJENIS_MAX_LOOP_TURNS", 50))
-    action_timeout: int = field(default_factory=lambda: _env_int("DJENIS_ACTION_TIMEOUT", 30))
+    max_mouse_positioning_attempts: int = field(
+        default_factory=lambda: _env_int("DJENIS_MAX_MOUSE_POSITIONING_ATTEMPTS", 10)
+    )
+    action_timeout: int = field(default_factory=lambda: _env_int("DJENIS_ACTION_TIMEOUT", 45))
     screenshot_interval: float = field(
-        default_factory=lambda: _env_float("DJENIS_SCREENSHOT_INTERVAL", 0.2)
+        default_factory=lambda: _env_float("DJENIS_SCREENSHOT_INTERVAL", 0.1)
     )
 
     # Model Parameters
-    temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.5))
+    temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.7))
     max_tokens: int = field(default_factory=lambda: _env_int("DJENIS_MAX_TOKENS", 60096))
+    
+    # API Timeout and Retry Configuration
+    api_timeout: int = field(default_factory=lambda: _env_int("DJENIS_API_TIMEOUT", 120))
+    api_max_retries: int = field(default_factory=lambda: _env_int("DJENIS_API_MAX_RETRIES", 3))
+    api_retry_delay: float = field(default_factory=lambda: _env_float("DJENIS_API_RETRY_DELAY", 2.0))
 
     # Logging Configuration
     log_level: str = field(default_factory=lambda: os.getenv("DJENIS_LOG_LEVEL", "INFO"))
@@ -95,10 +103,10 @@ class AgentConfig:
         default_factory=lambda: _env_float("DJENIS_STREAM_RESIZE_FACTOR", 1.0)
     )
     stream_frame_quality: int = field(
-        default_factory=lambda: _env_int("DJENIS_STREAM_FRAME_QUALITY", 88)
+        default_factory=lambda: _env_int("DJENIS_STREAM_FRAME_QUALITY", 80)
     )
     stream_max_fps: int = field(
-        default_factory=lambda: _env_int("DJENIS_STREAM_MAX_FPS", 20)
+        default_factory=lambda: _env_int("DJENIS_STREAM_MAX_FPS", 30)
     )
     perception_downscale: float = field(
         default_factory=lambda: _env_float("DJENIS_PERCEPTION_DOWNSCALE", 1.0)
