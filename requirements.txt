@@ -5,6 +5,10 @@ google-generativeai
 # Windows UI Automation
 pywinauto
 
+# Browser Automation (for web content interaction)
+selenium
+webdriver-manager
+
 # Image Processing
 Pillow
 

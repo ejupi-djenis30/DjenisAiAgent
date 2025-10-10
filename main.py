@@ -81,6 +81,9 @@ status_queue: asyncio.Queue = asyncio.Queue()
 task_cancel_event: Event = Event()
 command_queue_lock = asyncio.Lock()
 
+# Global agent state tracking
+agent_state = "idle"  # idle, running, finished, error, cancelling
+
 
 async def enqueue_command(command: str) -> bool:
     """Enqueue a trimmed user command for agent processing."""
@@ -166,6 +169,8 @@ async def status_broadcaster():
         - Resilience (if broadcasting fails, agent continues)
         - Scalability (multiple clients can connect without affecting agent)
     """
+    global agent_state
+    
     logger = logging.getLogger(__name__)
     logger.info("Status broadcaster started")
     
@@ -177,10 +182,48 @@ async def status_broadcaster():
             
             logger.debug(f"Broadcasting status: {status_message[:100]}")
             
-            # Broadcast to all connected WebSocket clients
-            # The ConnectionManager handles iterating through clients
-            # and deals with disconnected clients gracefully
-            await manager.broadcast(status_message)
+            # Determine if this is a FINAL state message that should change agent_state
+            is_final_message = False
+            new_state = None
+            
+            # Check for completion/ready messages
+            if "Ready for next command" in status_message or "🔄" in status_message:
+                is_final_message = True
+                new_state = "idle"
+                logger.info("Agent state changing to 'idle' - ready for next command")
+            
+            elif "✅ SUCCESSO" in status_message or "Task completato con successo" in status_message:
+                is_final_message = True
+                new_state = "idle"
+                logger.info("Agent state changing to 'idle' - task completed successfully")
+            
+            elif "⚠️" in status_message and "non è riuscito a completare" in status_message:
+                # Max turns reached without completion
+                is_final_message = True
+                new_state = "idle"
+                logger.info("Agent state changing to 'idle' - task failed (max turns)")
+            
+            elif "🛑" in status_message or "CANCELLATO" in status_message:
+                is_final_message = True
+                new_state = "idle"
+                logger.info("Agent state changing to 'idle' - task cancelled")
+            
+            # Update global state and send structured message if this is a final message
+            if is_final_message and new_state:
+                agent_state = new_state
+                await manager.broadcast_json({
+                    "type": "status",
+                    "payload": {
+                        "agent_state": agent_state,
+                        "message": status_message
+                    }
+                })
+            else:
+                # For intermediate messages, just send as log without changing state
+                await manager.broadcast_json({
+                    "type": "log",
+                    "payload": status_message
+                })
             
             # Mark the task as done for queue management
             status_queue.task_done()
@@ -249,12 +292,29 @@ class ConnectionManager:
             try:
                 await connection.send_text(message)
             except Exception as e:
-                logging.getLogger(__name__).error(f"Error broadcasting to client: {e}")
+                logging.getLogger(__name__).warning(f"Failed to send to client: {e}")
                 disconnected.append(connection)
         
-        # Clean up disconnected clients
-        for connection in disconnected:
-            self.disconnect(connection)
+        for conn in disconnected:
+            self.disconnect(conn)
+    
+    async def broadcast_json(self, data: dict):
+        """
+        Send a JSON message to all active WebSocket clients.
+        
+        Args:
+            data: The dictionary to broadcast as JSON
+        """
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(data)
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Failed to send JSON to client: {e}")
+                disconnected.append(connection)
+        
+        for conn in disconnected:
+            self.disconnect(conn)
 
 
 # Global ConnectionManager instance
@@ -291,12 +351,24 @@ async def websocket_endpoint(websocket: WebSocket):
     2. Listens for incoming commands from the client
     3. Places commands onto the command_queue for agent processing
     4. Handles client disconnections gracefully
+    5. Supports cancel/delete_task commands
     
     Args:
         websocket: The WebSocket connection
     """
+    global agent_state
+    
     await manager.connect(websocket)
     logger = logging.getLogger(__name__)
+    
+    # Send initial state to the newly connected client
+    await websocket.send_json({
+        "type": "status",
+        "payload": {
+            "agent_state": agent_state,
+            "message": f"Connected. Agent is {agent_state}."
+        }
+    })
     
     try:
         while True:
@@ -307,9 +379,7 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 payload = json.loads(data)
             except json.JSONDecodeError:
-                payload = data
-
-            ack_message: str
+                payload = {"type": "command", "payload": data}
 
             if isinstance(payload, dict):
                 message_type = str(payload.get("type", "command")).lower()
@@ -317,31 +387,66 @@ async def websocket_endpoint(websocket: WebSocket):
                 if message_type == "command":
                     command_text = str(payload.get("payload", "")).strip()
                     if not command_text:
-                        ack_message = "⚠️ Empty command ignored."
+                        await websocket.send_json({
+                            "type": "log",
+                            "payload": "⚠️ Empty command ignored."
+                        })
                     else:
+                        # Prevent multiple commands while agent is busy
+                        if agent_state == "running":
+                            await websocket.send_json({
+                                "type": "log",
+                                "payload": "⚠️ Agent is currently processing a task. Please wait for completion or cancel the current task."
+                            })
+                            continue
+                        
                         queued = await enqueue_command(command_text)
                         if queued:
-                            await status_queue.put(f"📝 Nuovo comando: {command_text}")
-                            ack_message = f"✅ Command queued: {command_text}"
-                        else:
-                            ack_message = "⚠️ Empty command ignored."
+                            agent_state = "running"
+                            await manager.broadcast_json({
+                                "type": "status",
+                                "payload": {
+                                    "agent_state": "running",
+                                    "message": f"Processing: {command_text}"
+                                }
+                            })
+                            await websocket.send_json({
+                                "type": "log",
+                                "payload": f"✅ Command queued: {command_text}"
+                            })
 
-                elif message_type == "delete_task":
-                    cleared = await request_task_cancellation("🛑 Cancellazione task richiesta dall'utente")
-                    ack_message = f"🛑 Cancellation requested. Cleared {cleared} queued command(s)."
+                elif message_type in ["cancel", "delete_task"]:
+                    cleared = await request_task_cancellation("🛑 User requested cancellation")
+                    agent_state = "cancelling"
+                    await manager.broadcast_json({
+                        "type": "status",
+                        "payload": {
+                            "agent_state": "cancelling",
+                            "message": "Cancelling task..."
+                        }
+                    })
+                    await websocket.send_json({
+                        "type": "log",
+                        "payload": f"🛑 Cancellation requested. Cleared {cleared} queued command(s)."
+                    })
 
                 else:
-                    ack_message = f"⚠️ Unsupported message type: {message_type}"
+                    await websocket.send_json({
+                        "type": "log",
+                        "payload": f"⚠️ Unsupported message type: {message_type}"
+                    })
 
             else:
                 command_text = str(payload).strip()
                 if await enqueue_command(command_text):
-                    await status_queue.put(f"📝 Nuovo comando: {command_text}")
-                    ack_message = f"✅ Command queued: {command_text}"
-                else:
-                    ack_message = "⚠️ Empty command ignored."
-
-            await websocket.send_text(ack_message)
+                    agent_state = "running"
+                    await manager.broadcast_json({
+                        "type": "status",
+                        "payload": {
+                            "agent_state": "running",
+                            "message": f"Processing: {command_text}"
+                        }
+                    })
             
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")

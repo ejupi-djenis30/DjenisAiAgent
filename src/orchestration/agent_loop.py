@@ -12,6 +12,7 @@ The agent loop now operates in two modes:
 import asyncio
 import functools
 import logging
+import time
 from collections.abc import Mapping
 from threading import Event
 from typing import Any, Callable, Dict, List, Optional, Protocol, TypeGuard, cast
@@ -40,6 +41,11 @@ def _is_function_call(response: Any) -> TypeGuard[FunctionCallLike]:
     name = getattr(response, "name")
     args = getattr(response, "args")
     return isinstance(name, str) and isinstance(args, Mapping)
+
+
+def _is_mouse_positioning_tool(tool_name: str) -> bool:
+    """Check if a tool is part of the mouse positioning mini-loop."""
+    return tool_name in {"move_mouse", "verify_mouse_position", "confirm_mouse_position"}
 
 
 def run_agent_loop(user_command: str) -> str:
@@ -181,8 +187,15 @@ def _execute_agent_task(
     
     # Map tool names to actual functions from action module
     AVAILABLE_TOOLS: Dict[str, Callable[..., str]] = {
+        # System and shell tools (PREFERRED for file/system operations)
+        "run_shell_command": action_tools.run_shell_command,
+        
+        # Deep reasoning tool (optional, use sparingly)
+        "deep_think": action_tools.deep_think,
+        
         # Core UI interaction tools
         "element_id": action_tools.element_id,
+        "element_id_fast": action_tools.element_id_fast,
         "click": action_tools.click,
         "double_click": action_tools.double_click,
         "right_click": action_tools.right_click,
@@ -191,12 +204,17 @@ def _execute_agent_task(
         
         # Navigation and control tools
         "scroll": action_tools.scroll,
-        "press_hotkey": action_tools.press_hotkey,
-        "move_mouse": action_tools.move_mouse,
+        "press_key_repeat": action_tools.press_key_repeat,
+        "press_keys": action_tools.press_keys,
+        "hotkey": action_tools.hotkey,
         "wait_seconds": action_tools.wait_seconds,
         
+        # Mouse tools (LAST RESORT - use only when element_id fails)
+        "move_mouse": action_tools.move_mouse,
+        "verify_mouse_position": action_tools.verify_mouse_position,
+        "confirm_mouse_position": action_tools.confirm_mouse_position,
+        
         # Window management tools
-        "minimize_window": action_tools.minimize_window,
         "maximize_window": action_tools.maximize_window,
         "close_window": action_tools.close_window,
         "switch_window": action_tools.switch_window,
@@ -206,12 +224,19 @@ def _execute_agent_task(
         "paste_from_clipboard": action_tools.paste_from_clipboard,
         "get_clipboard_text": action_tools.get_clipboard_text,
         "set_clipboard_text": action_tools.set_clipboard_text,
+        "read_clipboard": action_tools.read_clipboard,
         
         # Application and file tools
         "start_application": action_tools.start_application,
         "open_file": action_tools.open_file,
         "open_url": action_tools.open_url,
         "take_screenshot": action_tools.take_screenshot,
+        "list_files": action_tools.list_files,
+        "read_file": action_tools.read_file,
+        "write_file": action_tools.write_file,
+        
+        # Browser tools
+        "browser_search": action_tools.browser_search,
         
         # Task completion
         "finish_task": action_tools.finish_task,
@@ -219,9 +244,14 @@ def _execute_agent_task(
     
     logger.info("Starting agent loop for command: %s", user_command)
     logger.info("Maximum turns: %d", MAX_TURNS)
+    logger.info("Maximum mouse positioning attempts: %d", config.max_mouse_positioning_attempts)
     log_status(f"\n{'='*80}")
     log_status(f"🤖 AVVIO AGENTE - Comando: {user_command}")
     log_status(f"{'='*80}\n")
+    
+    # Mouse positioning state tracking
+    mouse_positioning_active = False
+    mouse_positioning_attempts = 0
     
     # ===== MAIN REACT LOOP =====
     for turn in range(1, MAX_TURNS + 1):
@@ -265,29 +295,67 @@ def _execute_agent_task(
                 cancel_event.clear()
             return "CANCELLATO: Task interrotto dall'utente"
         
-        # ===== STEP B: REASON (Call Gemini) =====
-        try:
-            logger.debug("Calling Gemini API for next action decision")
+        # ===== STEP B: REASON (Call Gemini with Retry Logic) =====
+        # NOTE: Retries within this loop do NOT increment the turn counter
+        # The turn only advances after a valid tool call is obtained
+        MAX_REASONING_RETRIES = 3
+        response = None
+        
+        for retry_attempt in range(MAX_REASONING_RETRIES):
+            try:
+                logger.debug(f"Calling Gemini API for next action decision (attempt {retry_attempt + 1}/{MAX_REASONING_RETRIES})")
 
-            # Convert tool functions to list for Gemini
-            tool_functions = list(AVAILABLE_TOOLS.values())
+                # Convert tool functions to list for Gemini
+                tool_functions = list(AVAILABLE_TOOLS.values())
 
-            response = decide_next_action(
-                screenshot_image=screenshot,
-                ui_tree=ui_tree,
-                user_command=user_command,
-                history=history,
-                available_tools=tool_functions,
-            )
+                response = decide_next_action(
+                    screenshot_image=screenshot,
+                    ui_tree=ui_tree,
+                    user_command=user_command,
+                    history=history,
+                    available_tools=tool_functions,
+                )
 
-            logger.info("Reasoning: Received response from Gemini")
-            
-        except Exception as e:
-            error_msg = f"Errore durante il ragionamento: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            log_status(f"❌ {error_msg}")
-            history.append(f"ERRORE RAGIONAMENTO: {error_msg}")
-            continue
+                # Check if response is a VALID TOOL CALL (not just any response)
+                if response and _is_function_call(response):
+                    logger.info("Reasoning: Received valid tool call from Gemini")
+                    break  # Success, exit retry loop and proceed to ACT step
+                else:
+                    # Log the problematic response for debugging
+                    invalid_response_preview = str(response)[:200] if response else "<empty>"
+                    logger.warning(
+                        f"Attempt {retry_attempt + 1}: Gemini returned invalid response (not a tool call). "
+                        f"Response preview: '{invalid_response_preview}'"
+                    )
+                    if retry_attempt < MAX_REASONING_RETRIES - 1:
+                        log_status(
+                            f"⚠️ Tentativo {retry_attempt + 1} fallito: il modello non ha chiamato uno strumento valido. "
+                            f"Riprovo senza incrementare il turno..."
+                        )
+                        time.sleep(1)  # Brief pause before retry
+                    else:
+                        log_status(
+                            f"❌ Errore: il modello non ha chiamato uno strumento valido dopo {MAX_REASONING_RETRIES} tentativi. "
+                            f"Salto questo turno."
+                        )
+                        history.append(f"ERRORE: Modello non ha generato tool call valida dopo {MAX_REASONING_RETRIES} tentativi")
+                        response = None
+                
+            except Exception as e:
+                error_msg = f"Errore durante il ragionamento (tentativo {retry_attempt + 1}): {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                if retry_attempt < MAX_REASONING_RETRIES - 1:
+                    log_status(f"⚠️ {error_msg}. Riprovo senza incrementare il turno...")
+                    time.sleep(1)
+                else:
+                    log_status(f"❌ {error_msg}")
+                    history.append(f"ERRORE RAGIONAMENTO: {error_msg}")
+                    response = None
+        
+        # If all retries failed, skip this turn (continue will restart the loop, decrementing turn effectively)
+        if not response:
+            logger.error("All reasoning attempts failed, skipping this turn without counting it")
+            continue  # This restarts the for loop at the SAME turn number
 
         if cancelled():
             log_status("🛑 Task cancellato dall'utente durante la fase di ragionamento.")
@@ -303,6 +371,75 @@ def _execute_agent_task(
                 function_call = cast(FunctionCallLike, response)
                 tool_name = function_call.name
                 tool_args = dict(function_call.args)
+
+                # Check if entering mouse positioning mini-loop
+                if _is_mouse_positioning_tool(tool_name):
+                    if not mouse_positioning_active:
+                        # Starting new mouse positioning sequence
+                        mouse_positioning_active = True
+                        mouse_positioning_attempts = 0
+                        log_status(f"🖱️  MINI-LOOP MOUSE: Starting mouse positioning sequence (max attempts: {config.max_mouse_positioning_attempts})")
+                        logger.info("Entering mouse positioning mini-loop")
+                    
+                    mouse_positioning_attempts += 1
+                    
+                    # Check if max attempts exceeded
+                    if mouse_positioning_attempts > config.max_mouse_positioning_attempts:
+                        mouse_positioning_active = False
+                        mouse_positioning_attempts = 0
+                        observation = (
+                            f"ERROR: Mouse positioning mini-loop exceeded maximum attempts "
+                            f"({config.max_mouse_positioning_attempts}). Exiting mini-loop. "
+                            "Consider using element_id or alternative approaches."
+                        )
+                        log_status(f"❌ {observation}")
+                        logger.warning(observation)
+                        history.append(f"PENSIERO: Mouse positioning failed after {config.max_mouse_positioning_attempts} attempts")
+                        history.append(f"OSSERVAZIONE: {observation}")
+                        continue  # Don't increment turn, stay on same turn
+                    
+                    log_status(f"🧠 PENSIERO: Il modello ha deciso di chiamare lo strumento '{tool_name}' (tentativo mouse {mouse_positioning_attempts}/{config.max_mouse_positioning_attempts})")
+                    log_status(f"   Argomenti: {tool_args}")
+                    logger.info("Mouse mini-loop action: Dispatching tool '%s' (attempt %d/%d)", 
+                               tool_name, mouse_positioning_attempts, config.max_mouse_positioning_attempts)
+                    
+                    # Execute mouse tool
+                    tool_function = AVAILABLE_TOOLS[tool_name]
+                    try:
+                        observation = tool_function(**tool_args)
+                        logger.info("Mouse tool '%s' executed, result: %s", tool_name, observation[:100])
+                        
+                        # Check if this was confirm_mouse_position - if so, exit mini-loop
+                        if tool_name == "confirm_mouse_position":
+                            log_status(f"🖱️  MINI-LOOP MOUSE: Position confirmed, exiting mini-loop after {mouse_positioning_attempts} attempts")
+                            logger.info("Mouse position confirmed, exiting mini-loop")
+                            mouse_positioning_active = False
+                            mouse_positioning_attempts = 0
+                        
+                    except TypeError as exc:
+                        observation = f"Error: Invalid arguments for '{tool_name}'. Details: {exc}"
+                        logger.error(observation)
+                    except Exception as exc:
+                        observation = f"Error executing '{tool_name}': {exc}"
+                        logger.error(observation, exc_info=True)
+                    
+                    log_status(f"👁️  OSSERVAZIONE: {observation}")
+                    
+                    # Update history for mini-loop
+                    history.append(f"MOUSE MINI-LOOP [{mouse_positioning_attempts}/{config.max_mouse_positioning_attempts}]: Called {tool_name} with {tool_args}")
+                    history.append(f"OSSERVAZIONE: {observation}")
+                    
+                    # Important: Don't increment turn counter for mouse mini-loop
+                    # Use a decrement trick to stay on the same turn
+                    turn -= 1
+                    continue  # Continue to next iteration without incrementing turn
+                
+                # If we were in mouse positioning mode but now calling a non-mouse tool, exit mini-loop
+                if mouse_positioning_active and not _is_mouse_positioning_tool(tool_name):
+                    log_status(f"🖱️  MINI-LOOP MOUSE: Exiting due to non-mouse tool call")
+                    logger.info("Exiting mouse mini-loop - non-mouse tool called")
+                    mouse_positioning_active = False
+                    mouse_positioning_attempts = 0
 
                 log_status(f"🧠 PENSIERO: Il modello ha deciso di chiamare lo strumento '{tool_name}'")
                 log_status(f"   Argomenti: {tool_args}")

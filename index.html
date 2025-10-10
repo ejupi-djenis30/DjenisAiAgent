@@ -6,443 +6,285 @@
     <title>DjenisAiAgent Control Center</title>
     <style>
         :root {
-            --bg: #0f172a;
-            --bg-panel: rgba(15, 23, 42, 0.85);
-            --text: #e2e8f0;
-            --muted: #a5b4fc;
-            --accent: #6366f1;
-            --accent-dark: #4f46e5;
-            --danger: #ef4444;
-            --warning: #f59e0b;
-            --success: #22c55e;
-            --shadow: 0 20px 50px rgba(15, 23, 42, 0.45);
+            --bg-color: #121212;
+            --surface-color: #1e1e1e;
+            --primary-color: #0d6efd;
+            --text-color: #e0e0f0;
+            --text-muted-color: #888;
+            --success-color: #198754;
+            --warning-color: #ffc107;
+            --error-color: #dc3545;
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
-
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
         }
-
         body {
-            min-height: 100vh;
-            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.25), transparent 55%),
-                        radial-gradient(circle at 80% 0%, rgba(236, 72, 153, 0.2), transparent 60%),
-                        linear-gradient(160deg, #0f172a 0%, #111827 55%, #1e293b 100%);
-            color: var(--text);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 2.5rem 1.5rem;
-        }
-
-        .container {
-            width: 100%;
-            max-width: 1200px;
-            display: grid;
-            gap: 1.75rem;
-        }
-
-        header {
-            text-align: center;
-        }
-
-        header h1 {
-            font-size: clamp(2rem, 4vw, 3rem);
-            font-weight: 700;
-            letter-spacing: 0.03em;
-        }
-
-        header p {
-            margin-top: 0.75rem;
-            font-size: 1rem;
-            color: var(--muted);
-        }
-
-        .status-badges {
-            margin-top: 1rem;
-            display: flex;
-            justify-content: center;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-        }
-
-        .badge {
-            padding: 0.35rem 0.9rem;
-            border-radius: 999px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-            background: rgba(99, 102, 241, 0.2);
-            color: var(--text);
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            transition: background 0.3s ease, color 0.3s ease, border 0.3s ease;
-        }
-
-        .badge.online {
-            background: rgba(34, 197, 94, 0.18);
-            color: #bbf7d0;
-            border-color: rgba(34, 197, 94, 0.4);
-        }
-
-        .badge.offline {
-            background: rgba(239, 68, 68, 0.2);
-            color: #fecaca;
-            border-color: rgba(239, 68, 68, 0.35);
-        }
-
-        .badge.neutral {
-            background: rgba(148, 163, 184, 0.2);
-            color: #e2e8f0;
-            border-color: rgba(148, 163, 184, 0.35);
-        }
-
-        .badge.local {
-            background: rgba(56, 189, 248, 0.2);
-            color: #bae6fd;
-            border-color: rgba(56, 189, 248, 0.4);
-        }
-
-        .content {
-            display: grid;
-            grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-            gap: 1.5rem;
-        }
-
-        .stream-container {
-            position: relative;
-            background: rgba(15, 23, 42, 0.7);
-            border-radius: 1.25rem;
-            overflow: hidden;
-            padding: 1rem;
-            box-shadow: var(--shadow);
-        }
-
-        .stream-wrapper {
-            width: 100%;
-            position: relative;
-            aspect-ratio: 16 / 9;
-            border-radius: 1rem;
-            background: linear-gradient(145deg, rgba(99, 102, 241, 0.12), rgba(15, 23, 42, 0.85));
-            border: 1px solid rgba(99, 102, 241, 0.25);
-            overflow: hidden;
-        }
-
-        #stream {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            display: block;
-            filter: saturate(1.05) contrast(1.05);
-        }
-
-        .stream-placeholder {
-            position: absolute;
-            inset: 0;
-            display: grid;
-            place-items: center;
-            gap: 0.75rem;
-            color: var(--muted);
-            font-size: 1.1rem;
-            text-align: center;
-            padding: 1.5rem;
-            background: linear-gradient(160deg, rgba(15, 23, 42, 0.75) 0%, rgba(15, 23, 42, 0.55) 100%);
-        }
-
-        .spinner {
-            width: 44px;
-            height: 44px;
-            border-radius: 50%;
-            border: 4px solid rgba(99, 102, 241, 0.25);
-            border-top-color: var(--accent);
-            animation: spin 1s linear infinite;
-        }
-
-        .panels {
-            display: grid;
-            gap: 1.25rem;
-        }
-
-        .panel {
-            background: var(--bg-panel);
-            border-radius: 1.25rem;
-            padding: 1.5rem;
-            box-shadow: var(--shadow);
-            border: 1px solid rgba(99, 102, 241, 0.15);
-            backdrop-filter: blur(18px);
-        }
-
-        .panel h2 {
-            font-size: 1.15rem;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            letter-spacing: 0.03em;
-        }
-
-        .panel h2::before {
-            content: "";
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: var(--accent);
-            box-shadow: 0 0 12px rgba(99, 102, 241, 0.8);
-        }
-
-        pre {
-            max-height: 280px;
-            overflow-y: auto;
-            background: rgba(15, 23, 42, 0.6);
-            border-radius: 0.75rem;
-            padding: 1rem;
-            font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            font-size: 0.9rem;
-            line-height: 1.5;
-            white-space: pre-wrap;
-            word-break: break-word;
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            color: #cbd5f5;
-        }
-
-        .controls {
-            display: grid;
-            gap: 1.25rem;
-            place-items: center;
-        }
-
-        .control-buttons {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.75rem;
-            width: 100%;
-            justify-content: center;
-        }
-
-        .control-buttons button {
-            flex: 1 1 220px;
-        }
-
-        #controlBtn {
-            width: min(100%, 320px);
-            padding: 1rem 1.5rem;
-            border-radius: 999px;
-            border: none;
-            font-size: 1.1rem;
-            font-weight: 600;
-            letter-spacing: 0.04em;
-            transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
-            cursor: pointer;
-            color: #0f172a;
-        }
-
-        #controlBtn.idle {
-            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
-            box-shadow: 0 10px 25px rgba(99, 102, 241, 0.35);
-        }
-
-        #controlBtn.idle:hover {
-            transform: translateY(-2px);
-        }
-
-        #controlBtn.listening {
-            background: linear-gradient(135deg, rgba(239, 68, 68, 0.95) 0%, rgba(239, 68, 68, 0.8) 100%);
-            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.65);
-            color: #fff7f7;
-            animation: pulse 1.8s infinite;
-        }
-
-        #controlBtn.processing {
-            background: linear-gradient(135deg, rgba(245, 158, 11, 0.95) 0%, rgba(245, 158, 11, 0.85) 100%);
-            box-shadow: 0 10px 30px rgba(245, 158, 11, 0.45);
-            cursor: not-allowed;
-            color: #fff9ec;
-        }
-
-        #controlBtn.disabled {
-            background: linear-gradient(135deg, rgba(148, 163, 184, 0.4) 0%, rgba(148, 163, 184, 0.6) 100%);
-            color: rgba(15, 23, 42, 0.65);
-            cursor: not-allowed;
-            box-shadow: none;
-        }
-
-        .controls .danger {
-            background: linear-gradient(135deg, rgba(239, 68, 68, 0.95), rgba(239, 68, 68, 0.85));
-            color: #fff5f5;
-            box-shadow: 0 10px 25px rgba(239, 68, 68, 0.35);
-        }
-
-        .controls .danger:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 12px 32px rgba(239, 68, 68, 0.45);
-        }
-
-        .manual-command {
-            width: 100%;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
             display: flex;
             flex-direction: column;
-            gap: 0.75rem;
-            margin-top: 0.25rem;
+            height: 100vh;
+            overflow: hidden;
         }
-
-        .manual-command label {
-            font-size: 0.95rem;
-            color: var(--muted);
-            letter-spacing: 0.02em;
-        }
-
-        .manual-input {
+        .container {
             display: flex;
-            gap: 0.75rem;
+            flex-direction: column;
+            height: 100%;
             width: 100%;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 1rem;
         }
-
-        .manual-input input {
-            flex: 1;
-            padding: 0.85rem 1rem;
-            border-radius: 0.9rem;
-            border: 1px solid rgba(148, 163, 184, 0.3);
-            background: rgba(15, 23, 42, 0.65);
-            color: var(--text);
-            font-size: 1rem;
-            transition: border 0.2s ease, box-shadow 0.2s ease;
-            box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.12);
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--surface-color);
         }
-
-        .manual-input input:focus {
-            outline: none;
-            border-color: rgba(99, 102, 241, 0.6);
-            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+        h1 {
+            font-size: 1.5rem;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 1rem;
+            border-radius: 99px;
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: all 0.3s ease;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .status-indicator.idle { background-color: var(--surface-color); color: var(--text-muted-color); }
+        .status-indicator.idle .status-dot { background-color: var(--text-muted-color); animation: none; }
+        .status-indicator.running { background-color: rgba(13, 110, 253, 0.2); color: var(--primary-color); border: 1px solid var(--primary-color); }
+        .status-indicator.running .status-dot { background-color: var(--primary-color); }
+        .status-indicator.success { background-color: rgba(25, 135, 84, 0.2); color: var(--success-color); border: 1px solid var(--success-color); }
+        .status-indicator.success .status-dot { background-color: var(--success-color); animation: none; }
+        .status-indicator.error { background-color: rgba(220, 53, 69, 0.2); color: var(--error-color); border: 1px solid var(--error-color); }
+        .status-indicator.error .status-dot { background-color: var(--error-color); animation: none; }
+        .status-indicator.cancelling { background-color: rgba(255, 193, 7, 0.2); color: var(--warning-color); border: 1px solid var(--warning-color); }
+        .status-indicator.cancelling .status-dot { background-color: var(--warning-color); }
 
-        #sendTextBtn {
-            padding: 0.85rem 1.5rem;
-            border-radius: 0.9rem;
-            background: linear-gradient(135deg, rgba(14, 165, 233, 0.95), rgba(59, 130, 246, 0.85));
-            color: #f8fafc;
+        main {
+            flex-grow: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            overflow: hidden;
+            padding-top: 1rem;
+        }
+        .panel {
+            background-color: var(--surface-color);
+            border-radius: 8px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-title {
+            padding: 0.75rem 1rem;
             font-weight: 600;
-            letter-spacing: 0.03em;
-            border: none;
-            cursor: pointer;
-            transition: transform 0.18s ease, box-shadow 0.18s ease;
-            box-shadow: 0 10px 25px rgba(59, 130, 246, 0.35);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-muted-color);
         }
-
-        #sendTextBtn:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 14px 32px rgba(59, 130, 246, 0.45);
-        }
-
-        button:disabled {
-            opacity: 0.65;
-            cursor: not-allowed;
-            transform: none !important;
-            box-shadow: none !important;
-        }
-
-        .status-note {
+        #logs-container {
+            flex-grow: 1;
+            padding: 1rem;
+            overflow-y: auto;
+            font-family: "Courier New", Courier, monospace;
             font-size: 0.85rem;
-            color: rgba(226, 232, 240, 0.75);
-            text-align: center;
             line-height: 1.5;
         }
+        #logs-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        #logs-container::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        #logs-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+        }
+        .log-entry {
+            margin-bottom: 0.5rem;
+            opacity: 0;
+            animation: fadeIn 0.3s ease forwards;
+        }
+        @keyframes fadeIn {
+            to { opacity: 1; }
+        }
+        .log-entry.info { color: var(--text-color); }
+        .log-entry.warning { color: var(--warning-color); }
+        .log-entry.error { color: var(--error-color); font-weight: bold; }
 
-        .status-note strong {
-            color: #e0e7ff;
+        #screen-stream-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle, rgba(102, 126, 234, 0.1), transparent);
+            padding: 1rem;
+        }
+        #screen-stream {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
         }
 
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
+        footer {
+            padding-top: 1rem;
+            border-top: 1px solid var(--surface-color);
+        }
+        .input-area {
+            display: flex;
+            gap: 0.5rem;
+            align-items: stretch;
+        }
+        #task-input {
+            flex-grow: 1;
+            background-color: var(--surface-color);
+            border: 2px solid transparent;
+            border-radius: 8px;
+            padding: 0.875rem;
+            color: var(--text-color);
+            font-size: 1rem;
+            transition: all 0.2s ease;
+        }
+        #task-input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.1);
+        }
+        #task-input:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        button {
+            padding: 0.875rem 1.25rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        #send-task-btn {
+            background-color: var(--primary-color);
+            color: white;
+            min-width: 100px;
+        }
+        #send-task-btn:hover:not(:disabled) {
+            background-color: #0b5ed7;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(13, 110, 253, 0.4);
+        }
+        #audio-toggle-btn {
+            background-color: var(--surface-color);
+            color: var(--text-color);
+            width: 52px;
+            padding: 0;
+        }
+        #audio-toggle-btn:hover:not(:disabled) {
+            background-color: #2a2a2a;
+        }
+        #cancel-task-btn {
+            display: none;
+            background-color: var(--error-color);
+            color: white;
+            width: 52px;
+            height: 52px;
+            padding: 0;
+            border-radius: 50%;
+            flex-shrink: 0;
+            position: relative;
+            overflow: hidden;
+        }
+        #cancel-task-btn:hover:not(:disabled) {
+            background-color: #b02a37;
+            transform: scale(1.05);
+        }
+        #cancel-task-btn svg {
+            width: 24px;
+            height: 24px;
+            position: relative;
+            z-index: 1;
+        }
+        #cancel-task-btn::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            transform: translate(-50%, -50%);
+            transition: width 0.3s, height 0.3s;
+        }
+        #cancel-task-btn:hover::before {
+            width: 100%;
+            height: 100%;
         }
 
-        @keyframes pulse {
-            0% {
-                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
-            }
-            70% {
-                box-shadow: 0 0 0 22px rgba(239, 68, 68, 0);
-            }
-            100% {
-                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
-            }
-        }
-
-        @media (max-width: 1024px) {
-            body {
-                padding: 2rem 1rem;
-            }
-
-            .content {
+        /* Mobile Responsive */
+        @media (max-width: 968px) {
+            main {
                 grid-template-columns: 1fr;
+                grid-template-rows: 250px 1fr;
             }
-
-            .stream-container {
+            #screen-stream-container {
                 order: -1;
             }
         }
-
-        @media (max-width: 640px) {
-            header p {
-                font-size: 0.95rem;
+        @media (max-width: 768px) {
+            .container {
+                padding: 0.5rem;
             }
-
-            .status-badges {
-                flex-direction: column;
-                gap: 0.5rem;
+            h1 {
+                font-size: 1.2rem;
             }
-
-            .panel {
-                padding: 1.25rem;
+            .status-indicator {
+                font-size: 0.8rem;
+                padding: 0.3rem 0.75rem;
             }
-
-            pre {
-                max-height: 220px;
-                font-size: 0.85rem;
+            button {
+                padding: 0.75rem 1rem;
+                font-size: 0.9rem;
             }
-
-            .control-buttons {
-                flex-direction: column;
-            }
-
-            .manual-input {
-                flex-direction: column;
-            }
-
-            .manual-input button {
-                width: 100%;
-            }
-        }
-
-        @media (max-width: 480px) {
-            body {
-                padding: 1.5rem 0.75rem;
-            }
-
-            header h1 {
-                font-size: 1.75rem;
-            }
-
-            .stream-wrapper {
-                aspect-ratio: 3 / 4;
-            }
-
-            .status-panel h2,
-            .transcript-panel h2,
-            .controls h2 {
-                font-size: 1.05rem;
-            }
-
-            pre {
-                max-height: 180px;
-            }
-
-            .badge {
-                width: 100%;
-                text-align: center;
+            #cancel-task-btn,
+            #audio-toggle-btn {
+                width: 46px;
+                height: 46px;
             }
         }
     </style>
@@ -450,858 +292,259 @@
 <body>
     <div class="container">
         <header>
-            <h1>DjenisAiAgent Control Center</h1>
-            <p>Monitor, guide, and collaborate with your automation agent in real time.</p>
-            <div class="status-badges" role="status">
-                <span id="statusConnection" class="badge offline" aria-live="polite">Disconnected</span>
-                <span id="statusAudioMode" class="badge neutral">Web Speech</span>
+            <h1>🤖 DjenisAiAgent</h1>
+            <div id="status-indicator" class="status-indicator idle">
+                <div class="status-dot"></div>
+                <span id="status-text">Idle</span>
             </div>
         </header>
-        <main class="content">
-            <section class="stream-container">
-                <div class="stream-wrapper">
-                    <img id="stream" src="/stream" alt="Live desktop stream" />
-                    <div class="stream-placeholder" id="streamPlaceholder">
-                        <div class="spinner" aria-hidden="true"></div>
-                        <div>
-                            <strong>Connecting to live stream…</strong>
-                            <p>This window refreshes automatically when frames are available.</p>
-                        </div>
-                    </div>
+
+        <main>
+            <div class="panel">
+                <div class="panel-title">📝 Agent Logs</div>
+                <div id="logs-container"></div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">📺 Screen Stream</div>
+                <div id="screen-stream-container">
+                    <img id="screen-stream" src="" alt="Screen Stream">
                 </div>
-            </section>
-            <section class="panels">
-                <div class="status-panel panel">
-                    <h2>Agent Status</h2>
-                    <pre id="agentStatus">Waiting for updates…</pre>
-                </div>
-                <div class="transcript-panel panel">
-                    <h2>Transcription</h2>
-                    <pre id="transcript">Start voice control to see live transcripts here.</pre>
-                </div>
-                <div class="controls panel">
-                    <div class="control-buttons">
-                        <button id="controlBtn" class="idle" data-state="idle" type="button">Start Voice Control</button>
-                        <button id="deleteTaskBtn" class="danger" type="button">Delete Current Task</button>
-                    </div>
-                    <div class="manual-command">
-                        <label for="textCommandInput">Manual Command</label>
-                        <div class="manual-input">
-                            <input id="textCommandInput" type="text" autocomplete="off" placeholder="Describe what the agent should do" />
-                            <button id="sendTextBtn" type="button">Send</button>
-                        </div>
-                    </div>
-                    <p class="status-note" id="controlHint">
-                        Voice commands are transcribed locally. You can also send manual instructions or cancel the current task.
-                    </p>
-                </div>
-            </section>
+            </div>
         </main>
+
+        <footer>
+            <div class="input-area">
+                <button id="audio-toggle-btn" title="Voice Input (Coming Soon)" disabled>
+                    🎙️
+                </button>
+                <input
+                    type="text"
+                    id="task-input"
+                    placeholder="Type your command here..."
+                    autocomplete="off"
+                />
+                <button id="send-task-btn">
+                    <span>Send</span>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                    </svg>
+                </button>
+                <button id="cancel-task-btn" title="Cancel Current Task">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
+            </div>
+        </footer>
     </div>
 
     <script>
-        const AUDIO_MODE = Object.freeze({
-            WEB: "web-speech",
-            LOCAL: "local"
-        });
+        document.addEventListener("DOMContentLoaded", () => {
+            const taskInput = document.getElementById("task-input");
+            const sendTaskBtn = document.getElementById("send-task-btn");
+            const cancelTaskBtn = document.getElementById("cancel-task-btn");
+            const audioToggleBtn = document.getElementById("audio-toggle-btn");
+            const logsContainer = document.getElementById("logs-container");
+            const screenStream = document.getElementById("screen-stream");
+            const statusIndicator = document.getElementById("status-indicator");
+            const statusText = document.getElementById("status-text");
 
-        class LocalAudioTranscriber {
-            constructor({ targetSampleRate = 16000 } = {}) {
-                this.targetSampleRate = targetSampleRate;
-                this.stream = null;
-                this.audioContext = null;
-                this.sourceNode = null;
-                this.processorNode = null;
-                this.silenceNode = null;
-                this.chunks = [];
-                this.isRecording = false;
-                this.sampleRate = targetSampleRate;
-            }
+            let websocket;
+            let isTaskRunning = false;
+            let reconnectAttempts = 0;
+            const MAX_RECONNECT_ATTEMPTS = 5;
 
-            async prepare() {
-                if (!navigator.mediaDevices?.getUserMedia) {
-                    throw new Error("MediaDevices.getUserMedia non è supportato da questo browser.");
-                }
+            function connectWebSocket() {
+                const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+                const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+                
+                websocket = new WebSocket(wsUrl);
 
-                if (!this.audioContext) {
-                    const stream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            channelCount: 1,
-                            echoCancellation: true,
-                            noiseSuppression: true,
-                            autoGainControl: true
+                websocket.onopen = () => {
+                    console.log("WebSocket connection established.");
+                    reconnectAttempts = 0;
+                    appendLog("✅ Connected to DjenisAiAgent", "info");
+                    updateUIState();
+                };
+
+                websocket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'log') {
+                            appendLog(data.payload);
+                        } else if (data.type === 'status') {
+                            handleStatusUpdate(data.payload);
                         }
-                    });
-
-                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                    if (!AudioCtx) {
-                        stream.getTracks().forEach((track) => track.stop());
-                        throw new Error("AudioContext non supportato.");
-                    }
-
-                    this.stream = stream;
-                    this.audioContext = new AudioCtx({ sampleRate: this.targetSampleRate });
-                    this.sampleRate = this.audioContext.sampleRate;
-                    this.sourceNode = this.audioContext.createMediaStreamSource(stream);
-                    this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
-                    this.processorNode.onaudioprocess = (event) => {
-                        if (!this.isRecording) {
-                            return;
-                        }
-                        const channelData = event.inputBuffer.getChannelData(0);
-                        this.chunks.push(channelData.slice(0));
-                    };
-                    this.silenceNode = this.audioContext.createGain();
-                    this.silenceNode.gain.value = 0;
-                    this.sourceNode.connect(this.processorNode);
-                    this.processorNode.connect(this.silenceNode);
-                    this.silenceNode.connect(this.audioContext.destination);
-                }
-
-                if (this.audioContext.state === "suspended") {
-                    await this.audioContext.resume();
-                }
-            }
-
-            async start() {
-                await this.prepare();
-                this.chunks = [];
-                this.isRecording = true;
-            }
-
-            async stop() {
-                if (!this.isRecording) {
-                    return "";
-                }
-                this.isRecording = false;
-
-                const samples = this._mergeChunks();
-                if (!samples.length) {
-                    return "";
-                }
-
-                const resampled = this._resample(samples, this.sampleRate, this.targetSampleRate);
-                const wavBlob = this._encodeWav(resampled, this.targetSampleRate);
-                return this._transcribe(wavBlob);
-            }
-
-            cancel() {
-                this.isRecording = false;
-                this.chunks = [];
-            }
-
-            dispose() {
-                this.cancel();
-                if (this.processorNode) {
-                    this.processorNode.disconnect();
-                    this.processorNode = null;
-                }
-                if (this.silenceNode) {
-                    this.silenceNode.disconnect();
-                    this.silenceNode = null;
-                }
-                if (this.sourceNode) {
-                    this.sourceNode.disconnect();
-                    this.sourceNode = null;
-                }
-                if (this.audioContext) {
-                    this.audioContext.close();
-                    this.audioContext = null;
-                }
-                if (this.stream) {
-                    this.stream.getTracks().forEach((track) => track.stop());
-                    this.stream = null;
-                }
-            }
-
-            _mergeChunks() {
-                if (!this.chunks.length) {
-                    return new Float32Array(0);
-                }
-                const totalLength = this.chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-                const merged = new Float32Array(totalLength);
-                let offset = 0;
-                this.chunks.forEach((chunk) => {
-                    merged.set(chunk, offset);
-                    offset += chunk.length;
-                });
-                return merged;
-            }
-
-            _resample(samples, inSampleRate, outSampleRate) {
-                if (inSampleRate === outSampleRate) {
-                    return samples;
-                }
-                const ratio = inSampleRate / outSampleRate;
-                const newLength = Math.round(samples.length / ratio);
-                const resampled = new Float32Array(newLength);
-                for (let i = 0; i < newLength; i += 1) {
-                    const idx = i * ratio;
-                    const lower = Math.floor(idx);
-                    const upper = Math.min(samples.length - 1, lower + 1);
-                    const weight = idx - lower;
-                    const value = samples[lower] * (1 - weight) + samples[upper] * weight;
-                    resampled[i] = value;
-                }
-                return resampled;
-            }
-
-            _encodeWav(samples, sampleRate) {
-                const buffer = new ArrayBuffer(44 + samples.length * 2);
-                const view = new DataView(buffer);
-
-                const writeString = (dataView, offset, string) => {
-                    for (let i = 0; i < string.length; i += 1) {
-                        dataView.setUint8(offset + i, string.charCodeAt(i));
+                    } catch (error) {
+                        console.error("Error parsing WebSocket message:", error);
+                        appendLog(event.data, "info");
                     }
                 };
 
-                const floatTo16BitPCM = (dataView, offset, input) => {
-                    for (let i = 0; i < input.length; i += 1, offset += 2) {
-                        let s = Math.max(-1, Math.min(1, input[i]));
-                        s = s < 0 ? s * 0x8000 : s * 0x7fff;
-                        dataView.setInt16(offset, s, true);
+                websocket.onclose = () => {
+                    console.log("WebSocket connection closed.");
+                    isTaskRunning = false;
+                    updateStatus("Disconnected", "error");
+                    updateUIState();
+                    
+                    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                        reconnectAttempts++;
+                        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                        appendLog(`⚠️ Connection lost. Reconnecting in ${delay/1000}s... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, "warning");
+                        setTimeout(connectWebSocket, delay);
+                    } else {
+                        appendLog("❌ Max reconnection attempts reached. Please refresh the page.", "error");
                     }
                 };
 
-                writeString(view, 0, "RIFF");
-                view.setUint32(4, 36 + samples.length * 2, true);
-                writeString(view, 8, "WAVE");
-                writeString(view, 12, "fmt ");
-                view.setUint32(16, 16, true);
-                view.setUint16(20, 1, true);
-                view.setUint16(22, 1, true);
-                view.setUint32(24, sampleRate, true);
-                view.setUint32(28, sampleRate * 2, true);
-                view.setUint16(32, 2, true);
-                view.setUint16(34, 16, true);
-                writeString(view, 36, "data");
-                view.setUint32(40, samples.length * 2, true);
-
-                floatTo16BitPCM(view, 44, samples);
-                return new Blob([view.buffer], { type: "audio/wav" });
+                websocket.onerror = (error) => {
+                    console.error("WebSocket error:", error);
+                    appendLog("❌ WebSocket error occurred.", "error");
+                };
             }
 
-            async _transcribe(blob) {
-                const formData = new FormData();
-                formData.append("file", blob, "command.wav");
+            function handleStatusUpdate(payload) {
+                const state = payload.agent_state;
+                const message = payload.message;
 
-                const response = await fetch("/api/transcribe", {
-                    method: "POST",
-                    body: formData,
-                });
-
-                if (!response.ok) {
-                    let detail = "Errore durante la trascrizione locale.";
-                    try {
-                        const payload = await response.json();
-                        if (payload?.detail) {
-                            detail = payload.detail;
-                        }
-                    } catch (error) {
-                        console.warn("Impossibile analizzare la risposta della trascrizione", error);
-                    }
-                    throw new Error(detail);
+                switch (state) {
+                    case 'idle':
+                        isTaskRunning = false;
+                        updateStatus("Idle", "idle");
+                        break;
+                    case 'running':
+                    case 'thinking':
+                    case 'acting':
+                        isTaskRunning = true;
+                        updateStatus(message || "Running", "running");
+                        break;
+                    case 'finished':
+                    case 'success':
+                        isTaskRunning = false;
+                        updateStatus("Task Completed", "success");
+                        setTimeout(() => updateStatus("Idle", "idle"), 3000);
+                        break;
+                    case 'error':
+                        isTaskRunning = false;
+                        updateStatus("Error", "error");
+                        setTimeout(() => updateStatus("Idle", "idle"), 5000);
+                        break;
+                    case 'cancelled':
+                        isTaskRunning = false;
+                        updateStatus("Cancelled", "error");
+                        setTimeout(() => updateStatus("Idle", "idle"), 3000);
+                        break;
+                    case 'cancelling':
+                        isTaskRunning = true;
+                        updateStatus("Cancelling...", "cancelling");
+                        break;
+                    case 'busy':
+                        appendLog(message || "Agent is busy", "warning");
+                        break;
                 }
-
-                const payload = await response.json();
-                return (payload?.transcript || "").trim();
-            }
-        }
-
-        const controlBtn = document.getElementById("controlBtn");
-        const deleteTaskBtn = document.getElementById("deleteTaskBtn");
-        const sendTextBtn = document.getElementById("sendTextBtn");
-        const textCommandInput = document.getElementById("textCommandInput");
-        const controlHint = document.getElementById("controlHint");
-        const agentStatus = document.getElementById("agentStatus");
-        const transcript = document.getElementById("transcript");
-        const stream = document.getElementById("stream");
-        const streamPlaceholder = document.getElementById("streamPlaceholder");
-    const statusConnectionBadge = document.getElementById("statusConnection");
-    const statusAudioModeBadge = document.getElementById("statusAudioMode");
-
-    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const wsEndpoint = `${wsProtocol}://${window.location.host}/ws`;
-    const streamUrl = new URL("/stream", window.location.origin);
-    const reconnectDelayMs = 3000;
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    let audioMode = SpeechRecognition ? AUDIO_MODE.WEB : AUDIO_MODE.LOCAL;
-    let localTranscriber = null;
-    let localTranscriberReady = false;
-    const LOCAL_TARGET_SAMPLE_RATE = 16000;
-
-    let socket;
-    let reconnectTimer;
-    let recognition;
-    let isRecognizing = false;
-    let resumeAfterProcessing = false;
-    let processingTimeout;
-    let isWebSocketOpen = false;
-    const transcriptHistory = [];
-
-    const PROCESSING_TIMEOUT_MS = 15000;
-    const TRANSCRIPT_HISTORY_LIMIT = 50;
-
-        const setConnectivity = (connected) => {
-            isWebSocketOpen = connected;
-            sendTextBtn.disabled = !connected;
-            deleteTaskBtn.disabled = !connected;
-
-            if (controlBtn.dataset.state !== "disabled") {
-                controlBtn.disabled = !connected || controlBtn.dataset.state === "processing";
+                updateUIState();
             }
 
-            if (statusConnectionBadge) {
-                statusConnectionBadge.textContent = connected ? "Connected" : "Disconnected";
-                statusConnectionBadge.classList.toggle("online", connected);
-                statusConnectionBadge.classList.toggle("offline", !connected);
+            function updateStatus(text, stateClass) {
+                statusText.textContent = text;
+                statusIndicator.className = `status-indicator ${stateClass}`;
             }
 
-            if (!connected) {
-                resumeAfterProcessing = false;
-                if (recognition && isRecognizing) {
-                    isRecognizing = false;
-                    try {
-                        recognition.stop();
-                    } catch (error) {
-                        console.warn("Recognition stop failed during disconnect", error);
-                    }
-                }
-                if (audioMode === AUDIO_MODE.LOCAL && localTranscriber) {
-                    localTranscriber.cancel();
-                    isRecognizing = false;
-                }
-            }
-        };
-
-        const setButtonState = (state, label) => {
-            if (processingTimeout) {
-                clearTimeout(processingTimeout);
-                processingTimeout = undefined;
-            }
-            controlBtn.classList.remove("idle", "listening", "processing", "disabled");
-            controlBtn.classList.add(state);
-            controlBtn.dataset.state = state;
-            controlBtn.textContent = label;
-            controlBtn.disabled = state === "processing" || state === "disabled" || !isWebSocketOpen;
-
-            if (state === "processing") {
-                processingTimeout = setTimeout(() => {
-                    if (controlBtn.dataset.state === "processing") {
-                        setButtonState("idle", "Start Voice Control");
-                        logStatus("Processing timeout elapsed. Ready for next command.", "warn");
-                        resumeAfterProcessing = false;
-                    }
-                }, PROCESSING_TIMEOUT_MS);
-            }
-        };
-
-        const ensureLocalTranscriber = async () => {
-            if (!localTranscriber) {
-                localTranscriber = new LocalAudioTranscriber({ targetSampleRate: LOCAL_TARGET_SAMPLE_RATE });
-            }
-            if (!localTranscriberReady) {
-                try {
-                    await localTranscriber.prepare();
-                    localTranscriberReady = true;
-                } catch (error) {
-                    console.error("Impossibile inizializzare la trascrizione locale", error);
-                    logStatus(`Impossibile accedere al microfono: ${error.message}`, "error");
-                    return false;
-                }
-            }
-            return true;
-        };
-
-        const switchToLocalTranscription = async (reason = "") => {
-            const previousMode = audioMode;
-            audioMode = AUDIO_MODE.LOCAL;
-            if (recognition) {
-                try {
-                    recognition.stop();
-                } catch (error) {
-                    console.warn("Errore durante lo stop della Web Speech API", error);
-                }
-                recognition = null;
-            }
-            const ready = await ensureLocalTranscriber();
-            if (!ready) {
-                audioMode = previousMode;
-                return false;
-            }
-            updateHintForMode();
-            if (reason) {
-                logStatus(reason, "warn");
-            } else {
-                logStatus("Speech API non disponibile. Passaggio alla trascrizione locale.", "warn");
-            }
-            setButtonState("idle", "Start Voice Control");
-            return true;
-        };
-
-        const logStatus = (message, level = "info") => {
-            const prefix = level === "error" ? "[error]" : level === "warn" ? "[warn]" : "[info]";
-            const timestamp = new Date().toLocaleTimeString();
-            agentStatus.textContent = `${timestamp} ${prefix} ${message}`;
-        };
-
-        const updateHintForMode = () => {
-            if (audioMode === AUDIO_MODE.WEB) {
-                controlHint.innerHTML = "Voice commands are transcribed locally in your browser using the Web Speech API. You can also send manual instructions or cancel the current task.";
-                if (statusAudioModeBadge) {
-                    statusAudioModeBadge.textContent = "Web Speech";
-                    statusAudioModeBadge.classList.add("neutral");
-                    statusAudioModeBadge.classList.remove("local");
-                }
-            } else {
-                controlHint.innerHTML = "Voice commands are processed on-device. Press start to record, then tap again to send the command to the agent.";
-                if (statusAudioModeBadge) {
-                    statusAudioModeBadge.textContent = "Local Vosk";
-                    statusAudioModeBadge.classList.add("local");
-                    statusAudioModeBadge.classList.remove("neutral");
-                }
-            }
-        };
-
-        const updateTranscript = (interim = "") => {
-            const finalSection = transcriptHistory.join("\n");
-            const interimClean = interim.trim();
-            let output = finalSection;
-            if (interimClean) {
-                output += `${finalSection ? "\n\n" : ""}[Interim] ${interimClean}`;
-            }
-            transcript.textContent = output || "Start voice control to see live transcripts here.";
-        };
-
-        const sendCommand = (commandText, { source = "voice" } = {}) => {
-            const payload = (commandText || "").trim();
-            if (!payload) {
-                logStatus("Cannot send an empty command.", "warn");
-                return false;
-            }
-
-            if (!socket || socket.readyState !== WebSocket.OPEN) {
-                logStatus("WebSocket offline. Unable to deliver command.", "error");
-                return false;
-            }
-
-            const envelope = {
-                type: "command",
-                payload,
-                source,
-                requestedAt: Date.now()
-            };
-
-            try {
-                socket.send(JSON.stringify(envelope));
-            } catch (error) {
-                console.error("Failed to send command", error);
-                logStatus("Network error while sending command.", "error");
-                return false;
-            }
-
-            logStatus(`Command sent (${source}): "${payload}"`);
-
-            if (source === "voice") {
-                resumeAfterProcessing = audioMode === AUDIO_MODE.WEB;
-            } else {
-                resumeAfterProcessing = false;
-                transcriptHistory.push(`📝 Manual: ${payload}`);
-                if (transcriptHistory.length > TRANSCRIPT_HISTORY_LIMIT) {
-                    transcriptHistory.shift();
-                }
-                updateTranscript();
-            }
-
-            setButtonState("processing", source === "voice" ? "Processing…" : "Processing manual command…");
-            return true;
-        };
-
-        const scheduleReconnect = () => {
-            if (reconnectTimer) {
-                return;
-            }
-            reconnectTimer = setTimeout(() => {
-                reconnectTimer = undefined;
-                connectWebSocket();
-            }, reconnectDelayMs);
-        };
-
-        const connectWebSocket = () => {
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                return;
-            }
-
-            socket = new WebSocket(wsEndpoint);
-
-            socket.onopen = () => {
-                if (reconnectTimer) {
-                    clearTimeout(reconnectTimer);
-                    reconnectTimer = undefined;
-                }
-                setConnectivity(true);
-                logStatus("Connected to agent.");
-            };
-
-            socket.onmessage = (event) => {
-                const message = event.data;
-                agentStatus.textContent = message;
-
-                if (typeof message === "string") {
-                    const normalized = message.toLowerCase();
-
-                    const readyForNext = normalized.includes("ready for next command");
-                    const cancellationAck = normalized.includes("cancellation requested");
-                    const emptyIgnored = normalized.includes("empty command ignored");
-
-                    if (cancellationAck) {
-                        resumeAfterProcessing = false;
-                        if (recognition && isRecognizing) {
-                            isRecognizing = false;
-                            try {
-                                recognition.stop();
-                            } catch (error) {
-                                console.warn("Recognition stop failed after cancellation", error);
-                            }
-                        }
-                        if (controlBtn.dataset.state !== "disabled") {
-                            setButtonState("idle", "Start Voice Control");
-                        }
-                        return;
-                    }
-
-                    if (readyForNext) {
-                        if (resumeAfterProcessing && recognition && controlBtn.dataset.state !== "disabled") {
-                            resumeAfterProcessing = false;
-                            try {
-                                recognition.start();
-                                isRecognizing = true;
-                                setButtonState("listening", "Listening… Tap to stop");
-                                logStatus("Ready for next command. Voice control resumed.");
-                                return;
-                            } catch (error) {
-                                console.error("Failed to restart recognition", error);
-                                logStatus("Unable to restart voice capture automatically.", "warn");
-                            }
-                        }
-
-                        if (controlBtn.dataset.state === "processing") {
-                            setButtonState("idle", "Start Voice Control");
-                        }
-                        return;
-                    }
-
-                    if (emptyIgnored && controlBtn.dataset.state === "processing") {
-                        setButtonState("idle", "Start Voice Control");
-                    }
-                }
-            };
-
-            socket.onclose = () => {
-                setConnectivity(false);
-                logStatus("Connection lost. Attempting to reconnect…", "warn");
-                if (controlBtn.dataset.state !== "disabled") {
-                    setButtonState("idle", "Start Voice Control");
-                }
-                scheduleReconnect();
-            };
-
-            socket.onerror = (error) => {
-                console.error("WebSocket error", error);
-                logStatus("WebSocket error encountered.", "error");
-            };
-        };
-
-        const initialiseSpeechRecognition = () => {
-            if (audioMode !== AUDIO_MODE.WEB) {
-                return false;
-            }
-
-            if (!SpeechRecognition) {
-                controlBtn.classList.remove("idle", "listening", "processing");
-                controlBtn.classList.add("disabled");
-                controlBtn.dataset.state = "disabled";
-                controlBtn.disabled = true;
-                controlBtn.textContent = "Voice Control Unsupported";
-                controlHint.innerHTML = "Your browser doesn't support the Web Speech API. Try Chrome on desktop.";
-                logStatus("Speech recognition unavailable on this browser.", "error");
-                return false;
-            }
-
-            if (recognition) {
-                return true;
-            }
-
-            recognition = new SpeechRecognition();
-            recognition.lang = navigator.language || "en-US";
-            recognition.continuous = true;
-            recognition.interimResults = true;
-
-            recognition.onstart = () => {
-                isRecognizing = true;
-                resumeAfterProcessing = false;
-                setButtonState("listening", "Listening… Tap to stop");
-                logStatus("Listening for commands…");
-            };
-
-            recognition.onresult = (event) => {
-                let interimTranscript = "";
-                const finalSegments = [];
-
-                for (let i = event.resultIndex; i < event.results.length; i += 1) {
-                    const result = event.results[i];
-                    const textChunk = (result[0]?.transcript || "").trim();
-                    if (!textChunk) {
-                        continue;
-                    }
-                    if (result.isFinal) {
-                        finalSegments.push(textChunk);
-                    } else {
-                        interimTranscript += `${textChunk} `;
-                    }
-                }
-
-                if (finalSegments.length > 0) {
-                    finalSegments.forEach((segment) => {
-                        transcriptHistory.push(segment);
-                        if (transcriptHistory.length > TRANSCRIPT_HISTORY_LIMIT) {
-                            transcriptHistory.shift();
-                        }
-                    });
-                    updateTranscript();
-                    const combined = finalSegments.join(" ");
-                    const dispatched = sendCommand(combined, { source: "voice" });
-                    if (dispatched) {
-                        isRecognizing = false;
-                        try {
-                            recognition.stop();
-                        } catch (error) {
-                            console.warn("Unable to stop recognition after dispatch", error);
-                        }
-                    } else {
-                        resumeAfterProcessing = false;
-                        if (controlBtn.dataset.state !== "disabled") {
-                            setButtonState("idle", "Start Voice Control");
-                        }
-                    }
+            function updateUIState() {
+                const isConnected = websocket && websocket.readyState === WebSocket.OPEN;
+                
+                if (isTaskRunning) {
+                    taskInput.disabled = true;
+                    sendTaskBtn.style.display = 'none';
+                    cancelTaskBtn.style.display = 'flex';
                 } else {
-                    updateTranscript(interimTranscript);
-                }
-            };
-
-            recognition.onerror = (event) => {
-                console.error("Speech recognition error:", event.error);
-                logStatus(`Speech recognition error: ${event.error}`, "error");
-                isRecognizing = false;
-                resumeAfterProcessing = false;
-                const fallbackErrors = ["not-allowed", "service-not-allowed", "network"];
-                if (fallbackErrors.includes(event.error)) {
-                    switchToLocalTranscription("Permessi microfono negati o servizio non disponibile. Uso trascrizione locale.");
-                }
-            };
-
-            recognition.onend = () => {
-                if (resumeAfterProcessing && socket && socket.readyState === WebSocket.OPEN && controlBtn.dataset.state !== "disabled") {
-                    try {
-                        recognition.start();
-                        isRecognizing = true;
-                        setButtonState("listening", "Listening… Tap to stop");
-                        resumeAfterProcessing = false;
-                        return;
-                    } catch (error) {
-                        console.error("Failed to restart recognition on end", error);
-                        logStatus("Unable to restart voice capture automatically.", "warn");
+                    taskInput.disabled = !isConnected;
+                    sendTaskBtn.style.display = 'flex';
+                    cancelTaskBtn.style.display = 'none';
+                    if (isConnected) {
+                        taskInput.focus();
                     }
                 }
-
-                if (isRecognizing) {
-                    try {
-                        recognition.start();
-                        return;
-                    } catch (error) {
-                        console.error("Recognition restart failed", error);
-                        isRecognizing = false;
-                    }
-                }
-
-                if (controlBtn.dataset.state !== "processing" && controlBtn.dataset.state !== "disabled") {
-                    setButtonState("idle", "Start Voice Control");
-                }
-            };
-
-            return true;
-        };
-
-        controlBtn.addEventListener("click", async () => {
-            const state = controlBtn.dataset.state || "idle";
-            if (state === "processing" || state === "disabled") {
-                return;
+                
+                // Audio button remains disabled (placeholder for future feature)
+                audioToggleBtn.disabled = true;
             }
 
-            if (!isWebSocketOpen) {
-                logStatus("WebSocket offline. Connect before starting voice control.", "warn");
-                return;
+            function appendLog(logMessage, level = 'info') {
+                const logEntry = document.createElement('div');
+                logEntry.className = `log-entry ${level}`;
+                logEntry.textContent = logMessage;
+                logsContainer.appendChild(logEntry);
+                logsContainer.scrollTop = logsContainer.scrollHeight;
+                
+                // Keep only last 500 log entries
+                while (logsContainer.children.length > 500) {
+                    logsContainer.removeChild(logsContainer.firstChild);
+                }
             }
 
-            if (audioMode === AUDIO_MODE.WEB) {
-                if (!recognition && !initialiseSpeechRecognition()) {
+            function sendCommand() {
+                const command = taskInput.value.trim();
+                if (!command) {
+                    taskInput.focus();
+                    return;
+                }
+                if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                    appendLog("❌ Cannot send command: Not connected to server", "error");
                     return;
                 }
 
-                if (!recognition) {
-                    await switchToLocalTranscription("Impossibile inizializzare la Web Speech API. Passaggio alla trascrizione locale.");
+                const payload = {
+                    type: "command",
+                    payload: command,
+                    source: "manual",
+                    requestedAt: Date.now()
+                };
+                
+                websocket.send(JSON.stringify(payload));
+                taskInput.value = "";
+                isTaskRunning = true;
+                updateUIState();
+            }
+
+            function cancelCommand() {
+                if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                    appendLog("❌ Cannot cancel: Not connected to server", "error");
                     return;
                 }
 
-                if (state === "idle") {
-                    isRecognizing = true;
-                    resumeAfterProcessing = false;
-                    try {
-                        recognition.start();
-                    } catch (error) {
-                        console.error("Recognition start failed", error);
-                        logStatus("Impossibile avviare la trascrizione vocale del browser.", "error");
-                        await switchToLocalTranscription("Errore di avvio della Web Speech API. Uso trascrizione locale.");
-                    }
-                } else if (state === "listening") {
-                    isRecognizing = false;
-                    resumeAfterProcessing = false;
-                    try {
-                        recognition.stop();
-                    } catch (error) {
-                        console.warn("Recognition stop failed", error);
-                    }
-                    setButtonState("idle", "Start Voice Control");
-                    logStatus("Voice control paused.");
+                const payload = {
+                    type: "cancel",
+                    requestedAt: Date.now()
+                };
+                
+                websocket.send(JSON.stringify(payload));
+                appendLog("🛑 Cancellation request sent...", "warning");
+            }
+
+            // Event Listeners
+            sendTaskBtn.addEventListener("click", sendCommand);
+            cancelTaskBtn.addEventListener("click", cancelCommand);
+            
+            taskInput.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    sendCommand();
                 }
-                return;
-            }
+            });
 
-            const ready = await ensureLocalTranscriber();
-            if (!ready) {
-                return;
-            }
-
-            if (state === "idle") {
-                try {
-                    await localTranscriber.start();
-                    isRecognizing = true;
-                    setButtonState("listening", "Recording… Tap to stop");
-                    logStatus("Recording… tap stop to transcribe.");
-                } catch (error) {
-                    console.error("Local recording start failed", error);
-                    logStatus(`Impossibile avviare la registrazione: ${error.message}`, "error");
-                    setButtonState("idle", "Start Voice Control");
+            // Initialize
+            connectWebSocket();
+            screenStream.src = "/stream";
+            updateUIState();
+            
+            // Handle window close
+            window.addEventListener("beforeunload", () => {
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    websocket.close();
                 }
-            } else if (state === "listening") {
-                try {
-                    setButtonState("processing", "Trascrizione in corso…");
-                    const transcriptText = await localTranscriber.stop();
-                    if (!transcriptText) {
-                        logStatus("Nessuna trascrizione rilevata. Ripeti il comando.", "warn");
-                        setButtonState("idle", "Start Voice Control");
-                        return;
-                    }
-                    transcriptHistory.push(transcriptText);
-                    if (transcriptHistory.length > TRANSCRIPT_HISTORY_LIMIT) {
-                        transcriptHistory.shift();
-                    }
-                    updateTranscript();
-                    const dispatched = sendCommand(transcriptText, { source: "voice" });
-                    if (!dispatched) {
-                        setButtonState("idle", "Start Voice Control");
-                    }
-                } catch (error) {
-                    console.error("Local transcription failed", error);
-                    logStatus(`Errore trascrizione: ${error.message}`, "error");
-                    setButtonState("idle", "Start Voice Control");
-                } finally {
-                    isRecognizing = false;
-                }
-            }
-        });
-
-        sendTextBtn.addEventListener("click", () => {
-            const command = textCommandInput.value.trim();
-            if (!command) {
-                textCommandInput.focus();
-                return;
-            }
-            if (sendCommand(command, { source: "manual" })) {
-                textCommandInput.value = "";
-            }
-        });
-
-        textCommandInput.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") {
-                event.preventDefault();
-                sendTextBtn.click();
-            }
-        });
-
-        deleteTaskBtn.addEventListener("click", () => {
-            if (!socket || socket.readyState !== WebSocket.OPEN) {
-                logStatus("Cannot cancel task: WebSocket offline.", "error");
-                return;
-            }
-
-            socket.send(JSON.stringify({
-                type: "delete_task",
-                requestedAt: Date.now()
-            }));
-            resumeAfterProcessing = false;
-            if (recognition && isRecognizing) {
-                isRecognizing = false;
-                try {
-                    recognition.stop();
-                } catch (error) {
-                    console.warn("Unable to stop recognition during cancellation", error);
-                }
-            }
-            if (audioMode === AUDIO_MODE.LOCAL && localTranscriber && isRecognizing) {
-                localTranscriber.cancel();
-                isRecognizing = false;
-            }
-            setButtonState("processing", "Cancelling current task…");
-            logStatus("Cancellation request sent to agent.");
-        });
-
-        stream.src = streamUrl.href;
-        stream.addEventListener("load", () => {
-            streamPlaceholder.style.display = "none";
-        });
-        stream.addEventListener("error", () => {
-            streamPlaceholder.style.display = "grid";
-        });
-        if (stream.complete && stream.naturalWidth > 0) {
-            streamPlaceholder.style.display = "none";
-        }
-
-        updateHintForMode();
-        setButtonState("idle", "Start Voice Control");
-        setConnectivity(false);
-        connectWebSocket();
-
-        if (audioMode === AUDIO_MODE.WEB) {
-            const speechReady = initialiseSpeechRecognition();
-            if (speechReady && isWebSocketOpen) {
-                setButtonState("idle", "Start Voice Control");
-            }
-        }
-
-        window.addEventListener("beforeunload", () => {
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.close();
-            }
-            if (recognition && isRecognizing) {
-                isRecognizing = false;
-                recognition.stop();
-            }
-            if (localTranscriber) {
-                localTranscriber.dispose();
-            }
+            });
         });
     </script>
 </body>
