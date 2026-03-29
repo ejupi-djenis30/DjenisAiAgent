@@ -1,8 +1,5 @@
 # DjenisAiAgent
 
-[![CI](https://img.shields.io/github/actions/workflow/status/ejupi/DjenisAiAgent/ci.yml?branch=main&label=CI)](https://github.com/ejupi/DjenisAiAgent/actions/workflows/ci.yml)
-[![Docker Publish](https://img.shields.io/github/actions/workflow/status/ejupi/DjenisAiAgent/docker-publish.yml?branch=main&label=Docker%20Publish)](https://github.com/ejupi/DjenisAiAgent/actions/workflows/docker-publish.yml)
-
 DjenisAiAgent is a multimodal automation agent that observes the Windows desktop, reasons over the current UI state with Google Gemini, and executes actions through a structured tool layer. It is designed around the ReAct pattern and supports both native desktop automation and a web control surface with live status updates, streaming, and optional local audio transcription.
 
 The project now includes a stronger engineering baseline: reproducible packaging with `pyproject.toml`, Docker support for web mode, GitHub Actions for CI/CD, a larger unit-test suite, and a coverage gate that runs on Windows where the desktop automation stack is actually available.
@@ -549,4 +546,4 @@ The full coverage gate is designed for Windows because desktop automation depend
 
 ## License
 
-This repository is configured with an MIT license declaration in `pyproject.toml`. Add a dedicated `LICENSE` file if you want the license to be explicit at repository level.
+This repository is configured with an MIT license
