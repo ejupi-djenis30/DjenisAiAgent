@@ -10,9 +10,9 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 from PIL import Image
 
-import google.generativeai as genai
-from google.api_core import exceptions as google_exceptions
-from google.generativeai import types as genai_types
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 from src.config import config
 
@@ -99,7 +99,7 @@ def _build_function_declaration(func: Any) -> Optional[genai_types.FunctionDecla
         return genai_types.FunctionDeclaration(
             name=func.__name__,
             description=inspect.getdoc(func) or "",
-            parameters=parameters_schema,
+            parameters_json_schema=parameters_schema,
         )
     except Exception as exc:  # pragma: no cover - schema construction issues
         logger.error(
@@ -127,6 +127,28 @@ def _prepare_tools_payload(available_tools: Iterable[Any]) -> List[genai_types.T
         return []
 
     return [genai_types.Tool(function_declarations=declarations)]
+
+
+def _extract_api_error_code(exc: Exception) -> Optional[int]:
+    """Return the numeric status code exposed by the GenAI SDK, if present."""
+
+    for attribute in ("code", "status_code"):
+        value = getattr(exc, attribute, None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _is_invalid_function_call_finish_reason(finish_reason: Any) -> bool:
+    """Detect finish reasons related to malformed or invalid tool calls."""
+
+    if finish_reason is None:
+        return False
+
+    normalized = str(finish_reason).upper()
+    if "FUNCTION_CALL" not in normalized:
+        return False
+    return any(token in normalized for token in ("INVALID", "MALFORMED", "UNEXPECTED"))
 
 
 def decide_next_action(
@@ -177,23 +199,7 @@ def decide_next_action(
                 last_action_was_deep_think = True
                 logger.debug("Last action was deep_think, consecutive usage will be blocked")
 
-        # Configure and initialize the Gemini model with Function Calling support
-        logger.debug(f"Initializing Gemini model: {config.gemini_model_name}")
-        
-        # Configure the API key
-        genai.configure(api_key=config.gemini_api_key)  # type: ignore[attr-defined]
-        
-        # Create the model with tools for Function Calling
-        model = genai.GenerativeModel(  # type: ignore[attr-defined]
-            model_name=config.gemini_model_name,
-            tools=tools_payload,
-            generation_config=genai.GenerationConfig(  # type: ignore[attr-defined]
-                temperature=config.temperature,
-                max_output_tokens=config.max_tokens,
-            )
-        )
-
-        logger.debug("Model initialized with %d tools", len(tools_payload[0].function_declarations))
+        logger.debug("Preparing Google GenAI request for model: %s", config.gemini_model_name)
         
         # Inject configuration values into system prompt
         system_prompt_with_config = SYSTEM_PROMPT.replace(
@@ -218,6 +224,12 @@ def decide_next_action(
             "STRUCTURAL UI ELEMENTS:\n" + ui_tree,
             screenshot_image,
         ]
+
+        generation_config = genai_types.GenerateContentConfig(
+            temperature=config.temperature,
+            max_output_tokens=config.max_tokens,
+            tools=tools_payload,
+        )
         
         logger.info("Sending multimodal prompt to Gemini API")
         logger.debug("Prompt structure: %d parts", len(prompt_parts))
@@ -229,67 +241,78 @@ def decide_next_action(
         for attempt in range(1, config.api_max_retries + 1):
             try:
                 logger.debug(f"API call attempt {attempt}/{config.api_max_retries}")
-                
-                # Call the Gemini API
-                # The API has its own internal timeout, we handle retries here
-                response = model.generate_content(prompt_parts)
+
+                with genai.Client(api_key=config.gemini_api_key) as client:
+                    response = client.models.generate_content(
+                        model=config.gemini_model_name,
+                        contents=prompt_parts,
+                        config=generation_config,
+                    )
                 
                 logger.debug(f"Received response from Gemini API on attempt {attempt}")
                 break  # Success, exit retry loop
-                
-            except google_exceptions.DeadlineExceeded as e:
+
+            except genai_errors.APIError as e:
                 last_error = e
-                logger.warning(
-                    f"API timeout on attempt {attempt}/{config.api_max_retries}: {str(e)}"
-                )
-                
-                if attempt < config.api_max_retries:
-                    # Exponential backoff: 2s, 4s, 8s, etc.
-                    delay = config.api_retry_delay * (2 ** (attempt - 1))
-                    logger.info(f"Retrying in {delay:.1f} seconds...")
-                    time.sleep(delay)
-                else:
-                    logger.error(f"API timeout after {config.api_max_retries} attempts")
+                error_code = _extract_api_error_code(e)
+                error_text = str(e).lower()
+
+                if error_code in {408, 504} or "deadline" in error_text or "timed out" in error_text:
+                    logger.warning(
+                        "API timeout on attempt %d/%d: %s",
+                        attempt,
+                        config.api_max_retries,
+                        e,
+                    )
+                    if attempt < config.api_max_retries:
+                        delay = config.api_retry_delay * (2 ** (attempt - 1))
+                        logger.info("Retrying in %.1f seconds...", delay)
+                        time.sleep(delay)
+                        continue
+                    logger.error("API timeout after %d attempts", config.api_max_retries)
                     return (
                         f"Errore: Timeout dell'API Gemini dopo {config.api_max_retries} tentativi. "
-                        "Il prompt potrebbe essere troppo complesso o c'è un problema di rete. "
+                        "Il prompt potrebbe essere troppo complesso o c'e un problema di rete. "
                         "Provo a semplificare l'azione."
                     )
-                    
-            except google_exceptions.ResourceExhausted as e:
-                last_error = e
-                logger.warning(
-                    f"API rate limit on attempt {attempt}/{config.api_max_retries}: {str(e)}"
-                )
-                
-                if attempt < config.api_max_retries:
-                    # Longer delay for rate limits
-                    delay = config.api_retry_delay * (3 ** attempt)
-                    logger.info(f"Rate limited, retrying in {delay:.1f} seconds...")
-                    time.sleep(delay)
-                else:
-                    logger.error(f"API rate limit after {config.api_max_retries} attempts")
+
+                if error_code == 429 or any(token in error_text for token in ("resource exhausted", "rate limit", "quota")):
+                    logger.warning(
+                        "API rate limit on attempt %d/%d: %s",
+                        attempt,
+                        config.api_max_retries,
+                        e,
+                    )
+                    if attempt < config.api_max_retries:
+                        delay = config.api_retry_delay * (3 ** attempt)
+                        logger.info("Rate limited, retrying in %.1f seconds...", delay)
+                        time.sleep(delay)
+                        continue
+                    logger.error("API rate limit after %d attempts", config.api_max_retries)
                     return (
-                        f"Errore: Limite di richieste API raggiunto. "
+                        "Errore: Limite di richieste API raggiunto. "
                         "Attendi qualche secondo prima di riprovare."
                     )
-                    
-            except (google_exceptions.ServiceUnavailable, google_exceptions.InternalServerError) as e:
-                last_error = e
-                logger.warning(
-                    f"API service error on attempt {attempt}/{config.api_max_retries}: {str(e)}"
-                )
-                
-                if attempt < config.api_max_retries:
-                    delay = config.api_retry_delay * (2 ** (attempt - 1))
-                    logger.info(f"Service unavailable, retrying in {delay:.1f} seconds...")
-                    time.sleep(delay)
-                else:
-                    logger.error(f"API service error after {config.api_max_retries} attempts")
+
+                if error_code in {500, 502, 503} or any(token in error_text for token in ("service unavailable", "internal server error")):
+                    logger.warning(
+                        "API service error on attempt %d/%d: %s",
+                        attempt,
+                        config.api_max_retries,
+                        e,
+                    )
+                    if attempt < config.api_max_retries:
+                        delay = config.api_retry_delay * (2 ** (attempt - 1))
+                        logger.info("Service unavailable, retrying in %.1f seconds...", delay)
+                        time.sleep(delay)
+                        continue
+                    logger.error("API service error after %d attempts", config.api_max_retries)
                     return (
-                        f"Errore: Il servizio Gemini è temporaneamente non disponibile. "
+                        "Errore: Il servizio Gemini e temporaneamente non disponibile. "
                         "Riprova tra qualche minuto."
                     )
+
+                raise
         
         # If we got here without a response, something went wrong
         if response is None:
@@ -308,10 +331,37 @@ def decide_next_action(
         
         # Check finish_reason for errors before processing
         finish_reason = getattr(candidate, "finish_reason", None)
-        if finish_reason == 10:  # INVALID_FUNCTION_CALL
+        if _is_invalid_function_call_finish_reason(finish_reason):
             error_msg = "Errore: Il modello ha generato una chiamata a funzione non valida. Riprovo..."
             logger.warning(error_msg)
             return error_msg
+
+        response_function_calls = getattr(response, "function_calls", None) or []
+        if response_function_calls:
+            function_call = response_function_calls[0]
+            if function_call.name not in available_tool_names:
+                error_msg = (
+                    f"ERRORE TOOL NON VALIDO: Il modello ha tentato di chiamare '{function_call.name}' "
+                    f"che NON ESISTE. Tool disponibili: {sorted(available_tool_names)}. "
+                    "Devi chiamare SOLO tool dalla lista 'Available Tools' nel prompt di sistema. "
+                    "NON inventare funzioni. Riprova."
+                )
+                logger.error(error_msg)
+                return error_msg
+
+            if function_call.name == "deep_think" and last_action_was_deep_think:
+                error_msg = (
+                    "ERRORE: Hai tentato di usare 'deep_think' consecutivamente. "
+                    "Regola: deep_think puo essere usato SOLO UNA VOLTA, poi DEVI chiamare un tool di AZIONE. "
+                    "Pattern corretto: deep_think (opzionale) -> azione (obbligatorio). "
+                    "Riprova con un tool di azione dalla lista Available Tools."
+                )
+                logger.error(error_msg)
+                return error_msg
+
+            logger.info("Model requested function call: %s", function_call.name)
+            logger.debug("Function arguments: %s", dict(function_call.args))
+            return function_call
         
         # Check if response contains a function call
         if candidate.content.parts:
@@ -381,7 +431,7 @@ def decide_next_action(
         logger.warning(error_msg)
         return error_msg
         
-    except google_exceptions.GoogleAPIError as e:
+    except genai_errors.APIError as e:
         error_msg = f"Errore API Google: {str(e)}"
         logger.error(error_msg, exc_info=True)
         return error_msg

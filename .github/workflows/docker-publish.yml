@@ -2,26 +2,21 @@ name: Docker Publish
 
 on:
   push:
-    tags:
-      - "v*"          # e.g. v0.1.0, v1.2.3-rc1
-  push:
-    branches:
-      - main          # Builds a :latest image on every merge to main
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
 
 concurrency:
-  group: docker-publish-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/djenis-ai-agent
+  IMAGE_NAME: djenis-ai-agent
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Build and push to GitHub Container Registry
-  # ---------------------------------------------------------------------------
   publish:
-    name: Build & Push to GHCR
+    name: Build and Push GHCR Image
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,6 +25,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Normalize owner name
+        id: owner
+        shell: bash
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -41,57 +41,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Generate image metadata (tags + labels)
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Tag semver releases: v1.2.3 → 1.2.3, 1.2, 1, latest
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # Tag main branch as :latest
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            # Tag every commit on main with short SHA
             type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: buildx-publish-${{ runner.os }}-${{ hashFiles('Dockerfile', 'requirements-docker.txt') }}
-          restore-keys: buildx-publish-${{ runner.os }}-
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-          build-args: |
-            BUILD_DATE=${{ github.event.repository.updated_at }}
-            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Move cache
+      - name: Print published image metadata
+        shell: bash
         run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          echo "Image: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}"
+          echo "Digest: ${{ steps.build.outputs.digest }}"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}"
 
-      # Output the final image reference for downstream steps / release notes
-      - name: Print image reference
-        run: |
-          echo "Published image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          echo "Tags: ${{ steps.meta.outputs.tags }}"
-
-  # ---------------------------------------------------------------------------
-  # Create GitHub Release (only on version tags)
-  # ---------------------------------------------------------------------------
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
@@ -101,29 +85,29 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Normalize owner name
+        id: owner
+        shell: bash
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Create Release
+      - name: Create release notes
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           body: |
             ## Docker Image
 
-            Pull from GitHub Container Registry:
+            Pull the tagged image from GitHub Container Registry:
 
             ```bash
-            docker pull ghcr.io/${{ github.repository_owner }}/djenis-ai-agent:${{ github.ref_name }}
+            docker pull ghcr.io/${{ steps.owner.outputs.value }}/djenis-ai-agent:${{ github.ref_name }}
             ```
 
-            Or run directly:
+            Run the published image:
 
             ```bash
-            docker run -p 8000:8000 -e GEMINI_API_KEY=your_key \
-              ghcr.io/${{ github.repository_owner }}/djenis-ai-agent:${{ github.ref_name }}
+            docker run --rm -p 8000:8000 -e GEMINI_API_KEY=your_key \
+              ghcr.io/${{ steps.owner.outputs.value }}/djenis-ai-agent:${{ github.ref_name }}
             ```
 
-            See [README.md](README.md) for full usage instructions.
+            For Docker Compose, native Windows mode, and CI details, see the repository README.

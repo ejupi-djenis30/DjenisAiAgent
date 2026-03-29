@@ -42,11 +42,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture()
 def mock_gemini_client() -> Generator[MagicMock, None, None]:
-    """Return a mock google.generativeai.GenerativeModel instance."""
-    with patch("google.generativeai.GenerativeModel") as mock_cls:
-        mock_model = MagicMock()
-        mock_cls.return_value = mock_model
-        yield mock_model
+    """Return a mock google.genai Client context manager instance."""
+    with patch("google.genai.client.Client") as mock_cls:
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_cls.return_value = mock_client
+        yield mock_client
 
 
 @pytest.fixture()

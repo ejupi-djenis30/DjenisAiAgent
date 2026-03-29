@@ -24,7 +24,7 @@ classifiers = [
 
 # Core dependencies required for ALL modes
 dependencies = [
-    "google-generativeai>=0.7.0",
+    "google-genai>=1.20.0",
     "Pillow>=10.0.0",
     "python-dotenv>=1.0.0",
 ]
@@ -138,8 +138,7 @@ module = [
     "pyautogui",
     "pyperclip",
     "vosk.*",
-    "google.generativeai.*",
-    "google.api_core.*",
+    "google.genai.*",
 ]
 ignore_missing_imports = true
 

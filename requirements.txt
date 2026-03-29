@@ -1,6 +1,6 @@
 # DjenisAiAgent Dependencies
 # Core AI/ML Library
-google-generativeai
+google-genai
 
 # Windows UI Automation
 pywinauto
