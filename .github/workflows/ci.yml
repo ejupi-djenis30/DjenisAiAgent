@@ -48,6 +48,41 @@ jobs:
           ruff check src tests main.py
           ruff format --check src tests main.py
 
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_DEFAULT }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+
+      - name: Install security dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run Bandit
+        run: bandit -r src -f json -o bandit-report.json
+
+      - name: Run dependency audit
+        run: pip-audit --progress-spinner off
+
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: bandit-report.json
+          if-no-files-found: error
+
   type-check:
     name: Type Check (mypy)
     runs-on: ubuntu-latest
@@ -119,7 +154,7 @@ jobs:
   windows-coverage:
     name: Windows Coverage Gate
     runs-on: windows-latest
-    needs: [lint, type-check]
+    needs: [lint, type-check, security]
 
     steps:
       - name: Checkout repository
@@ -218,3 +253,13 @@ jobs:
 
           echo "Container failed to become healthy in time"
           exit 1
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: djenis-ai-agent:ci-${{ github.sha }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH

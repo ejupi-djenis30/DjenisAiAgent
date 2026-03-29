@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import textwrap
 from pathlib import Path
 
 import pytest
 
 from src.config import AgentConfig, load_config
-
 
 # ---------------------------------------------------------------------------
 # Default values
@@ -19,7 +16,7 @@ from src.config import AgentConfig, load_config
 class TestAgentConfigDefaults:
     def test_default_gemini_model(self, fake_env: None) -> None:
         cfg = load_config()
-        assert cfg.gemini_model_name == "gemini-1.5-pro-latest"
+        assert cfg.gemini_model_name == "gemini-flash-latest"
 
     def test_default_max_loop_turns(self, fake_env: None) -> None:
         cfg = load_config()
@@ -33,9 +30,18 @@ class TestAgentConfigDefaults:
         cfg = load_config()
         assert cfg.api_timeout == 120
 
+    def test_default_task_timeout(self, fake_env: None) -> None:
+        cfg = load_config()
+        assert cfg.task_timeout == 900
+
     def test_default_log_level(self, fake_env: None) -> None:
         cfg = load_config()
         assert cfg.log_level == "INFO"
+
+    def test_audit_logging_enabled_by_default(self, fake_env: None) -> None:
+        cfg = load_config()
+        assert cfg.enable_audit_log is True
+        assert cfg.audit_log_path == "logs/agent-audit.jsonl"
 
     def test_default_stream_max_fps(self, fake_env: None) -> None:
         cfg = load_config()
@@ -120,6 +126,19 @@ class TestAgentConfigValidation:
     def test_valid_config_validates(self, fake_env: None) -> None:
         cfg = load_config()
         assert cfg.validate() is True
+
+    def test_empty_audit_path_raises_when_audit_enabled(self, fake_env: None) -> None:
+        cfg = load_config()
+        cfg.enable_audit_log = True
+        cfg.audit_log_path = ""
+        with pytest.raises(ValueError, match="DJENIS_AUDIT_LOG_PATH"):
+            cfg.validate()
+
+    def test_zero_task_timeout_raises(self, fake_env: None) -> None:
+        cfg = load_config()
+        cfg.task_timeout = 0
+        with pytest.raises(ValueError, match="DJENIS_TASK_TIMEOUT"):
+            cfg.validate()
 
     def test_local_transcription_without_path_raises(self, fake_env: None) -> None:
         cfg = load_config()

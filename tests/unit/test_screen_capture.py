@@ -7,15 +7,13 @@ Only tests pure-Python functions that do NOT need a live Windows desktop
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-pytest.importorskip("pyautogui")
-pytest.importorskip("pywinauto")
-
 from src.perception.screen_capture import (
     ScreenCapture,
+    _downscale_for_perception,
     _get_active_window,
     _safe_str,
     build_control_snapshot,
@@ -26,6 +24,8 @@ from src.perception.screen_capture import (
     snapshot_to_text,
 )
 
+pytest.importorskip("pyautogui")
+pytest.importorskip("pywinauto")
 
 # ---------------------------------------------------------------------------
 # _safe_str
@@ -47,6 +47,16 @@ class TestSafeStr:
 
     def test_whitespace_only_returns_empty(self) -> None:
         assert _safe_str("   ") == ""
+
+    def test_downscale_for_perception_resizes_image(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from PIL import Image
+
+        monkeypatch.setattr("src.perception.screen_capture.config.perception_downscale", 0.5)
+        image = Image.new("RGB", (100, 80), "white")
+
+        resized = _downscale_for_perception(image)
+
+        assert resized.size == (50, 40)
 
 
 # ---------------------------------------------------------------------------
@@ -232,20 +242,30 @@ class TestSnapshotBuilders:
         assert "Root" in rendered
         assert refreshed == get_latest_ui_snapshot()
 
-    def test_get_multimodal_context_uses_uia_backend_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_get_multimodal_context_uses_uia_backend_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         screenshot = MagicMock()
         root = _FakeWrapper("Root")
 
-        monkeypatch.setattr("src.perception.screen_capture.pyautogui.screenshot", lambda: screenshot)
-        monkeypatch.setattr("src.perception.screen_capture._get_active_window", lambda backend: root)
+        monkeypatch.setattr(
+            "src.perception.screen_capture.pyautogui.screenshot", lambda: screenshot
+        )
+        monkeypatch.setattr(
+            "src.perception.screen_capture._get_active_window", lambda backend: root
+        )
 
         image, ui_tree = get_multimodal_context()
 
         assert image is screenshot
         assert "Root" in ui_tree
 
-    def test_get_multimodal_context_reports_fallback_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("src.perception.screen_capture.pyautogui.screenshot", lambda: MagicMock())
+    def test_get_multimodal_context_reports_fallback_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "src.perception.screen_capture.pyautogui.screenshot", lambda: MagicMock()
+        )
 
         def fail_backend(backend: str):
             raise RuntimeError(f"{backend} failed")
@@ -268,8 +288,12 @@ class TestSnapshotBuilders:
     def test_screen_capture_wrapper_methods_delegate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         screen_capture = ScreenCapture()
         screenshot = MagicMock()
-        monkeypatch.setattr("src.perception.screen_capture.get_multimodal_context", lambda: (screenshot, "tree"))
-        monkeypatch.setattr("src.perception.screen_capture.pyautogui.screenshot", lambda: screenshot)
+        monkeypatch.setattr(
+            "src.perception.screen_capture.get_multimodal_context", lambda: (screenshot, "tree")
+        )
+        monkeypatch.setattr(
+            "src.perception.screen_capture.pyautogui.screenshot", lambda: screenshot
+        )
 
         assert screen_capture.get_context() == (screenshot, "tree")
         assert screen_capture.capture_screen() is screenshot

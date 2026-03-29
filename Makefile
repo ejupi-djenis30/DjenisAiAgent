@@ -62,6 +62,20 @@ type-check: ## Run mypy type checker
 .PHONY: check
 check: lint format-check type-check ## Run all code quality checks
 
+.PHONY: security-bandit
+security-bandit: ## Run Bandit security scan
+	bandit -r src/
+
+.PHONY: security-deps
+security-deps: ## Run dependency vulnerability audit
+	pip-audit
+
+.PHONY: security
+security: security-bandit security-deps ## Run all security checks
+
+.PHONY: ci-local
+ci-local: check security test-ci ## Run the main CI checks locally
+
 # ---------------------------------------------------------------------------
 # Testing
 # ---------------------------------------------------------------------------

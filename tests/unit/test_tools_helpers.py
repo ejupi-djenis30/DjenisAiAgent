@@ -12,10 +12,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.action import tools as tools_module
+
 pytest.importorskip("pyautogui")
 pytest.importorskip("pywinauto")
-
-from src.action import tools as tools_module
 
 
 class _Info:
@@ -43,7 +43,9 @@ class TestBasicHelpers:
         assert tools_module._execute_with_timeout(lambda: "ok", timeout=0.2) == "ok"
 
     def test_execute_with_timeout_returns_default_on_timeout(self) -> None:
-        result = tools_module._execute_with_timeout(lambda: time.sleep(0.05), timeout=0.01, default="fallback")
+        result = tools_module._execute_with_timeout(
+            lambda: time.sleep(0.05), timeout=0.01, default="fallback"
+        )
 
         assert result == "fallback"
 
@@ -59,10 +61,14 @@ class TestBasicHelpers:
         chrome_window = SimpleNamespace(window_text=lambda: "Google Chrome")
 
         assert tools_module._is_browser_window(chrome_window) is True
-        assert tools_module._is_browser_window(SimpleNamespace(window_text=lambda: "Notepad")) is False
+        assert (
+            tools_module._is_browser_window(SimpleNamespace(window_text=lambda: "Notepad")) is False
+        )
 
     def test_augment_metadata_adds_missing_fields(self) -> None:
-        info = _Info(name="Save", automation_id="save-btn", control_type="Button", class_name="Button")
+        info = _Info(
+            name="Save", automation_id="save-btn", control_type="Button", class_name="Button"
+        )
         control = _Control(title="Save", info=info)
 
         metadata = tools_module._augment_metadata({"selector": "save-btn"}, control)
@@ -85,7 +91,10 @@ class TestBasicHelpers:
 class TestLocatorResolution:
     def test_resolve_cached_control_returns_live_wrapper(self) -> None:
         wrapper = SimpleNamespace(element_info=object())
-        tools_module._LOCATOR_CACHE["element:1"] = {"wrapper": wrapper, "metadata": {"selector": "save"}}
+        tools_module._LOCATOR_CACHE["element:1"] = {
+            "wrapper": wrapper,
+            "metadata": {"selector": "save"},
+        }
 
         resolved = tools_module._resolve_cached_control(SimpleNamespace(), "element:1")
 
@@ -102,7 +111,9 @@ class TestLocatorResolution:
             "metadata": {"search_hints": {"title": "Save"}, "selector": "Save"},
         }
 
-        resolved_wrapper, resolved_metadata = tools_module._resolve_cached_control(window, "element:1") or (None, {})
+        resolved_wrapper, resolved_metadata = tools_module._resolve_cached_control(
+            window, "element:1"
+        ) or (None, {})
 
         assert resolved_wrapper is wrapper
         assert resolved_metadata["selector"] == "Save"
@@ -120,7 +131,9 @@ class TestLocatorResolution:
             "metadata": {"search_hints": {"title": "Save"}, "selector": "Save"},
         }
 
-        resolved_wrapper, resolved_metadata = tools_module._resolve_cached_control(window, "element:1") or (None, {})
+        resolved_wrapper, resolved_metadata = tools_module._resolve_cached_control(
+            window, "element:1"
+        ) or (None, {})
 
         assert resolved_wrapper is wrapper
         assert resolved_metadata["selector"] == "Save"
@@ -156,7 +169,7 @@ class TestScoringAndFormatting:
         assert tools_module._describe_target(entry) == "elemento 'Save'"
         assert tools_module._score_candidate(entry, "save", "button", "", exact=False) > 0
         assert tools_module._score_candidate(entry, "save", "edit", "", exact=False) == -1.0
-        assert "title=\"Save\"" in tools_module._format_metadata(entry)
+        assert 'title="Save"' in tools_module._format_metadata(entry)
 
     def test_build_suggestions_handles_empty_and_non_empty_snapshots(self) -> None:
         snapshot = [{"index": 1, "title": "Save", "name": "", "auto_id": ""}]
@@ -167,7 +180,9 @@ class TestScoringAndFormatting:
 
 class TestCommandAndClipboard:
     def test_run_shell_command_returns_json_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        completed = subprocess.CompletedProcess(args=["powershell"], returncode=0, stdout="hello\n", stderr="")
+        completed = subprocess.CompletedProcess(
+            args=["powershell"], returncode=0, stdout="hello\n", stderr=""
+        )
         monkeypatch.setattr(tools_module.subprocess, "run", lambda *args, **kwargs: completed)
 
         payload = json.loads(tools_module.run_shell_command("Get-ChildItem"))
@@ -175,11 +190,25 @@ class TestCommandAndClipboard:
         assert payload["stdout"] == "hello"
         assert payload["return_code"] == 0
 
+    def test_run_shell_command_blocks_mutating_commands(self) -> None:
+        payload = json.loads(tools_module.run_shell_command("Remove-Item test.txt"))
+
+        assert payload["return_code"] == -1
+        assert "blocked" in payload["stderr"].lower()
+
+    def test_run_shell_command_blocks_redirection(self) -> None:
+        payload = json.loads(tools_module.run_shell_command("Get-ChildItem > out.txt"))
+
+        assert payload["return_code"] == -1
+        assert "redirection" in payload["stderr"].lower()
+
     def test_run_shell_command_handles_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             tools_module.subprocess,
             "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd="pwsh", timeout=1)),
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(cmd="pwsh", timeout=1)
+            ),
         )
 
         payload = json.loads(tools_module.run_shell_command("Get-ChildItem"))
@@ -187,7 +216,9 @@ class TestCommandAndClipboard:
         assert payload["return_code"] == -1
         assert "timed out" in payload["stderr"].lower()
 
-    def test_read_clipboard_truncates_oversized_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_read_clipboard_truncates_oversized_content(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         fake_pyperclip = SimpleNamespace(paste=lambda: "x" * 120)
         monkeypatch.setitem(sys.modules, "pyperclip", fake_pyperclip)
         monkeypatch.setattr(tools_module.config, "clipboard_max_bytes", 40)
@@ -203,7 +234,9 @@ class TestCommandAndClipboard:
 
         assert "Clipboard is empty" in tools_module.read_clipboard()
 
-    def test_browser_search_validates_window_and_browser_dependencies(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_browser_search_validates_window_and_browser_dependencies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(tools_module, "_get_active_window", lambda: None)
         assert "Nessuna finestra attiva" in tools_module.browser_search("search", "term")
 
@@ -265,7 +298,9 @@ class TestCommandAndClipboard:
         monkeypatch.setattr(tools_module.subprocess, "Popen", fake_missing)
         assert "not found" in tools_module.start_application("missing.exe")
 
-    def test_open_file_and_open_url(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.PathLike) -> None:
+    def test_open_file_and_open_url(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.PathLike
+    ) -> None:
         import os
 
         file_path = tmp_path / "demo.txt"
@@ -284,7 +319,9 @@ class TestCommandAndClipboard:
         assert "aperto nel browser" in tools_module.open_url("https://example.com")
         assert opened_urls == ["https://example.com"]
 
-    def test_take_screenshot_with_explicit_and_default_paths(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.PathLike) -> None:
+    def test_take_screenshot_with_explicit_and_default_paths(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.PathLike
+    ) -> None:
         class FakeScreenshot:
             def __init__(self) -> None:
                 self.saved_paths: list[str] = []
@@ -307,7 +344,9 @@ class TestCommandAndClipboard:
 
 
 class TestFilesystemUtilities:
-    def test_list_files_reports_missing_and_directory_contents(self, tmp_path: pytest.PathLike) -> None:
+    def test_list_files_reports_missing_and_directory_contents(
+        self, tmp_path: pytest.PathLike
+    ) -> None:
         temp_dir = tmp_path / "files"
         temp_dir.mkdir()
         (temp_dir / "nested").mkdir()
@@ -320,7 +359,9 @@ class TestFilesystemUtilities:
         assert "[DIR]  nested" in result
         assert "[FILE] demo.txt" in result
 
-    def test_read_file_handles_missing_directory_large_and_encoded_files(self, tmp_path: pytest.PathLike) -> None:
+    def test_read_file_handles_missing_directory_large_and_encoded_files(
+        self, tmp_path: pytest.PathLike
+    ) -> None:
         temp_dir = tmp_path / "read"
         temp_dir.mkdir()
         text_file = temp_dir / "latin1.txt"

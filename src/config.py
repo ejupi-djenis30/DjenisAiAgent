@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -15,7 +15,7 @@ __all__ = ["AgentConfig", "load_config", "config", "VERSION"]
 VERSION: str = "0.1.0"
 
 
-def _load_dotenv(dotenv_path: Optional[Path]) -> None:
+def _load_dotenv(dotenv_path: Path | None) -> None:
     """Load environment variables without overriding existing process values."""
 
     if dotenv_path is None:
@@ -67,7 +67,7 @@ class AgentConfig:
     # Gemini API Configuration (secret accessed lazily for safety)
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     gemini_model_name: str = field(
-        default_factory=lambda: os.getenv("DJENIS_GEMINI_MODEL", "gemini-1.5-pro-latest")
+        default_factory=lambda: os.getenv("DJENIS_GEMINI_MODEL", "gemini-flash-latest")
     )
 
     # Agent Behavior Parameters
@@ -83,16 +83,25 @@ class AgentConfig:
     # Model Parameters
     temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.7))
     max_tokens: int = field(default_factory=lambda: _env_int("DJENIS_MAX_TOKENS", 60096))
-    
+
     # API Timeout and Retry Configuration
     api_timeout: int = field(default_factory=lambda: _env_int("DJENIS_API_TIMEOUT", 120))
     api_max_retries: int = field(default_factory=lambda: _env_int("DJENIS_API_MAX_RETRIES", 3))
-    api_retry_delay: float = field(default_factory=lambda: _env_float("DJENIS_API_RETRY_DELAY", 2.0))
+    api_retry_delay: float = field(
+        default_factory=lambda: _env_float("DJENIS_API_RETRY_DELAY", 2.0)
+    )
+    task_timeout: int = field(default_factory=lambda: _env_int("DJENIS_TASK_TIMEOUT", 900))
 
     # Logging Configuration
     log_level: str = field(default_factory=lambda: os.getenv("DJENIS_LOG_LEVEL", "INFO"))
     enable_verbose_logging: bool = field(
         default_factory=lambda: _env_bool("DJENIS_VERBOSE_LOGGING", False)
+    )
+    enable_audit_log: bool = field(
+        default_factory=lambda: _env_bool("DJENIS_ENABLE_AUDIT_LOG", True)
+    )
+    audit_log_path: str = field(
+        default_factory=lambda: os.getenv("DJENIS_AUDIT_LOG_PATH", "logs/agent-audit.jsonl")
     )
 
     # Screen Capture Settings
@@ -108,9 +117,7 @@ class AgentConfig:
     stream_frame_quality: int = field(
         default_factory=lambda: _env_int("DJENIS_STREAM_FRAME_QUALITY", 80)
     )
-    stream_max_fps: int = field(
-        default_factory=lambda: _env_int("DJENIS_STREAM_MAX_FPS", 30)
-    )
+    stream_max_fps: int = field(default_factory=lambda: _env_int("DJENIS_STREAM_MAX_FPS", 30))
     perception_downscale: float = field(
         default_factory=lambda: _env_float("DJENIS_PERCEPTION_DOWNSCALE", 1.0)
     )
@@ -122,22 +129,16 @@ class AgentConfig:
     enable_local_transcription: bool = field(
         default_factory=lambda: _env_bool("DJENIS_LOCAL_TRANSCRIPTION", False)
     )
-    vosk_model_path: str = field(
-        default_factory=lambda: os.getenv("DJENIS_VOSK_MODEL_PATH", "")
-    )
+    vosk_model_path: str = field(default_factory=lambda: os.getenv("DJENIS_VOSK_MODEL_PATH", ""))
     transcription_sample_rate: int = field(
         default_factory=lambda: _env_int("DJENIS_TRANSCRIPTION_SAMPLE_RATE", 16000)
     )
 
     # Shell command timeout (seconds)
-    shell_timeout: int = field(
-        default_factory=lambda: _env_int("DJENIS_SHELL_TIMEOUT", 60)
-    )
+    shell_timeout: int = field(default_factory=lambda: _env_int("DJENIS_SHELL_TIMEOUT", 60))
 
     # UI snapshot maximum traversal depth
-    snapshot_depth: int = field(
-        default_factory=lambda: _env_int("DJENIS_SNAPSHOT_DEPTH", 4)
-    )
+    snapshot_depth: int = field(default_factory=lambda: _env_int("DJENIS_SNAPSHOT_DEPTH", 4))
 
     # Locator LRU cache capacity
     locator_cache_size: int = field(
@@ -189,6 +190,9 @@ class AgentConfig:
         if self.shell_timeout <= 0:
             raise ValueError("DJENIS_SHELL_TIMEOUT must be greater than 0")
 
+        if self.task_timeout <= 0:
+            raise ValueError("DJENIS_TASK_TIMEOUT must be greater than 0")
+
         if self.snapshot_depth <= 0:
             raise ValueError("DJENIS_SNAPSHOT_DEPTH must be greater than 0")
 
@@ -198,9 +202,12 @@ class AgentConfig:
         if self.clipboard_max_bytes <= 0:
             raise ValueError("DJENIS_CLIPBOARD_MAX_BYTES must be greater than 0")
 
+        if self.enable_audit_log and not self.audit_log_path.strip():
+            raise ValueError("DJENIS_AUDIT_LOG_PATH must be set when audit logging is enabled")
+
         return True
 
-    def safe_view(self) -> Dict[str, Any]:
+    def safe_view(self) -> dict[str, Any]:
         """Return a sanitized view of the configuration for logging/debugging."""
 
         data = asdict(self)
@@ -231,7 +238,7 @@ class AgentConfig:
             self.screenshot_format = "PNG"
 
 
-def load_config(dotenv_path: Optional[os.PathLike[str]] = None) -> AgentConfig:
+def load_config(dotenv_path: os.PathLike[str] | None = None) -> AgentConfig:
     """Load configuration from the environment, optionally pointing to a specific .env file."""
 
     path = Path(dotenv_path) if dotenv_path is not None else None

@@ -2,27 +2,21 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 
 import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
 
 pytest.importorskip("pyautogui")
 pytest.importorskip("pywinauto")
-
-from fastapi.testclient import TestClient
-from PIL import Image
 
 
 @pytest.fixture()
 def main_module() -> object:
     module = importlib.import_module("main")
-    module.agent_state = "idle"
-    module.command_queue = asyncio.Queue()
-    module.status_queue = asyncio.Queue()
-    module.command_queue_lock = asyncio.Lock()
-    module.task_cancel_event.clear()
+    module.runtime = module.create_runtime_context()
     module.manager.active_connections.clear()
     return module
 
@@ -31,24 +25,24 @@ def main_module() -> object:
 async def test_enqueue_command_trims_and_rejects_empty(main_module: object) -> None:
     assert await main_module.enqueue_command("   ") is False
     assert await main_module.enqueue_command("  do something  ") is True
-    assert main_module.command_queue.get_nowait() == "do something"
+    assert main_module.runtime.command_queue.get_nowait() == "do something"
 
 
 @pytest.mark.asyncio
 async def test_request_task_cancellation_drains_queue(main_module: object) -> None:
-    await main_module.command_queue.put("first")
-    await main_module.command_queue.put("second")
+    await main_module.runtime.command_queue.put("first")
+    await main_module.runtime.command_queue.put("second")
 
     drained = await main_module.request_task_cancellation("stop now")
 
     assert drained == 2
-    assert main_module.task_cancel_event.is_set() is True
-    assert main_module.command_queue.empty() is True
-    assert await main_module.status_queue.get() == "stop now"
+    assert main_module.runtime.task_cancel_event.is_set() is True
+    assert main_module.runtime.command_queue.empty() is True
+    assert await main_module.runtime.status_queue.get() == "stop now"
 
 
 def test_health_and_root_endpoints(main_module: object) -> None:
-    main_module.agent_state = "running"
+    main_module.runtime.agent_state = "running"
 
     with TestClient(main_module.app) as client:
         health = client.get("/health")
@@ -62,11 +56,10 @@ def test_health_and_root_endpoints(main_module: object) -> None:
 
 
 def test_websocket_rejects_invalid_payload(main_module: object) -> None:
-    with TestClient(main_module.app) as client:
-        with client.websocket_connect("/ws") as websocket:
-            initial = websocket.receive_json()
-            websocket.send_text(json.dumps({"type": "bogus", "payload": "hello"}))
-            invalid = websocket.receive_json()
+    with TestClient(main_module.app) as client, client.websocket_connect("/ws") as websocket:
+        initial = websocket.receive_json()
+        websocket.send_text(json.dumps({"type": "bogus", "payload": "hello"}))
+        invalid = websocket.receive_json()
 
     assert initial["type"] == "status"
     assert invalid["type"] == "log"
@@ -74,35 +67,41 @@ def test_websocket_rejects_invalid_payload(main_module: object) -> None:
 
 
 def test_websocket_command_queues_work_and_broadcasts_status(main_module: object) -> None:
-    with TestClient(main_module.app) as client:
-        with client.websocket_connect("/ws") as websocket:
-            websocket.receive_json()
-            websocket.send_text(json.dumps({"type": "command", "payload": "  open notepad  "}))
-            messages = [websocket.receive_json(), websocket.receive_json()]
+    with TestClient(main_module.app) as client, client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_text(json.dumps({"type": "command", "payload": "  open notepad  "}))
+        messages = [websocket.receive_json(), websocket.receive_json()]
 
     types = {message["type"] for message in messages}
     assert types == {"status", "log"}
-    assert main_module.command_queue.get_nowait() == "open notepad"
-    assert main_module.agent_state == "running"
-    assert any("Command queued" in message["payload"] for message in messages if message["type"] == "log")
+    assert main_module.runtime.command_queue.get_nowait() == "open notepad"
+    assert main_module.runtime.agent_state == "running"
+    assert any(
+        "Command queued" in message["payload"] for message in messages if message["type"] == "log"
+    )
 
 
 def test_websocket_cancel_clears_queue(main_module: object) -> None:
-    main_module.command_queue.put_nowait("queued")
+    main_module.runtime.command_queue.put_nowait("queued")
 
-    with TestClient(main_module.app) as client:
-        with client.websocket_connect("/ws") as websocket:
-            websocket.receive_json()
-            websocket.send_text(json.dumps({"type": "cancel", "payload": ""}))
-            messages = [websocket.receive_json(), websocket.receive_json()]
+    with TestClient(main_module.app) as client, client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_text(json.dumps({"type": "cancel", "payload": ""}))
+        messages = [websocket.receive_json(), websocket.receive_json()]
 
-    assert main_module.task_cancel_event.is_set() is True
-    assert main_module.command_queue.empty() is True
-    assert main_module.agent_state == "cancelling"
-    assert any("Cancellation requested" in message["payload"] for message in messages if message["type"] == "log")
+    assert main_module.runtime.task_cancel_event.is_set() is True
+    assert main_module.runtime.command_queue.empty() is True
+    assert main_module.runtime.agent_state == "cancelling"
+    assert any(
+        "Cancellation requested" in message["payload"]
+        for message in messages
+        if message["type"] == "log"
+    )
 
 
-def test_transcribe_audio_endpoint_success(main_module: object, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transcribe_audio_endpoint_success(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(main_module.config, "enable_local_transcription", True)
     monkeypatch.setattr(main_module, "transcribe_wav_bytes", lambda audio_bytes: "ciao")
 
@@ -149,11 +148,15 @@ def test_transcribe_audio_endpoint_handles_disabled_empty_and_invalid_audio(
 
 
 @pytest.mark.asyncio
-async def test_screen_generator_and_video_stream(main_module: object, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_screen_generator_and_video_stream(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(main_module.config, "stream_resize_factor", 0.5)
     monkeypatch.setattr(main_module.config, "stream_frame_quality", 70)
     monkeypatch.setattr(main_module.config, "stream_max_fps", 5)
-    monkeypatch.setattr(main_module.pyautogui, "screenshot", lambda: Image.new("RGB", (20, 20), "white"))
+    monkeypatch.setattr(
+        main_module.pyautogui, "screenshot", lambda: Image.new("RGB", (20, 20), "white")
+    )
 
     generator = main_module.screen_generator()
     frame = await generator.__anext__()

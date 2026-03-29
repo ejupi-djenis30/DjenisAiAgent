@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, cast
 
 import pyautogui
 from PIL import Image
@@ -16,7 +16,7 @@ from src.config import config
 logger = logging.getLogger(__name__)
 
 MAX_SNAPSHOT_DEPTH: int = config.snapshot_depth
-LAST_UI_SNAPSHOT: List[Dict[str, Any]] = []
+LAST_UI_SNAPSHOT: list[dict[str, Any]] = []
 
 
 def _safe_str(value: Any) -> str:
@@ -28,13 +28,29 @@ def _safe_str(value: Any) -> str:
         return ""
 
 
-def _extract_metadata(wrapper: Any, depth: int, index: int, include_wrappers: bool) -> Dict[str, Any]:
+def _downscale_for_perception(image: Image.Image) -> Image.Image:
+    factor = config.perception_downscale
+    if factor >= 0.999:
+        return image
+
+    width, height = image.size
+    resized_width = max(1, int(width * factor))
+    resized_height = max(1, int(height * factor))
+    if (resized_width, resized_height) == image.size:
+        return image
+
+    return image.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+
+
+def _extract_metadata(
+    wrapper: Any, depth: int, index: int, include_wrappers: bool
+) -> dict[str, Any]:
     info = getattr(wrapper, "element_info", None)
 
     def attr(name: str) -> str:
         return _safe_str(getattr(info, name, "")) if info is not None else ""
 
-    metadata: Dict[str, Any] = {
+    metadata: dict[str, Any] = {
         "index": index,
         "depth": depth,
         "title": _safe_str(getattr(wrapper, "window_text", lambda: "")()),
@@ -51,10 +67,12 @@ def _extract_metadata(wrapper: Any, depth: int, index: int, include_wrappers: bo
     except Exception:  # pragma: no cover - backend differences
         metadata["friendly_class"] = ""
 
-    selector_candidates = [value for value in (metadata["auto_id"], metadata["title"], metadata["name"]) if value]
+    selector_candidates = [
+        value for value in (metadata["auto_id"], metadata["title"], metadata["name"]) if value
+    ]
     metadata["selector"] = selector_candidates[0] if selector_candidates else ""
 
-    search_hints: Dict[str, str] = {}
+    search_hints: dict[str, str] = {}
     if metadata["selector"]:
         search_hints["title"] = metadata["selector"]
     if metadata["auto_id"]:
@@ -75,10 +93,10 @@ def build_control_snapshot(
     *,
     max_depth: int = MAX_SNAPSHOT_DEPTH,
     include_wrappers: bool = False,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Enumerate controls for the active window up to the requested depth."""
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     counter = 0
 
     def _walk(node: Any, depth: int) -> None:
@@ -95,7 +113,11 @@ def build_control_snapshot(
         try:
             children = node.children()
         except Exception as exc:  # pragma: no cover - backend-specific failures
-            logger.debug("Unable to enumerate children for node %s: %s", results[-1].get("selector") or results[-1]["index"], exc)
+            logger.debug(
+                "Unable to enumerate children for node %s: %s",
+                results[-1].get("selector") or results[-1]["index"],
+                exc,
+            )
             return
 
         for child in children:
@@ -105,16 +127,21 @@ def build_control_snapshot(
     return results
 
 
-def snapshot_to_text(snapshot: List[Dict[str, Any]]) -> str:
+def snapshot_to_text(snapshot: list[dict[str, Any]]) -> str:
     """Convert a control snapshot into a readable tree for the LLM."""
 
     if not snapshot:
         return "Nessuna finestra attiva trovata."
 
-    lines: List[str] = []
+    lines: list[str] = []
     for entry in snapshot:
         indent = "  " * entry["depth"]
-        type_label = entry.get("control_type") or entry.get("friendly_class") or entry.get("class_name") or "Control"
+        type_label = (
+            entry.get("control_type")
+            or entry.get("friendly_class")
+            or entry.get("class_name")
+            or "Control"
+        )
         parts = [f"type={type_label}"]
 
         title = entry.get("title")
@@ -151,7 +178,7 @@ def capture_ui_tree(window: Any) -> str:
     return snapshot_to_text(snapshot)
 
 
-def refresh_ui_snapshot(window: Any) -> List[Dict[str, Any]]:
+def refresh_ui_snapshot(window: Any) -> list[dict[str, Any]]:
     """Rebuild and cache the UI snapshot without producing formatted text."""
 
     global LAST_UI_SNAPSHOT
@@ -159,31 +186,32 @@ def refresh_ui_snapshot(window: Any) -> List[Dict[str, Any]]:
     return LAST_UI_SNAPSHOT
 
 
-def get_latest_ui_snapshot() -> List[Dict[str, Any]]:
+def get_latest_ui_snapshot() -> list[dict[str, Any]]:
     """Return the most recent UI snapshot captured during perception."""
 
     return LAST_UI_SNAPSHOT
 
 
-def get_multimodal_context() -> Tuple[Image.Image, str]:
+def get_multimodal_context() -> tuple[Image.Image, str]:
     """
     Capture both visual and structural information about the current UI state.
-    
+
     This is the main perception function that provides multimodal context:
     1. Visual: A screenshot of the current screen
     2. Structural: A text representation of UI elements
-    
+
     The function attempts to use the UIA backend first (for modern Windows apps),
     then falls back to Win32 backend (for legacy apps) if needed.
-    
+
     Returns:
-        Tuple[Image.Image, str]: A tuple containing:
+        tuple[Image.Image, str]: A tuple containing:
             - PIL Image object of the screenshot
             - String representation of the UI element tree
     """
-    # Step 1: Capture the visual state of the screen
-    screenshot = pyautogui.screenshot()
-    
+    screenshot_raw = pyautogui.screenshot()
+    screenshot = cast(Image.Image, screenshot_raw)
+    screenshot = _downscale_for_perception(screenshot)
+
     global LAST_UI_SNAPSHOT
 
     # Step 2: Capture the structural UI information with fallback mechanisms
@@ -215,11 +243,11 @@ def get_multimodal_context() -> Tuple[Image.Image, str]:
             )
             logger.warning("Impossibile acquisire l'albero UI: %s", details)
             LAST_UI_SNAPSHOT = []
-    
+
     return screenshot, ui_tree_text
 
 
-def _get_active_window(backend: str) -> Optional[object]:
+def _get_active_window(backend: str) -> Any | None:
     """Return the active window for the requested pywinauto backend."""
 
     try:
@@ -227,7 +255,7 @@ def _get_active_window(backend: str) -> Optional[object]:
         windows = desktop.windows()
         if not windows:
             return None
-        return windows[0]
+        return cast(object, windows[0])
     except (PywinautoTimeoutError, RuntimeError, ElementNotFoundError):
         return None
 
@@ -235,45 +263,45 @@ def _get_active_window(backend: str) -> Optional[object]:
 class ScreenCapture:
     """
     Handles screen capture operations.
-    
+
     This class provides methods for:
     - Capturing full screen screenshots
     - Capturing multimodal context (screenshot + UI tree)
     - Processing and optimizing images
     - Converting images to formats suitable for Gemini API
     """
-    
+
     def __init__(self):
         """Initialize the ScreenCapture."""
         pass
-    
-    def get_context(self) -> Tuple[Image.Image, str]:
+
+    def get_context(self) -> tuple[Image.Image, str]:
         """
         Get the complete multimodal context (visual + structural).
-        
+
         This is a convenience wrapper around the get_multimodal_context function.
-        
+
         Returns:
-            Tuple[Image.Image, str]: Screenshot and UI tree text.
+            tuple[Image.Image, str]: Screenshot and UI tree text.
         """
         return get_multimodal_context()
-    
+
     def capture_screen(self) -> Image.Image:
         """
         Capture a screenshot of the entire screen.
-        
+
         Returns:
             PIL.Image.Image: The captured screenshot.
         """
-        return pyautogui.screenshot()
-    
+        return cast(Image.Image, pyautogui.screenshot())
+
     def prepare_for_gemini(self, image: Image.Image) -> Image.Image:
         """
         Prepare an image for sending to Gemini API.
-        
+
         Args:
             image: The image to prepare.
-            
+
         Returns:
             Image.Image: The prepared image in a format suitable for Gemini API.
         """
