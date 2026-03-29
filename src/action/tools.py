@@ -19,6 +19,7 @@ from pywinauto.findbestmatch import MatchError
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError as PywinautoTimeoutError
 
+from src.config import config
 from src.perception.screen_capture import get_latest_ui_snapshot, refresh_ui_snapshot
 from src.action import browser_tools
 
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 T = TypeVar('T')
 
 _LOCATOR_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-_LOCATOR_CACHE_LIMIT = 64
 
 
 def _execute_with_timeout(func: Callable[[], T], timeout: float, default: Optional[T] = None) -> Optional[T]:
@@ -107,7 +107,7 @@ def _store_locator(entry: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     token = f"element:{uuid4().hex[:12]}"
     metadata = {k: v for k, v in entry.items() if k != "wrapper"}
     _LOCATOR_CACHE[token] = {"metadata": metadata, "wrapper": entry.get("wrapper")}
-    if len(_LOCATOR_CACHE) > _LOCATOR_CACHE_LIMIT:
+    if len(_LOCATOR_CACHE) > config.locator_cache_size:
         _LOCATOR_CACHE.popitem(last=False)
     return token, metadata
 
@@ -301,7 +301,7 @@ def run_shell_command(command: str) -> str:
             ["powershell", "-Command", command],
             capture_output=True,
             text=True,
-            timeout=60,  # 60-second timeout
+            timeout=config.shell_timeout,
             encoding='utf-8',
             errors='ignore'
         )
@@ -316,7 +316,7 @@ def run_shell_command(command: str) -> str:
         logger.error("Shell command timed out: %s", command)
         return json.dumps({
             "stdout": "",
-            "stderr": "Error: Command timed out after 60 seconds.",
+            "stderr": f"Error: Command timed out after {config.shell_timeout} seconds.",
             "return_code": -1
         })
     except Exception as e:
@@ -400,7 +400,7 @@ def element_id(
     logger.debug(f"Refreshing UI snapshot for active window '{window_title}' with 8s timeout...")
     snapshot = _execute_with_timeout(
         lambda: refresh_ui_snapshot(window),
-        timeout=8.0,
+        timeout=float(config.action_timeout),
         default=[]
     )
     
@@ -1330,6 +1330,9 @@ def read_clipboard() -> str:
         logger.info("Reading text from clipboard")
         text = pyperclip.paste()
         if text:
+            if len(text.encode("utf-8", errors="replace")) > config.clipboard_max_bytes:
+                text = text[: config.clipboard_max_bytes // 4]
+                logger.warning("Clipboard content truncated to %d chars", len(text))
             logger.info(f"Successfully read {len(text)} characters from clipboard")
             return f"Clipboard content: {text}"
         else:

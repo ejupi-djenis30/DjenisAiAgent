@@ -11,9 +11,11 @@ from pywinauto import Desktop
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError as PywinautoTimeoutError
 
+from src.config import config
+
 logger = logging.getLogger(__name__)
 
-MAX_SNAPSHOT_DEPTH = 4
+MAX_SNAPSHOT_DEPTH: int = config.snapshot_depth
 LAST_UI_SNAPSHOT: List[Dict[str, Any]] = []
 
 

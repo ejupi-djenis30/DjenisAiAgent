@@ -119,6 +119,16 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# ruff
+.ruff_cache/
+
+# Docker
+*.env.docker
+logs/
+
+# Temporary helper scripts
+_extract_prompt.py
+
 # Pyre type checker
 .pyre/
 

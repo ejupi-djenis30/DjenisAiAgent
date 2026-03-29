@@ -9,7 +9,10 @@ from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
-__all__ = ["AgentConfig", "load_config", "config"]
+__all__ = ["AgentConfig", "load_config", "config", "VERSION"]
+
+#: Human-readable application version — keep in sync with pyproject.toml
+VERSION: str = "0.1.0"
 
 
 def _load_dotenv(dotenv_path: Optional[Path]) -> None:
@@ -126,6 +129,26 @@ class AgentConfig:
         default_factory=lambda: _env_int("DJENIS_TRANSCRIPTION_SAMPLE_RATE", 16000)
     )
 
+    # Shell command timeout (seconds)
+    shell_timeout: int = field(
+        default_factory=lambda: _env_int("DJENIS_SHELL_TIMEOUT", 60)
+    )
+
+    # UI snapshot maximum traversal depth
+    snapshot_depth: int = field(
+        default_factory=lambda: _env_int("DJENIS_SNAPSHOT_DEPTH", 4)
+    )
+
+    # Locator LRU cache capacity
+    locator_cache_size: int = field(
+        default_factory=lambda: _env_int("DJENIS_LOCATOR_CACHE_SIZE", 64)
+    )
+
+    # Maximum clipboard content size in bytes (safety limit)
+    clipboard_max_bytes: int = field(
+        default_factory=lambda: _env_int("DJENIS_CLIPBOARD_MAX_BYTES", 1_048_576)  # 1 MiB
+    )
+
     # Performance profile
     profile: str = field(default_factory=lambda: os.getenv("DJENIS_PROFILE", "default").lower())
 
@@ -162,6 +185,18 @@ class AgentConfig:
             raise ValueError(
                 "DJENIS_LOCAL_TRANSCRIPTION è abilitato ma DJENIS_VOSK_MODEL_PATH non è impostato"
             )
+
+        if self.shell_timeout <= 0:
+            raise ValueError("DJENIS_SHELL_TIMEOUT must be greater than 0")
+
+        if self.snapshot_depth <= 0:
+            raise ValueError("DJENIS_SNAPSHOT_DEPTH must be greater than 0")
+
+        if self.locator_cache_size <= 0:
+            raise ValueError("DJENIS_LOCATOR_CACHE_SIZE must be greater than 0")
+
+        if self.clipboard_max_bytes <= 0:
+            raise ValueError("DJENIS_CLIPBOARD_MAX_BYTES must be greater than 0")
 
         return True
 

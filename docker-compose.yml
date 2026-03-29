@@ -1,0 +1,75 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Main agent service (web mode — no Windows UI automation in containers)
+  # ---------------------------------------------------------------------------
+  djenis-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: djenis-ai-agent:latest
+    container_name: djenis-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Required secrets — set in .env file or pass via environment
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+
+      # Agent behaviour
+      DJENIS_MAX_LOOP_TURNS: ${DJENIS_MAX_LOOP_TURNS:-50}
+      DJENIS_ACTION_TIMEOUT: ${DJENIS_ACTION_TIMEOUT:-45}
+      DJENIS_GEMINI_MODEL: ${DJENIS_GEMINI_MODEL:-gemini-1.5-pro-latest}
+
+      # Logging
+      DJENIS_LOG_LEVEL: ${DJENIS_LOG_LEVEL:-INFO}
+      DJENIS_VERBOSE_LOGGING: ${DJENIS_VERBOSE_LOGGING:-false}
+
+      # Streaming
+      DJENIS_STREAM_MAX_FPS: ${DJENIS_STREAM_MAX_FPS:-15}
+      DJENIS_STREAM_FRAME_QUALITY: ${DJENIS_STREAM_FRAME_QUALITY:-80}
+
+      # Selenium remote — connect to the dedicated chrome service below
+      SELENIUM_REMOTE_URL: http://chrome:4444/wd/hub
+
+    volumes:
+      - agent-logs:/app/logs
+    depends_on:
+      chrome:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - djenis-net
+
+  # ---------------------------------------------------------------------------
+  # Selenium standalone Chrome (headless browser automation)
+  # ---------------------------------------------------------------------------
+  chrome:
+    image: selenium/standalone-chrome:4.21.0
+    container_name: djenis-chrome
+    restart: unless-stopped
+    shm_size: 2g
+    environment:
+      SE_NODE_MAX_SESSIONS: 5
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444/wd/hub/status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - djenis-net
+
+volumes:
+  agent-logs:
+    driver: local
+
+networks:
+  djenis-net:
+    driver: bridge
