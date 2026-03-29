@@ -9,11 +9,10 @@ on non-Windows platforms so that unit tests can run in CI (Linux).
 from __future__ import annotations
 
 import sys
-from typing import Generator
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Platform helpers

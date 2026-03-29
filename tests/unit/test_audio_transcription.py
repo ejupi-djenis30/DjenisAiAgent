@@ -51,7 +51,9 @@ class TestEnsureModel:
         with pytest.raises(audio_module.TranscriptionError, match="DJENIS_VOSK_MODEL_PATH"):
             audio_module._ensure_model()
 
-    def test_invalid_model_path_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_invalid_model_path_raises(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         monkeypatch.setattr(audio_module, "KaldiRecognizer", object())
         monkeypatch.setattr(audio_module, "Model", MagicMock())
         monkeypatch.setattr(audio_module.config, "vosk_model_path", str(tmp_path / "missing-model"))

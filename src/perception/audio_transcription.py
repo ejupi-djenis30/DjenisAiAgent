@@ -2,30 +2,37 @@
 
 from __future__ import annotations
 
-try:
-    import audioop  # type: ignore
-except ImportError:  # pragma: no cover - minimal Python builds
-    audioop = None  # type: ignore
 import io
 import json
 import logging
 import wave
 from pathlib import Path
 from threading import Lock
-from typing import Final
+from typing import Any, Final
+
+stdlib_audioop: Any | None
+try:
+    import audioop as stdlib_audioop
+except ImportError:  # pragma: no cover - minimal Python builds
+    stdlib_audioop = None
 
 try:
-    from vosk import KaldiRecognizer, Model  # type: ignore
-except ImportError as import_error:  # pragma: no cover - optional dependency during install
-    KaldiRecognizer = None  # type: ignore
-    Model = None  # type: ignore
+    from vosk import KaldiRecognizer as VoskKaldiRecognizer
+    from vosk import Model as VoskModel
+except ImportError:  # pragma: no cover - optional dependency during install
+    VoskKaldiRecognizer = None
+    VoskModel = None
 
 from src.config import config
 
 logger = logging.getLogger(__name__)
 
+audioop: Any | None = stdlib_audioop
+KaldiRecognizer: Any = VoskKaldiRecognizer
+Model: Any = VoskModel
+
 _MODEL_LOCK: Final[Lock] = Lock()
-_MODEL: Model | None = None  # type: ignore[assignment]
+_MODEL: Any = None
 
 
 class TranscriptionError(RuntimeError):
@@ -60,12 +67,12 @@ def _ensure_model() -> object:
         if _MODEL is None:
             logger.info("Caricamento modello Vosk da %s", path)
             try:
-                _MODEL = Model(model_path)  # type: ignore[call-arg]
+                _MODEL = Model(model_path)
             except Exception as exc:  # pragma: no cover - third party errors
                 raise TranscriptionError(
                     f"Errore durante il caricamento del modello Vosk: {exc}"
                 ) from exc
-    return _MODEL  # type: ignore[return-value]
+    return _MODEL
 
 
 def _prepare_audio(wav_bytes: bytes, target_sample_rate: int) -> tuple[bytes, int]:
@@ -123,7 +130,7 @@ def transcribe_wav_bytes(wav_bytes: bytes) -> str:
     waveform, sample_rate = _prepare_audio(wav_bytes, target_sample_rate)
 
     model = _ensure_model()
-    recognizer = KaldiRecognizer(model, sample_rate)  # type: ignore[call-arg]
+    recognizer = KaldiRecognizer(model, sample_rate)
     recognizer.SetWords(True)
 
     buffer_size = 4000
@@ -143,7 +150,9 @@ def transcribe_wav_bytes(wav_bytes: bytes) -> str:
 
     text = str(result.get("text", "")).strip()
     if not text:
-        raise TranscriptionError("Trascrizione vuota: parla più chiaramente o verifica il microfono.")
+        raise TranscriptionError(
+            "Trascrizione vuota: parla più chiaramente o verifica il microfono."
+        )
 
     logger.debug("Trascrizione locale: %s", text)
     return text

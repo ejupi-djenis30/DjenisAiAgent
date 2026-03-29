@@ -1,92 +1,38 @@
-"""
-Main entry point for DjenisAiAgent.
+"""Main entry point for DjenisAiAgent."""
 
-This module serves as the application entry point, supporting both:
-1. CLI mode: Traditional command-line interface (existing functionality)
-2. Web mode: FastAPI server with WebSocket support for real-time web interface
+from __future__ import annotations
 
-The architecture uses asyncio.Queue to decouple the web server from the agent's logic,
-ensuring that long-running agent tasks do not block the server.
-"""
-
-import os
-import sys
-import json
-import logging
 import argparse
 import asyncio
 import io
+import json
+import logging
+import os
+import sys
 import time
-from pathlib import Path
-from threading import Event
-from typing import List, TYPE_CHECKING
 from contextlib import asynccontextmanager
-from dotenv import load_dotenv
+from pathlib import Path
+
 import pyautogui
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse
 from PIL import Image
+from pydantic import BaseModel, field_validator
+
+from src.config import VERSION, config
+from src.orchestration.agent_loop import agent_loop, run_agent_loop
+from src.perception.audio_transcription import TranscriptionError, transcribe_wav_bytes
+from src.runtime_state import AgentState, create_runtime_state
 
 IMAGE_RESAMPLING_LANCZOS = Image.Resampling.LANCZOS
-
-from src.config import config, VERSION
-from src.orchestration.agent_loop import run_agent_loop, agent_loop
-from src.perception.audio_transcription import (
-    TranscriptionError,
-    transcribe_wav_bytes,
-)
 
 # Application startup time for uptime calculation
 _APP_START_TIME: float = time.time()
 
-# FastAPI imports (only used in web mode)
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from fastapi import (
-        FastAPI as FastAPIType,
-        WebSocket as WebSocketType,
-        WebSocketDisconnect as WebSocketDisconnectType,
-        UploadFile as UploadFileType,
-        File as FileType,
-        HTTPException as HTTPExceptionType,
-    )
-    from fastapi.responses import HTMLResponse as HTMLResponseType, StreamingResponse as StreamingResponseType
-    import uvicorn as UvicornType
-
-try:
-    from fastapi import (
-        FastAPI as FastAPIRuntime,
-        WebSocket as WebSocketRuntime,
-        WebSocketDisconnect as WebSocketDisconnectRuntime,
-        UploadFile as UploadFileRuntime,
-        File as FileRuntime,
-        HTTPException as HTTPExceptionRuntime,
-    )
-    from fastapi.responses import HTMLResponse as HTMLResponseRuntime, StreamingResponse as StreamingResponseRuntime
-    from pydantic import BaseModel, field_validator
-    import uvicorn as uvicorn_runtime
-    FASTAPI_AVAILABLE = True
-except ImportError as import_error:  # pragma: no cover - optional dependency
-    FASTAPI_AVAILABLE = False
-    raise ImportError(
-        "FastAPI, uvicorn, and python-websockets must be installed to run the web server."
-    ) from import_error
-
-FastAPI = FastAPIRuntime
-WebSocket = WebSocketRuntime
-WebSocketDisconnect = WebSocketDisconnectRuntime
-HTMLResponse = HTMLResponseRuntime
-StreamingResponse = StreamingResponseRuntime
-UploadFile = UploadFileRuntime
-File = FileRuntime
-HTTPException = HTTPExceptionRuntime
-uvicorn = uvicorn_runtime
-
-# Global asyncio queues for web mode communication
-command_queue: asyncio.Queue = asyncio.Queue()
-status_queue: asyncio.Queue = asyncio.Queue()
-task_cancel_event: Event = Event()
-command_queue_lock = asyncio.Lock()
-
-# Global agent state tracking
-agent_state = "idle"  # idle, running, finished, error, cancelling
+create_runtime_context = create_runtime_state
+runtime = create_runtime_context()
 
 
 async def enqueue_command(command: str) -> bool:
@@ -95,8 +41,8 @@ async def enqueue_command(command: str) -> bool:
     if not cleaned:
         return False
 
-    async with command_queue_lock:
-        await command_queue.put(cleaned)
+    async with runtime.command_queue_lock:
+        await runtime.command_queue.put(cleaned)
     logging.getLogger(__name__).info("Queued command: %s", cleaned)
     return True
 
@@ -111,127 +57,110 @@ async def request_task_cancellation(reason: str | None = None) -> int:
         int: Number of queued commands that were discarded.
     """
     logger = logging.getLogger(__name__)
-    task_cancel_event.set()
+    runtime.task_cancel_event.set()
     if reason:
-        await status_queue.put(reason)
+        await runtime.status_queue.put(reason)
 
     drained = 0
-    async with command_queue_lock:
+    async with runtime.command_queue_lock:
         while True:
             try:
-                command_queue.get_nowait()
+                runtime.command_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             else:
                 drained += 1
-                command_queue.task_done()
+                runtime.command_queue.task_done()
 
     logger.info("Cancellation requested. Cleared %d queued commands.", drained)
     return drained
 
 
 @asynccontextmanager
-async def lifespan(app: "FastAPI"):  # type: ignore
+async def lifespan(app: FastAPI):
     """
     Lifespan context manager for FastAPI application.
     Handles startup and shutdown events for the unified concurrent system.
     """
     logger = logging.getLogger(__name__)
-    
-    # Startup
+
     logger.info("Starting unified concurrent system: agent_loop + status_broadcaster")
-    
-    # Note: We don't start background tasks here anymore
-    # They will be started in the main() function using asyncio.gather()
-    
+
     yield
-    
-    # Shutdown
+
     logger.info("Shutting down unified concurrent system")
 
 
 async def status_broadcaster():
     """
     Background task that continuously broadcasts status messages from the agent to WebSocket clients.
-    
+
     This function implements the critical link in the concurrent architecture:
         agent_loop -> status_queue -> status_broadcaster -> ConnectionManager -> WebSocket clients
-    
+
     It runs indefinitely, consuming messages from the status_queue and broadcasting them
     to all connected WebSocket clients in real-time. This ensures that the web interface
     receives live updates about the agent's activity without blocking the agent or server.
-    
+
     Architecture Role:
         This broadcaster is one of three concurrent tasks running together:
         1. FastAPI server (handles HTTP/WebSocket connections)
         2. agent_loop (processes commands from command_queue)
         3. status_broadcaster (this function - relays status to clients)
-    
+
     The queue-based architecture ensures:
         - Non-blocking operation (agent never waits for broadcasts)
         - Decoupling (agent doesn't know about web clients)
         - Resilience (if broadcasting fails, agent continues)
         - Scalability (multiple clients can connect without affecting agent)
     """
-    global agent_state
-    
     logger = logging.getLogger(__name__)
     logger.info("Status broadcaster started")
-    
+
     try:
         while True:
-            # Wait for a status message from the agent
-            # This is a blocking call that suspends until a message is available
-            status_message = await status_queue.get()
-            
+            status_message = await runtime.status_queue.get()
+
             logger.debug(f"Broadcasting status: {status_message[:100]}")
-            
-            # Determine if this is a FINAL state message that should change agent_state
+
             is_final_message = False
-            new_state = None
-            
-            # Check for completion/ready messages
+            new_state: AgentState | None = None
+
             if "Ready for next command" in status_message or "🔄" in status_message:
                 is_final_message = True
                 new_state = "idle"
                 logger.info("Agent state changing to 'idle' - ready for next command")
-            
-            elif "✅ SUCCESSO" in status_message or "Task completato con successo" in status_message:
+            elif (
+                "✅ SUCCESSO" in status_message or "Task completato con successo" in status_message
+            ):
                 is_final_message = True
                 new_state = "idle"
                 logger.info("Agent state changing to 'idle' - task completed successfully")
-            
             elif "⚠️" in status_message and "non è riuscito a completare" in status_message:
-                # Max turns reached without completion
                 is_final_message = True
                 new_state = "idle"
                 logger.info("Agent state changing to 'idle' - task failed (max turns)")
-            
             elif "🛑" in status_message or "CANCELLATO" in status_message:
                 is_final_message = True
                 new_state = "idle"
                 logger.info("Agent state changing to 'idle' - task cancelled")
-            
-            # Update global state and send structured message if this is a final message
+
             if is_final_message and new_state:
-                agent_state = new_state
-                await manager.broadcast_json({
-                    "type": "status",
-                    "payload": {
-                        "agent_state": agent_state,
-                        "message": status_message
+                await runtime.set_agent_state(new_state)
+                await manager.broadcast_json(
+                    {
+                        "type": "status",
+                        "payload": {
+                            "agent_state": new_state,
+                            "message": status_message,
+                        },
                     }
-                })
+                )
             else:
-                # For intermediate messages, just send as log without changing state
-                await manager.broadcast_json({
-                    "type": "log",
-                    "payload": status_message
-                })
-            
-            # Mark the task as done for queue management
-            status_queue.task_done()
-            
+                await manager.broadcast_json({"type": "log", "payload": status_message})
+
+            runtime.status_queue.task_done()
+
     except asyncio.CancelledError:
         logger.info("Status broadcaster cancelled, shutting down gracefully")
         raise
@@ -244,50 +173,54 @@ async def status_broadcaster():
 app = FastAPI(
     title="DjenisAiAgent",
     description="AI-powered Windows automation agent",
-    lifespan=lifespan if FASTAPI_AVAILABLE else None  # type: ignore
+    lifespan=lifespan,
 )
 
 
 class ConnectionManager:
     """
     Manages WebSocket connections for real-time communication with web clients.
-    
+
     This class handles:
     - Accepting new WebSocket connections
     - Removing disconnected clients
     - Broadcasting messages to all active clients
     """
-    
+
     def __init__(self):
         """Initialize the connection manager with an empty list of active connections."""
-        self.active_connections: List[WebSocket] = []
-    
-    async def connect(self, websocket: WebSocket):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
         """
         Accept a new WebSocket connection and add it to the active connections list.
-        
+
         Args:
             websocket: The WebSocket connection to accept and manage
         """
         await websocket.accept()
         self.active_connections.append(websocket)
-        logging.getLogger(__name__).info(f"New WebSocket connection. Total active: {len(self.active_connections)}")
-    
-    def disconnect(self, websocket: WebSocket):
+        logging.getLogger(__name__).info(
+            f"New WebSocket connection. Total active: {len(self.active_connections)}"
+        )
+
+    def disconnect(self, websocket: WebSocket) -> None:
         """
         Remove a WebSocket connection from the active connections list.
-        
+
         Args:
             websocket: The WebSocket connection to remove
         """
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-            logging.getLogger(__name__).info(f"WebSocket disconnected. Total active: {len(self.active_connections)}")
-    
-    async def broadcast(self, message: str):
+            logging.getLogger(__name__).info(
+                f"WebSocket disconnected. Total active: {len(self.active_connections)}"
+            )
+
+    async def broadcast(self, message: str) -> None:
         """
         Send a message to all active WebSocket clients.
-        
+
         Args:
             message: The message string to broadcast
         """
@@ -298,14 +231,14 @@ class ConnectionManager:
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Failed to send to client: {e}")
                 disconnected.append(connection)
-        
+
         for conn in disconnected:
             self.disconnect(conn)
-    
-    async def broadcast_json(self, data: dict):
+
+    async def broadcast_json(self, data: dict[str, object]) -> None:
         """
         Send a JSON message to all active WebSocket clients.
-        
+
         Args:
             data: The dictionary to broadcast as JSON
         """
@@ -316,7 +249,7 @@ class ConnectionManager:
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Failed to send JSON to client: {e}")
                 disconnected.append(connection)
-        
+
         for conn in disconnected:
             self.disconnect(conn)
 
@@ -328,6 +261,7 @@ manager = ConnectionManager()
 # ---------------------------------------------------------------------------
 # Pydantic models — WebSocket payload validation
 # ---------------------------------------------------------------------------
+
 
 class WebSocketMessage(BaseModel):
     """Schema for messages received over the WebSocket connection."""
@@ -361,6 +295,7 @@ async def health_check():
     Returns:
         JSON with status, version, uptime in seconds, and current agent state.
     """
+    agent_state = await runtime.get_agent_state()
     return {
         "status": "ok",
         "version": VERSION,
@@ -373,54 +308,50 @@ async def health_check():
 async def read_root():
     """
     Serve the main frontend HTML page.
-    
+
     Returns:
         HTMLResponse: The content of index.html
     """
     try:
         index_path = Path(__file__).parent / "index.html"
-        with open(index_path, "r", encoding="utf-8") as f:
+        with open(index_path, encoding="utf-8") as f:
             html_content = f.read()
         return HTMLResponse(content=html_content)
     except FileNotFoundError:
-        return HTMLResponse(
-            content="<h1>Error: index.html not found</h1>",
-            status_code=404
-        )
+        return HTMLResponse(content="<h1>Error: index.html not found</h1>", status_code=404)
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for real-time bidirectional communication with web clients.
-    
+
     This endpoint:
     1. Accepts new WebSocket connections
     2. Listens for incoming commands from the client
     3. Places commands onto the command_queue for agent processing
     4. Handles client disconnections gracefully
     5. Supports cancel/delete_task commands
-    
+
     Args:
         websocket: The WebSocket connection
     """
-    global agent_state
-    
     await manager.connect(websocket)
     logger = logging.getLogger(__name__)
-    
-    # Send initial state to the newly connected client
-    await websocket.send_json({
-        "type": "status",
-        "payload": {
-            "agent_state": agent_state,
-            "message": f"Connected. Agent is {agent_state}."
+
+    current_state = await runtime.get_agent_state()
+    await websocket.send_json(
+        {
+            "type": "status",
+            "payload": {
+                "agent_state": current_state,
+                "message": f"Connected. Agent is {current_state}.",
+            },
         }
-    })
-    
+    )
+
     try:
         while True:
-            # Listen for incoming messages from the client
             data = await websocket.receive_text()
             logger.info("Received WebSocket payload: %s", data)
 
@@ -431,14 +362,12 @@ async def websocket_endpoint(websocket: WebSocket):
             except json.JSONDecodeError:
                 payload = {"type": "command", "payload": data}
 
-            # Validate payload against Pydantic schema
             try:
                 msg = WebSocketMessage.model_validate(payload)
             except Exception as validation_err:
-                await websocket.send_json({
-                    "type": "log",
-                    "payload": f"⚠️ Invalid message: {validation_err}"
-                })
+                await websocket.send_json(
+                    {"type": "log", "payload": f"⚠️ Invalid message: {validation_err}"}
+                )
                 continue
 
             message_type = msg.type
@@ -446,46 +375,53 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if message_type == "command":
                 if not command_text:
-                    await websocket.send_json({
-                        "type": "log",
-                        "payload": "⚠️ Empty command ignored."
-                    })
-                elif agent_state == "running":
-                    await websocket.send_json({
-                        "type": "log",
-                        "payload": "⚠️ Agent is currently processing a task. Please wait or cancel."
-                    })
+                    await websocket.send_json(
+                        {"type": "log", "payload": "⚠️ Empty command ignored."}
+                    )
+                elif not await runtime.reserve_command_slot():
+                    await websocket.send_json(
+                        {
+                            "type": "log",
+                            "payload": "⚠️ Agent is currently processing a task. Please wait or cancel.",
+                        }
+                    )
                 else:
                     queued = await enqueue_command(command_text)
                     if queued:
-                        agent_state = "running"
-                        await manager.broadcast_json({
-                            "type": "status",
-                            "payload": {
-                                "agent_state": "running",
-                                "message": f"Processing: {command_text}"
+                        await manager.broadcast_json(
+                            {
+                                "type": "status",
+                                "payload": {
+                                    "agent_state": "running",
+                                    "message": f"Processing: {command_text}",
+                                },
                             }
-                        })
-                        await websocket.send_json({
-                            "type": "log",
-                            "payload": f"✅ Command queued: {command_text}"
-                        })
+                        )
+                        await websocket.send_json(
+                            {"type": "log", "payload": f"✅ Command queued: {command_text}"}
+                        )
+                    else:
+                        await runtime.set_agent_state("idle")
 
             elif message_type in ("cancel", "delete_task"):
                 cleared = await request_task_cancellation("🛑 User requested cancellation")
-                agent_state = "cancelling"
-                await manager.broadcast_json({
-                    "type": "status",
-                    "payload": {
-                        "agent_state": "cancelling",
-                        "message": "Cancelling task..."
+                await runtime.set_agent_state("cancelling")
+                await manager.broadcast_json(
+                    {
+                        "type": "status",
+                        "payload": {
+                            "agent_state": "cancelling",
+                            "message": "Cancelling task...",
+                        },
                     }
-                })
-                await websocket.send_json({
-                    "type": "log",
-                    "payload": f"🛑 Cancellation requested. Cleared {cleared} queued command(s)."
-                })
-            
+                )
+                await websocket.send_json(
+                    {
+                        "type": "log",
+                        "payload": f"🛑 Cancellation requested. Cleared {cleared} queued command(s).",
+                    }
+                )
+
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
         manager.disconnect(websocket)
@@ -515,8 +451,12 @@ async def transcribe_audio_endpoint(file: UploadFile = File(...)):
     except TranscriptionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - unexpected failures
-        logging.getLogger(__name__).error("Errore inatteso durante la trascrizione audio", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno durante la trascrizione audio.") from exc
+        logging.getLogger(__name__).error(
+            "Errore inatteso durante la trascrizione audio", exc_info=True
+        )
+        raise HTTPException(
+            status_code=500, detail="Errore interno durante la trascrizione audio."
+        ) from exc
 
     return {"transcript": text}
 
@@ -546,7 +486,7 @@ async def screen_generator():
     """
     logger = logging.getLogger(__name__)
     logger.info("Screen streaming generator started")
-    
+
     try:
         target_sleep = max(0.001, 1.0 / max(1, config.stream_max_fps))
 
@@ -589,15 +529,12 @@ async def screen_generator():
             # Yield the frame in multipart/x-mixed-replace format
             # This format allows the browser to continuously replace frames
             # Format: boundary + content type header + frame data + boundary
-            yield (
-                b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n'
-            )
+            yield (b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
             # Control frame rate: ~10 FPS (100ms delay)
             # This prevents overwhelming the CPU while providing smooth video
             await asyncio.sleep(target_sleep)
-            
+
     except asyncio.CancelledError:
         logger.info("Screen streaming generator cancelled")
         raise
@@ -610,44 +547,43 @@ async def screen_generator():
 async def video_stream():
     """
     FastAPI endpoint that streams live desktop video to the client.
-    
+
     This endpoint provides a continuous video feed of the agent's desktop screen
     using the multipart/x-mixed-replace streaming technique. The stream can be
     displayed directly in an HTML <img> tag or video player.
-    
+
     Returns:
         StreamingResponse: A streaming response containing the video feed
-        
+
     Usage:
         In HTML: <img src="http://localhost:8000/stream" />
         In JavaScript: video.src = "http://localhost:8000/stream";
-        
+
     Technical Details:
         - Protocol: HTTP with multipart/x-mixed-replace
         - Format: Continuous JPEG frames
         - Frame Rate: ~10 FPS
         - Latency: Very low (suitable for real-time monitoring)
-        
+
     Benefits:
         - Simple to implement and consume
         - Works directly in <img> tags (no JavaScript required)
         - Low overhead compared to WebRTC or RTSP
         - Ideal for local network monitoring
         - No client-side decoding needed
-        
+
     Example:
         ```html
-        <img src="http://127.0.0.1:8000/stream" 
-             alt="Agent Screen" 
+        <img src="http://127.0.0.1:8000/stream"
+             alt="Agent Screen"
              style="width: 100%; height: auto;" />
         ```
     """
     logger = logging.getLogger(__name__)
     logger.info("Screen streaming endpoint accessed")
-    
+
     return StreamingResponse(
-        screen_generator(),
-        media_type='multipart/x-mixed-replace; boundary=frame'
+        screen_generator(), media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
 
@@ -655,26 +591,24 @@ def setup_logging():
     """Configure logging for the application."""
     logging.basicConfig(
         level=getattr(logging, config.log_level),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
 
 
 def run_cli_mode(args):
     """
     Run the agent in traditional CLI mode.
-    
+
     Args:
         args: Parsed command-line arguments
     """
     logger = logging.getLogger(__name__)
-    
+
     try:
         # API Key Configuration and Validation
         gemini_api_key = os.getenv("GEMINI_API_KEY")
-        
+
         if not gemini_api_key or gemini_api_key == "YOUR_API_KEY_HERE":
             raise ValueError(
                 "La variabile d'ambiente GEMINI_API_KEY non è impostata. "
@@ -682,68 +616,68 @@ def run_cli_mode(args):
             )
 
         logger.info("Gemini API key detected successfully")
-        
+
         # Validate additional configuration
         config.validate()
         logger.info("Configuration validated successfully")
         logger.info(f"Using model: {config.gemini_model_name}")
         logger.info(f"Max loop turns: {config.max_loop_turns}")
-        
+
         # Single command mode or interactive loop
         if args.command and not args.interactive:
             user_command = args.command
             logger.info(f"Command provided via CLI: {user_command}")
-            
+
             # Run the main agent loop
             logger.info(f"Starting agent loop with command: {user_command}")
             result = run_agent_loop(user_command)
-            
+
             logger.info(f"Agent loop completed with result: {result}")
             print(f"\n{'='*80}")
             print(f"  Risultato finale: {result}")
             print(f"{'='*80}\n")
-            
+
         else:
             # Interactive mode: Continuous command loop
             print("DjenisAiAgent Initialized. Ready for your commands.")
             print("Enter 'exit' or 'quit' to terminate the program.\n")
-            
+
             # Continuous user interaction loop
             while True:
                 try:
                     # Prompt user for command
                     user_command = input("Please enter your command (or 'exit' to quit): ").strip()
-                    
+
                     # Check for exit commands (case-insensitive)
-                    if user_command.lower() in ['exit', 'quit']:
+                    if user_command.lower() in ["exit", "quit"]:
                         print("\n👋 Arrivederci! Chiusura di DjenisAiAgent.\n")
                         logger.info("User requested exit")
                         break
-                    
+
                     # Skip empty commands
                     if not user_command:
                         print("⚠️  Comando vuoto. Inserisci un comando valido.\n")
                         continue
-                    
+
                     # Execute the command
                     logger.info(f"Starting agent loop with command: {user_command}")
                     result = run_agent_loop(user_command)
-                    
+
                     logger.info(f"Agent loop completed with result: {result}")
                     print(f"\n{'='*80}")
                     print(f"  Risultato: {result}")
                     print(f"{'='*80}\n")
-                    
+
                 except KeyboardInterrupt:
                     print("\n\n⚠️  Interruzione rilevata. Usa 'exit' per uscire in modo pulito.\n")
                     continue
-                    
+
                 except Exception as e:
                     logger.error(f"Error during command execution: {e}", exc_info=True)
                     print(f"\n❌ Errore durante l'esecuzione: {e}\n")
                     print("Puoi provare un altro comando o digitare 'exit' per uscire.\n")
                     continue
-        
+
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
         print(f"\n❌ Errore di configurazione: {e}\n")
@@ -761,10 +695,10 @@ def run_cli_mode(args):
 async def process_commands_from_queue():
     """
     DEPRECATED: This function has been replaced by the agent_loop() function.
-    
+
     The new architecture uses agent_loop() from src.orchestration.agent_loop
     which is started as a concurrent task in main().
-    
+
     This stub remains for backwards compatibility but should not be called.
     """
     logger = logging.getLogger(__name__)
@@ -775,15 +709,15 @@ async def process_commands_from_queue():
 async def run_web_mode_async(host: str, port: int):
     """
     Run the agent in web server mode with FastAPI and WebSocket support (async version).
-    
+
     This is the core of Step 10: Final Integration and Concurrent Execution.
-    
+
     Architecture:
         This function creates and runs three concurrent tasks using asyncio.gather():
         1. FastAPI/Uvicorn server: Handles HTTP and WebSocket connections
         2. agent_loop: Consumes commands from command_queue and executes them
         3. status_broadcaster: Relays status updates to all WebSocket clients
-    
+
     Flow:
         WebSocket client sends command
           ↓
@@ -798,15 +732,15 @@ async def run_web_mode_async(host: str, port: int):
         status_broadcaster pulls from status_queue
           ↓
         status_broadcaster broadcasts to all WebSocket clients
-    
+
     Args:
         host: Host address for the web server (e.g., "0.0.0.0" for all interfaces)
         port: Port number for the web server (e.g., 8000)
-        
+
     This function runs indefinitely until interrupted (Ctrl+C) or an error occurs.
     """
     logger = logging.getLogger(__name__)
-    
+
     # Configure Gemini API for web mode
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key or gemini_api_key == "YOUR_API_KEY_HERE":
@@ -819,29 +753,31 @@ async def run_web_mode_async(host: str, port: int):
     logger.info("Gemini API key detected for web mode")
     logger.info(f"Using model: {config.gemini_model_name}")
     logger.info(f"Max loop turns: {config.max_loop_turns}")
-    
+
     # Configure Uvicorn server programmatically
     # Using Config + Server pattern instead of uvicorn.run() for better control
-    config_obj = uvicorn.Config(  # type: ignore
+    config_obj = uvicorn.Config(
         app,
         host=host,
         port=port,
         log_level="info",
-        access_log=True
+        access_log=True,
     )
-    server = uvicorn.Server(config_obj)  # type: ignore
-    
+    server = uvicorn.Server(config_obj)
+
     logger.info(f"Starting unified concurrent system on http://{host}:{port}")
     logger.info("Components: FastAPI server + agent_loop + status_broadcaster")
-    
+
     try:
         # Run all three components concurrently
         # This is the key to Step 10: everything runs together without blocking
         await asyncio.gather(
             server.serve(),  # FastAPI/Uvicorn server
-            agent_loop(command_queue, status_queue, task_cancel_event),  # Agent ReAct loop
+            agent_loop(
+                runtime.command_queue, runtime.status_queue, runtime.task_cancel_event
+            ),  # Agent ReAct loop
             status_broadcaster(),  # Status message broadcaster
-            return_exceptions=False  # Propagate exceptions
+            return_exceptions=False,  # Propagate exceptions
         )
     except KeyboardInterrupt:
         logger.info("Web mode interrupted by user (Ctrl+C)")
@@ -854,23 +790,18 @@ async def run_web_mode_async(host: str, port: int):
 def run_web_mode(args):
     """
     Run the agent in web server mode with FastAPI and WebSocket support.
-    
+
     This is a synchronous wrapper that launches the asynchronous web mode.
-    
+
     Args:
         args: Parsed command-line arguments
     """
     logger = logging.getLogger(__name__)
-    
-    if not FASTAPI_AVAILABLE:
-        logger.error("FastAPI is not installed. Install with: pip install fastapi uvicorn websockets")
-        print("\n❌ FastAPI non è installato. Esegui: pip install fastapi uvicorn websockets\n")
-        sys.exit(1)
-    
+
     logger.info("Starting DjenisAiAgent in web mode")
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("  🤖 DjenisAiAgent - Web Server Mode (Step 10: Unified Concurrent System)")
-    print("="*80)
+    print("=" * 80)
     print(f"\n  Server will start on http://{args.host}:{args.port}")
     print(f"  WebSocket endpoint: ws://{args.host}:{args.port}/ws")
     print(f"  Stream endpoint: http://{args.host}:{args.port}/stream")
@@ -879,8 +810,8 @@ def run_web_mode(args):
     print("    2. Agent loop (command processing)")
     print("    3. Status broadcaster (real-time updates)")
     print("\n  Press CTRL+C to stop the server\n")
-    print("="*80 + "\n")
-    
+    print("=" * 80 + "\n")
+
     # Run the async web mode using asyncio.run()
     try:
         asyncio.run(run_web_mode_async(args.host, args.port))
@@ -896,7 +827,7 @@ def run_web_mode(args):
 def main():
     """
     Main application entry point.
-    
+
     This function handles:
     1. Environment variable loading from .env
     2. Command-line argument parsing
@@ -904,10 +835,10 @@ def main():
     """
     # Step 1: Load environment variables from .env file
     load_dotenv()
-    
+
     setup_logging()
     logger = logging.getLogger(__name__)
-    
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(
         description="DjenisAiAgent - AI-powered Windows automation agent"
@@ -917,50 +848,45 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        help="Natural language command to execute (CLI mode only)"
+        help="Natural language command to execute (CLI mode only)",
     )
     parser.add_argument(
-        "--no-ui",
-        action="store_true",
-        help="Run in headless mode (no interactive UI)"
+        "--no-ui", action="store_true", help="Run in headless mode (no interactive UI)"
     )
     parser.add_argument(
         "--interactive",
         action="store_true",
-        help="Force interactive mode with continuous command loop (CLI mode)"
+        help="Force interactive mode with continuous command loop (CLI mode)",
     )
     parser.add_argument(
         "--web",
         action="store_true",
-        help="Run in web server mode with FastAPI and WebSocket support"
+        help="Run in web server mode with FastAPI and WebSocket support",
     )
     parser.add_argument(
         "--host",
         type=str,
         default="0.0.0.0",
-        help="Host address for web server mode (default: 0.0.0.0)"
+        help="Host address for web server mode (default: 0.0.0.0)",
     )
     parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port for web server mode (default: 8000)"
+        "--port", type=int, default=8000, help="Port for web server mode (default: 8000)"
     )
-    
+
     args = parser.parse_args()
-    
+
     logger.info("DjenisAiAgent starting...")
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("  🤖 DjenisAiAgent - AI-Powered Windows Automation")
-    print("="*80 + "\n")
-    
+    print("=" * 80 + "\n")
+
     try:
         # Route to appropriate mode based on arguments
         if args.web:
             run_web_mode(args)
         else:
             run_cli_mode(args)
-            
+
     except KeyboardInterrupt:
         logger.info("Application interrupted by user")
         print("\n\n⚠️  Applicazione interrotta dall'utente.\n")

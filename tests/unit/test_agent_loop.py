@@ -7,16 +7,24 @@ from threading import Event
 
 import pytest
 
+from src.orchestration import agent_loop as loop_module
+
 pytest.importorskip("pyautogui")
 pytest.importorskip("pywinauto")
-
-from src.orchestration import agent_loop as loop_module
 
 
 class _FunctionCall:
     def __init__(self, name: str, args: dict[str, object]) -> None:
         self.name = name
         self.args = args
+
+
+class _AuditCollector:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def record_event(self, event_type: str, **payload: object) -> None:
+        self.events.append((event_type, dict(payload)))
 
 
 @pytest.fixture(autouse=True)
@@ -37,8 +45,18 @@ class TestHelpers:
         assert loop_module._is_mouse_positioning_tool("move_mouse") is True
         assert loop_module._is_mouse_positioning_tool("click") is False
 
+    def test_task_timed_out_uses_wall_clock_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(loop_module.config, "task_timeout", 10)
+        monkeypatch.setattr(loop_module.time, "monotonic", lambda: 25.0)
+
+        assert loop_module._task_timed_out(0.0) is True
+
     def test_run_agent_loop_delegates_to_executor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(loop_module, "_execute_agent_task", lambda command, status_callback=None, cancel_event=None: f"ran:{command}")
+        monkeypatch.setattr(
+            loop_module,
+            "_execute_agent_task",
+            lambda command, status_callback=None, cancel_event=None: f"ran:{command}",
+        )
 
         assert loop_module.run_agent_loop("hello") == "ran:hello"
 
@@ -55,8 +73,10 @@ class TestExecuteAgentTask:
 
     def test_finish_task_returns_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         logs: list[str] = []
+        audit = _AuditCollector()
         monkeypatch.setattr(loop_module.config, "max_loop_turns", 1)
         monkeypatch.setattr(loop_module, "get_multimodal_context", lambda: (object(), "ui-tree"))
+        monkeypatch.setattr(loop_module, "audit_logger", audit)
         monkeypatch.setattr(
             loop_module,
             "decide_next_action",
@@ -67,8 +87,33 @@ class TestExecuteAgentTask:
 
         assert result == "SUCCESSO: Task completato"
         assert any("TASK COMPLETATO" in entry for entry in logs)
+        assert [event[0] for event in audit.events].count("task_completed") == 1
 
-    def test_invalid_reasoning_response_eventually_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_audit_logs_tool_dispatch_and_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        audit = _AuditCollector()
+        monkeypatch.setattr(loop_module.config, "max_loop_turns", 2)
+        monkeypatch.setattr(loop_module, "audit_logger", audit)
+        monkeypatch.setattr(loop_module, "get_multimodal_context", lambda: (object(), "ui-tree"))
+        monkeypatch.setattr(loop_module.action_tools, "click", lambda element_id: "clicked")
+        responses = iter(
+            [
+                _FunctionCall("click", {"element_id": "button-1"}),
+                _FunctionCall("finish_task", {"summary": "done"}),
+            ]
+        )
+        monkeypatch.setattr(loop_module, "decide_next_action", lambda **kwargs: next(responses))
+
+        result = loop_module._execute_agent_task("cmd")
+
+        assert result == "SUCCESSO: Task completato"
+        event_names = [event[0] for event in audit.events]
+        assert "tool_dispatched" in event_names
+        assert "tool_result" in event_names
+        assert "task_completed" in event_names
+
+    def test_invalid_reasoning_response_eventually_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(loop_module.config, "max_loop_turns", 1)
         monkeypatch.setattr(loop_module, "get_multimodal_context", lambda: (object(), "ui-tree"))
         monkeypatch.setattr(loop_module, "decide_next_action", lambda **kwargs: "solo testo")
@@ -77,15 +122,34 @@ class TestExecuteAgentTask:
 
         assert result.startswith("FALLITO")
 
-    def test_perception_error_is_recorded_and_task_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_perception_error_is_recorded_and_task_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(loop_module.config, "max_loop_turns", 1)
-        monkeypatch.setattr(loop_module, "get_multimodal_context", lambda: (_ for _ in ()).throw(RuntimeError("screen failed")))
+        monkeypatch.setattr(
+            loop_module,
+            "get_multimodal_context",
+            lambda: (_ for _ in ()).throw(RuntimeError("screen failed")),
+        )
 
         result = loop_module._execute_agent_task("cmd")
 
         assert result.startswith("FALLITO")
 
-    def test_unknown_tool_generates_failure_observation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_task_timeout_stops_execution(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = iter([0.0, 0.0, 10.0])
+        monkeypatch.setattr(loop_module.config, "max_loop_turns", 3)
+        monkeypatch.setattr(loop_module.config, "task_timeout", 5)
+        monkeypatch.setattr(loop_module.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(loop_module, "get_multimodal_context", lambda: (object(), "ui-tree"))
+
+        result = loop_module._execute_agent_task("cmd")
+
+        assert result.startswith("FALLITO: Task terminato per timeout")
+
+    def test_unknown_tool_generates_failure_observation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(loop_module.config, "max_loop_turns", 1)
         monkeypatch.setattr(loop_module, "get_multimodal_context", lambda: (object(), "ui-tree"))
         monkeypatch.setattr(
@@ -141,7 +205,11 @@ async def test_async_agent_loop_processes_command_and_reports_ready(
     status_queue: asyncio.Queue[str] = asyncio.Queue()
     cancel_event = Event()
 
-    monkeypatch.setattr(loop_module, "_execute_agent_task", lambda command, callback, event: "SUCCESSO: Task completato")
+    monkeypatch.setattr(
+        loop_module,
+        "_execute_agent_task",
+        lambda command, callback, event: "SUCCESSO: Task completato",
+    )
 
     task = asyncio.create_task(loop_module.agent_loop(command_queue, status_queue, cancel_event))
 

@@ -5,14 +5,16 @@ from __future__ import annotations
 import inspect
 import logging
 import time
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Union
-
-from PIL import Image
+from typing import Any, Union, cast
 
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
+from PIL import Image
 
 from src.config import config
 
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 
+
 def _load_system_prompt() -> str:
     """Load the system prompt template from disk, falling back to empty string."""
     try:
@@ -33,8 +36,42 @@ def _load_system_prompt() -> str:
         logger.error("Could not load system prompt from %s: %s", _PROMPT_FILE, exc)
         return ""
 
+
 SYSTEM_PROMPT: str = _load_system_prompt()
 
+
+def _generate_content(
+    *,
+    api_key: str,
+    model: str,
+    contents: list[Any],
+    generation_config: Any,
+) -> Any:
+    with genai.Client(api_key=api_key) as client:
+        return client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=generation_config,
+        )
+
+
+def _generate_content_with_timeout(
+    *,
+    api_key: str,
+    model: str,
+    contents: list[Any],
+    generation_config: Any,
+    timeout_seconds: int,
+) -> Any:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            _generate_content,
+            api_key=api_key,
+            model=model,
+            contents=contents,
+            generation_config=generation_config,
+        )
+        return future.result(timeout=timeout_seconds)
 
 
 def _json_type_for_annotation(annotation: Any) -> str:
@@ -54,19 +91,19 @@ def _json_type_for_annotation(annotation: Any) -> str:
     origin = getattr(annotation, "__origin__", None)
     args = getattr(annotation, "__args__", ())
     if origin is Union and args:
-        non_none = [arg for arg in args if arg is not type(None)]  # noqa: E721
+        non_none = [arg for arg in args if arg is not type(None)]
         if len(non_none) == 1:
             return _json_type_for_annotation(non_none[0])
 
     return "string"
 
 
-def _build_function_declaration(func: Any) -> Optional[genai_types.FunctionDeclaration]:
+def _build_function_declaration(func: Any) -> genai_types.FunctionDeclaration | None:
     """Create a FunctionDeclaration schema for a Python callable."""
 
     signature = inspect.signature(func)
-    properties: Dict[str, Dict[str, Any]] = {}
-    required: List[str] = []
+    properties: dict[str, dict[str, Any]] = {}
+    required: list[str] = []
 
     for name, param in signature.parameters.items():
         if param.kind in (
@@ -83,12 +120,12 @@ def _build_function_declaration(func: Any) -> Optional[genai_types.FunctionDecla
         json_type = _json_type_for_annotation(param.annotation)
         properties[name] = {
             "type": json_type,
-            "description": f"Parametro '{name}' per la funzione {func.__name__}.",
+            "description": f"Argument '{name}' for tool '{func.__name__}'.",
         }
         if param.default is inspect._empty:
             required.append(name)
 
-    parameters_schema: Dict[str, Any] = {
+    parameters_schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,
     }
@@ -102,16 +139,14 @@ def _build_function_declaration(func: Any) -> Optional[genai_types.FunctionDecla
             parameters_json_schema=parameters_schema,
         )
     except Exception as exc:  # pragma: no cover - schema construction issues
-        logger.error(
-            "Unable to build FunctionDeclaration for '%s': %s", func.__name__, exc
-        )
+        logger.error("Unable to build FunctionDeclaration for '%s': %s", func.__name__, exc)
         return None
 
 
-def _prepare_tools_payload(available_tools: Iterable[Any]) -> List[genai_types.Tool]:
+def _prepare_tools_payload(available_tools: Iterable[Any]) -> list[genai_types.Tool]:
     """Convert Python callables into Gemini tool declarations."""
 
-    declarations: List[genai_types.FunctionDeclaration] = []
+    declarations: list[genai_types.FunctionDeclaration] = []
     for tool in available_tools:
         declaration = getattr(tool, "function_declaration", None)
         if declaration is not None:
@@ -129,7 +164,7 @@ def _prepare_tools_payload(available_tools: Iterable[Any]) -> List[genai_types.T
     return [genai_types.Tool(function_declarations=declarations)]
 
 
-def _extract_api_error_code(exc: Exception) -> Optional[int]:
+def _extract_api_error_code(exc: Exception) -> int | None:
     """Return the numeric status code exposed by the GenAI SDK, if present."""
 
     for attribute in ("code", "status_code"):
@@ -155,23 +190,23 @@ def decide_next_action(
     screenshot_image: Image.Image,
     ui_tree: str,
     user_command: str,
-    history: List[str],
-    available_tools: List[Any]
-) -> Union[Any, str]:
+    history: list[str],
+    available_tools: list[Any],
+) -> Any | str:
     """
     Decide the next action to take based on multimodal context.
-    
+
     This is the core reasoning function that sends a multimodal prompt (image + text)
     to the Gemini API along with available tool definitions. The model uses Function
     Calling to respond with a structured action to execute.
-    
+
     Args:
         screenshot_image: A Pillow Image object of the current screen state.
         ui_tree: A string containing the UI element hierarchy/structure.
         user_command: The user's objective/goal as a string.
         history: A list of strings representing previous thoughts and observations.
         available_tools: A list of Python functions the agent can call.
-        
+
     Returns:
         Either a FunctionCall object (if model chose to call a tool) or a string
         (if model responded with text, asking for clarification, etc.).
@@ -186,11 +221,12 @@ def decide_next_action(
             )
 
         # Build a list of available tool names for validation
+        declarations = getattr(tools_payload[0], "function_declarations", None) or []
         available_tool_names = {
-            decl.name for decl in tools_payload[0].function_declarations
+            str(decl.name) for decl in declarations if getattr(decl, "name", None)
         }
         logger.debug(f"Available tools: {sorted(available_tool_names)}")
-        
+
         # Check if last action was deep_think to prevent consecutive usage
         last_action_was_deep_think = False
         if history:
@@ -200,16 +236,16 @@ def decide_next_action(
                 logger.debug("Last action was deep_think, consecutive usage will be blocked")
 
         logger.debug("Preparing Google GenAI request for model: %s", config.gemini_model_name)
-        
+
         # Inject configuration values into system prompt
-        system_prompt_with_config = SYSTEM_PROMPT.replace(
-            "{MAX_MOUSE_ATTEMPTS}", str(config.max_mouse_positioning_attempts)
-        ).replace(
-            "{MAX_LOOP_TURNS}", str(config.max_loop_turns)
-        ).replace(
-            "{ACTION_TIMEOUT}", str(config.action_timeout)
+        system_prompt_with_config = (
+            SYSTEM_PROMPT.replace(
+                "{MAX_MOUSE_ATTEMPTS}", str(config.max_mouse_positioning_attempts)
+            )
+            .replace("{MAX_LOOP_TURNS}", str(config.max_loop_turns))
+            .replace("{ACTION_TIMEOUT}", str(config.action_timeout))
         )
-        
+
         # Assemble the multimodal prompt in the correct order
         history_text = (
             "PREVIOUS STEPS:\n" + "\n".join(history[-config.max_loop_turns :])
@@ -228,36 +264,61 @@ def decide_next_action(
         generation_config = genai_types.GenerateContentConfig(
             temperature=config.temperature,
             max_output_tokens=config.max_tokens,
-            tools=tools_payload,
+            tools=cast(list[Any], tools_payload),
         )
-        
+
         logger.info("Sending multimodal prompt to Gemini API")
         logger.debug("Prompt structure: %d parts", len(prompt_parts))
 
         # Call the Gemini API with retry logic for resilience
         response = None
-        last_error = None
-        
+        last_error: Exception | None = None
+
         for attempt in range(1, config.api_max_retries + 1):
             try:
                 logger.debug(f"API call attempt {attempt}/{config.api_max_retries}")
 
-                with genai.Client(api_key=config.gemini_api_key) as client:
-                    response = client.models.generate_content(
-                        model=config.gemini_model_name,
-                        contents=prompt_parts,
-                        config=generation_config,
-                    )
-                
+                response = _generate_content_with_timeout(
+                    api_key=config.gemini_api_key,
+                    model=config.gemini_model_name,
+                    contents=prompt_parts,
+                    generation_config=generation_config,
+                    timeout_seconds=config.api_timeout,
+                )
+
                 logger.debug(f"Received response from Gemini API on attempt {attempt}")
                 break  # Success, exit retry loop
+
+            except FuturesTimeoutError as e:
+                last_error = e
+                logger.warning(
+                    "API timeout on attempt %d/%d after %ds",
+                    attempt,
+                    config.api_max_retries,
+                    config.api_timeout,
+                )
+                if attempt < config.api_max_retries:
+                    delay = config.api_retry_delay * (2 ** (attempt - 1))
+                    logger.info("Retrying in %.1f seconds...", delay)
+                    time.sleep(delay)
+                    continue
+                logger.error("API timeout after %d attempts", config.api_max_retries)
+                return (
+                    f"Errore: Timeout dell'API Gemini dopo {config.api_max_retries} tentativi. "
+                    "Il prompt potrebbe essere troppo complesso o c'e un problema di rete. "
+                    "Provo a semplificare l'azione."
+                )
 
             except genai_errors.APIError as e:
                 last_error = e
                 error_code = _extract_api_error_code(e)
                 error_text = str(e).lower()
 
-                if error_code in {408, 504} or "deadline" in error_text or "timed out" in error_text:
+                if (
+                    error_code in {408, 504}
+                    or "deadline" in error_text
+                    or "timed out" in error_text
+                ):
                     logger.warning(
                         "API timeout on attempt %d/%d: %s",
                         attempt,
@@ -276,7 +337,9 @@ def decide_next_action(
                         "Provo a semplificare l'azione."
                     )
 
-                if error_code == 429 or any(token in error_text for token in ("resource exhausted", "rate limit", "quota")):
+                if error_code == 429 or any(
+                    token in error_text for token in ("resource exhausted", "rate limit", "quota")
+                ):
                     logger.warning(
                         "API rate limit on attempt %d/%d: %s",
                         attempt,
@@ -284,7 +347,7 @@ def decide_next_action(
                         e,
                     )
                     if attempt < config.api_max_retries:
-                        delay = config.api_retry_delay * (3 ** attempt)
+                        delay = config.api_retry_delay * (3**attempt)
                         logger.info("Rate limited, retrying in %.1f seconds...", delay)
                         time.sleep(delay)
                         continue
@@ -294,7 +357,10 @@ def decide_next_action(
                         "Attendi qualche secondo prima di riprovare."
                     )
 
-                if error_code in {500, 502, 503} or any(token in error_text for token in ("service unavailable", "internal server error")):
+                if error_code in {500, 502, 503} or any(
+                    token in error_text
+                    for token in ("service unavailable", "internal server error")
+                ):
                     logger.warning(
                         "API service error on attempt %d/%d: %s",
                         attempt,
@@ -313,26 +379,28 @@ def decide_next_action(
                     )
 
                 raise
-        
+
         # If we got here without a response, something went wrong
         if response is None:
             error_msg = f"Errore imprevisto durante la chiamata API: {last_error}"
             logger.error(error_msg)
             return error_msg
-        
+
         # Process and return the response
         # Check if the response was blocked for safety reasons
         if not response.candidates:
             error_msg = "Errore: La risposta di Gemini è stata bloccata per motivi di sicurezza."
             logger.warning(error_msg)
             return error_msg
-        
+
         candidate = response.candidates[0]
-        
+
         # Check finish_reason for errors before processing
         finish_reason = getattr(candidate, "finish_reason", None)
         if _is_invalid_function_call_finish_reason(finish_reason):
-            error_msg = "Errore: Il modello ha generato una chiamata a funzione non valida. Riprovo..."
+            error_msg = (
+                "Errore: Il modello ha generato una chiamata a funzione non valida. Riprovo..."
+            )
             logger.warning(error_msg)
             return error_msg
 
@@ -362,7 +430,7 @@ def decide_next_action(
             logger.info("Model requested function call: %s", function_call.name)
             logger.debug("Function arguments: %s", dict(function_call.args))
             return function_call
-        
+
         # Check if response contains a function call
         if candidate.content.parts:
             for part in candidate.content.parts:
@@ -378,7 +446,7 @@ def decide_next_action(
                         )
                         logger.error(error_msg)
                         return error_msg
-                    
+
                     # VALIDATION: Check for consecutive deep_think usage
                     if function_call.name == "deep_think" and last_action_was_deep_think:
                         error_msg = (
@@ -389,15 +457,17 @@ def decide_next_action(
                         )
                         logger.error(error_msg)
                         return error_msg
-                    
+
                     logger.info("Model requested function call: %s", function_call.name)
                     logger.debug("Function arguments: %s", dict(function_call.args))
                     return function_call
-        
+
         # If no function call, extract text response safely
         try:
             if hasattr(response, "text") and response.text:
-                logger.warning("Model responded with text instead of function call - violates CRITICAL RULE")
+                logger.warning(
+                    "Model responded with text instead of function call - violates CRITICAL RULE"
+                )
                 logger.debug(f"Response text: {response.text[:200]}...")
                 return (
                     "ERRORE CRITICO: Hai risposto con SOLO TESTO invece di chiamare uno strumento. "
@@ -414,7 +484,9 @@ def decide_next_action(
             text_parts = [getattr(part, "text", "") for part in candidate.content.parts]
             joined = "\n".join(filter(None, text_parts)).strip()
             if joined:
-                logger.warning("Model provided textual response via content parts - violates CRITICAL RULE")
+                logger.warning(
+                    "Model provided textual response via content parts - violates CRITICAL RULE"
+                )
                 return (
                     "ERRORE CRITICO: Hai risposto con SOLO TESTO invece di chiamare uno strumento. "
                     "Questo VIOLA la regola fondamentale: 'CRITICAL RULE: ALWAYS CALL A TOOL'. "
@@ -422,7 +494,7 @@ def decide_next_action(
                     "Se non sai cosa fare, usa `switch_window` sulla finestra corrente per osservare. "
                     "NON puoi semplicemente 'pensare' o 'osservare' senza un tool. Riprova ORA."
                 )
-        
+
         # Empty response case
         error_msg = (
             "Errore: Gemini ha restituito una risposta vuota. "
@@ -430,20 +502,20 @@ def decide_next_action(
         )
         logger.warning(error_msg)
         return error_msg
-        
+
     except genai_errors.APIError as e:
-        error_msg = f"Errore API Google: {str(e)}"
+        error_msg = f"Errore API Google: {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
-        
+
     except ValueError as e:
         # Likely an API key or configuration issue
-        error_msg = f"Errore di configurazione: {str(e)}"
+        error_msg = f"Errore di configurazione: {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
-        
+
     except Exception as e:
         # Catch-all for unexpected errors
-        error_msg = f"Errore imprevisto durante la chiamata a Gemini: {str(e)}"
+        error_msg = f"Errore imprevisto durante la chiamata a Gemini: {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg

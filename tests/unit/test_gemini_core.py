@@ -38,14 +38,10 @@ class TestJsonTypeForAnnotation:
         assert _json_type_for_annotation(list) == "string"
 
     def test_optional_str_maps_to_string(self) -> None:
-        from typing import Optional
-
-        assert _json_type_for_annotation(Optional[str]) == "string"
+        assert _json_type_for_annotation(str | None) == "string"
 
     def test_optional_int_maps_to_integer(self) -> None:
-        from typing import Optional
-
-        assert _json_type_for_annotation(Optional[int]) == "integer"
+        assert _json_type_for_annotation(int | None) == "integer"
 
 
 class TestBuildFunctionDeclaration:
@@ -79,9 +75,7 @@ class TestBuildFunctionDeclaration:
         assert "y" in call_kwargs["parameters_json_schema"]["required"]
 
     def test_optional_param_not_in_required(self) -> None:
-        from typing import Optional
-
-        def func(required: str, optional: Optional[str] = None) -> str:
+        def func(required: str, optional: str | None = None) -> str:
             return ""
 
         with patch("src.reasoning.gemini_core.genai_types") as mock_types:
@@ -158,7 +152,9 @@ class TestPromptLoading:
 
         assert _load_system_prompt() == "prompt body"
 
-    def test_load_system_prompt_returns_empty_on_os_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_load_system_prompt_returns_empty_on_os_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         fake_path = MagicMock()
         fake_path.read_text.side_effect = OSError("missing")
         monkeypatch.setattr("src.reasoning.gemini_core._PROMPT_FILE", fake_path)
@@ -167,7 +163,9 @@ class TestPromptLoading:
 
 
 class TestDecideNextAction:
-    def _patch_common_dependencies(self, monkeypatch: pytest.MonkeyPatch, response: Any) -> MagicMock:
+    def _patch_common_dependencies(
+        self, monkeypatch: pytest.MonkeyPatch, response: Any
+    ) -> MagicMock:
         tool_decl = SimpleNamespace(name="click")
         tool_wrapper = SimpleNamespace(function_declarations=[tool_decl])
         client = MagicMock()
@@ -176,19 +174,27 @@ class TestDecideNextAction:
         client.models.generate_content.return_value = response
 
         monkeypatch.setattr(gemini_core, "_prepare_tools_payload", lambda tools: [tool_wrapper])
-        monkeypatch.setattr(gemini_core, "SYSTEM_PROMPT", "Prompt {MAX_LOOP_TURNS} {ACTION_TIMEOUT}")
+        monkeypatch.setattr(
+            gemini_core, "SYSTEM_PROMPT", "Prompt {MAX_LOOP_TURNS} {ACTION_TIMEOUT}"
+        )
         monkeypatch.setattr(gemini_core.genai, "Client", lambda api_key: client)
-        monkeypatch.setattr(gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs)
+        monkeypatch.setattr(
+            gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs
+        )
         return client
 
-    def test_returns_error_when_no_tools_are_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_error_when_no_tools_are_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(gemini_core, "_prepare_tools_payload", lambda tools: [])
 
         result = decide_next_action(MagicMock(), "tree", "cmd", [], [])
 
         assert "Nessun tool disponibile" in result
 
-    def test_returns_function_call_from_response_property_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_function_call_from_response_property_on_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         function_call = SimpleNamespace(name="click", args={"element_id": "1"})
         candidate = SimpleNamespace(finish_reason=None, content=SimpleNamespace(parts=[]))
         response = SimpleNamespace(candidates=[candidate], function_calls=[function_call], text="")
@@ -222,7 +228,9 @@ class TestDecideNextAction:
         monkeypatch.setattr(gemini_core, "_prepare_tools_payload", lambda tools: [tool_wrapper])
         monkeypatch.setattr(gemini_core, "SYSTEM_PROMPT", "Prompt")
         monkeypatch.setattr(gemini_core.genai, "Client", lambda api_key: client)
-        monkeypatch.setattr(gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs)
+        monkeypatch.setattr(
+            gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs
+        )
 
         result = decide_next_action(
             MagicMock(),
@@ -234,7 +242,9 @@ class TestDecideNextAction:
 
         assert "usare 'deep_think' consecutivamente" in result
 
-    def test_text_only_response_returns_critical_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_text_only_response_returns_critical_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         candidate = SimpleNamespace(
             finish_reason=None,
             content=SimpleNamespace(parts=[SimpleNamespace(function_call=None, text="just text")]),
@@ -273,10 +283,35 @@ class TestDecideNextAction:
         monkeypatch.setattr(gemini_core, "_prepare_tools_payload", lambda tools: [tool_wrapper])
         monkeypatch.setattr(gemini_core, "SYSTEM_PROMPT", "Prompt")
         monkeypatch.setattr(gemini_core.genai, "Client", lambda api_key: client)
-        monkeypatch.setattr(gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs)
+        monkeypatch.setattr(
+            gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs
+        )
         monkeypatch.setattr(gemini_core.genai_errors, "APIError", FakeAPIError)
         monkeypatch.setattr(gemini_core.time, "sleep", lambda seconds: None)
 
         result = decide_next_action(MagicMock(), "tree", "cmd", [], [lambda: None])
 
         assert result is function_call
+
+    def test_api_timeout_retries_then_returns_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            gemini_core,
+            "_prepare_tools_payload",
+            lambda tools: [SimpleNamespace(function_declarations=[SimpleNamespace(name="click")])],
+        )
+        monkeypatch.setattr(gemini_core, "SYSTEM_PROMPT", "Prompt")
+        monkeypatch.setattr(
+            gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs
+        )
+        monkeypatch.setattr(gemini_core.config, "api_max_retries", 2)
+        monkeypatch.setattr(gemini_core.config, "api_timeout", 1)
+        monkeypatch.setattr(gemini_core.time, "sleep", lambda seconds: None)
+
+        def raise_timeout(**kwargs: Any) -> Any:
+            raise gemini_core.FuturesTimeoutError()
+
+        monkeypatch.setattr(gemini_core, "_generate_content_with_timeout", raise_timeout)
+
+        result = decide_next_action(MagicMock(), "tree", "cmd", [], [lambda: None])
+
+        assert "Timeout dell'API Gemini" in result
