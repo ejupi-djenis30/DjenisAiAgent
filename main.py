@@ -16,6 +16,7 @@ import logging
 import argparse
 import asyncio
 import io
+import time
 from pathlib import Path
 from threading import Event
 from typing import List, TYPE_CHECKING
@@ -27,12 +28,15 @@ from PIL import Image
 
 IMAGE_RESAMPLING_LANCZOS = Image.Resampling.LANCZOS
 
-from src.config import config
+from src.config import config, VERSION
 from src.orchestration.agent_loop import run_agent_loop, agent_loop
 from src.perception.audio_transcription import (
     TranscriptionError,
     transcribe_wav_bytes,
 )
+
+# Application startup time for uptime calculation
+_APP_START_TIME: float = time.time()
 
 # FastAPI imports (only used in web mode)
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -57,6 +61,7 @@ try:
         HTTPException as HTTPExceptionRuntime,
     )
     from fastapi.responses import HTMLResponse as HTMLResponseRuntime, StreamingResponse as StreamingResponseRuntime
+    from pydantic import BaseModel, field_validator
     import uvicorn as uvicorn_runtime
     FASTAPI_AVAILABLE = True
 except ImportError as import_error:  # pragma: no cover - optional dependency
@@ -321,6 +326,50 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# ---------------------------------------------------------------------------
+# Pydantic models — WebSocket payload validation
+# ---------------------------------------------------------------------------
+
+class WebSocketMessage(BaseModel):
+    """Schema for messages received over the WebSocket connection."""
+
+    type: str = "command"
+    payload: str = ""
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        allowed = {"command", "cancel", "delete_task"}
+        normalized = v.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(f"Unknown message type: {v!r}. Allowed: {sorted(allowed)}")
+        return normalized
+
+    @field_validator("payload")
+    @classmethod
+    def validate_payload(cls, v: str) -> str:
+        # Reject payloads that exceed a safe size to prevent memory abuse
+        max_len = 4096
+        if len(v) > max_len:
+            raise ValueError(f"Payload too large: {len(v)} chars (max {max_len})")
+        return v.strip()
+
+
+@app.get("/health")
+async def health_check():
+    """Liveness/readiness check endpoint used by Docker HEALTHCHECK and CI.
+
+    Returns:
+        JSON with status, version, uptime in seconds, and current agent state.
+    """
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "uptime_seconds": round(time.time() - _APP_START_TIME, 1),
+        "agent_state": agent_state,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """
@@ -378,75 +427,65 @@ async def websocket_endpoint(websocket: WebSocket):
 
             try:
                 payload = json.loads(data)
+                if not isinstance(payload, dict):
+                    payload = {"type": "command", "payload": str(payload)}
             except json.JSONDecodeError:
                 payload = {"type": "command", "payload": data}
 
-            if isinstance(payload, dict):
-                message_type = str(payload.get("type", "command")).lower()
+            # Validate payload against Pydantic schema
+            try:
+                msg = WebSocketMessage.model_validate(payload)
+            except Exception as validation_err:
+                await websocket.send_json({
+                    "type": "log",
+                    "payload": f"⚠️ Invalid message: {validation_err}"
+                })
+                continue
 
-                if message_type == "command":
-                    command_text = str(payload.get("payload", "")).strip()
-                    if not command_text:
+            message_type = msg.type
+            command_text = msg.payload
+
+            if message_type == "command":
+                if not command_text:
+                    await websocket.send_json({
+                        "type": "log",
+                        "payload": "⚠️ Empty command ignored."
+                    })
+                elif agent_state == "running":
+                    await websocket.send_json({
+                        "type": "log",
+                        "payload": "⚠️ Agent is currently processing a task. Please wait or cancel."
+                    })
+                else:
+                    queued = await enqueue_command(command_text)
+                    if queued:
+                        agent_state = "running"
+                        await manager.broadcast_json({
+                            "type": "status",
+                            "payload": {
+                                "agent_state": "running",
+                                "message": f"Processing: {command_text}"
+                            }
+                        })
                         await websocket.send_json({
                             "type": "log",
-                            "payload": "⚠️ Empty command ignored."
+                            "payload": f"✅ Command queued: {command_text}"
                         })
-                    else:
-                        # Prevent multiple commands while agent is busy
-                        if agent_state == "running":
-                            await websocket.send_json({
-                                "type": "log",
-                                "payload": "⚠️ Agent is currently processing a task. Please wait for completion or cancel the current task."
-                            })
-                            continue
-                        
-                        queued = await enqueue_command(command_text)
-                        if queued:
-                            agent_state = "running"
-                            await manager.broadcast_json({
-                                "type": "status",
-                                "payload": {
-                                    "agent_state": "running",
-                                    "message": f"Processing: {command_text}"
-                                }
-                            })
-                            await websocket.send_json({
-                                "type": "log",
-                                "payload": f"✅ Command queued: {command_text}"
-                            })
 
-                elif message_type in ["cancel", "delete_task"]:
-                    cleared = await request_task_cancellation("🛑 User requested cancellation")
-                    agent_state = "cancelling"
-                    await manager.broadcast_json({
-                        "type": "status",
-                        "payload": {
-                            "agent_state": "cancelling",
-                            "message": "Cancelling task..."
-                        }
-                    })
-                    await websocket.send_json({
-                        "type": "log",
-                        "payload": f"🛑 Cancellation requested. Cleared {cleared} queued command(s)."
-                    })
-
-                else:
-                    await websocket.send_json({
-                        "type": "log",
-                        "payload": f"⚠️ Unsupported message type: {message_type}"
-                    })
-
-            else:
-                command_text = str(payload).strip()
-                if await enqueue_command(command_text):
-                    agent_state = "running"
-                    await manager.broadcast_json({
-                        "type": "status",
-                        "payload": {
-                            "agent_state": "running",
-                            "message": f"Processing: {command_text}"
-                        }
-                    })
+            elif message_type in ("cancel", "delete_task"):
+                cleared = await request_task_cancellation("🛑 User requested cancellation")
+                agent_state = "cancelling"
+                await manager.broadcast_json({
+                    "type": "status",
+                    "payload": {
+                        "agent_state": "cancelling",
+                        "message": "Cancelling task..."
+                    }
+                })
+                await websocket.send_json({
+                    "type": "log",
+                    "payload": f"🛑 Cancellation requested. Cleared {cleared} queued command(s)."
+                })
             
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")

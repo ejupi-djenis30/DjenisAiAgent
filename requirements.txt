@@ -29,8 +29,17 @@ websockets
 # Local audio transcription
 vosk
 
+# Data validation
+pydantic
+
 # Testing
 pytest
 pytest-asyncio
+pytest-cov
 
 python-multipart
+
+# Development tools (install manually or via: pip install ruff mypy pre-commit)
+# ruff
+# mypy
+# pre-commit

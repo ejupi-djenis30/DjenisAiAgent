@@ -1,0 +1,184 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "djenis-ai-agent"
+version = "0.1.0"
+description = "AI-powered Windows automation agent using Google Gemini and the ReAct paradigm"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Djenis" }]
+keywords = ["ai", "automation", "windows", "gemini", "agent", "react"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Desktop Environment",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core dependencies required for ALL modes
+dependencies = [
+    "google-generativeai>=0.7.0",
+    "Pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+# Windows UI automation (requires Windows OS)
+windows = [
+    "pywinauto>=0.6.8",
+    "pyautogui>=0.9.54",
+    "pyperclip>=1.8.2",
+]
+# Web server mode
+web = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "websockets>=12.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7.0",
+]
+# Browser automation
+browser = [
+    "selenium>=4.21.0",
+    "webdriver-manager>=4.0.1",
+]
+# Local speech transcription
+transcription = [
+    "vosk>=0.3.45",
+]
+# Full install (all optional features except dev)
+full = [
+    "djenis-ai-agent[windows,web,browser,transcription]",
+]
+# Development tooling
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.6",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "pre-commit>=3.7.0",
+    "types-Pillow",
+]
+
+[project.scripts]
+djenis = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/ejupi/DjenisAiAgent"
+Repository = "https://github.com/ejupi/DjenisAiAgent"
+Issues = "https://github.com/ejupi/DjenisAiAgent/issues"
+
+# ---------------------------------------------------------------------------
+# Tool: setuptools
+# ---------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+# ---------------------------------------------------------------------------
+# Tool: ruff (linting + formatting)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "TID", # flake8-tidy-imports
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in default arguments
+    "B904",   # raise without from inside except (many existing patterns)
+    "SIM108", # ternary operator (less readable in some cases)
+    "RUF012", # mutable class variables (dataclass fields)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+# ---------------------------------------------------------------------------
+# Tool: mypy (type checking)
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+exclude = ["tests/", "build/", "dist/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "pywinauto.*",
+    "pyautogui",
+    "pyperclip",
+    "vosk.*",
+    "google.generativeai.*",
+    "google.api_core.*",
+]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Tool: pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+    "-q",
+]
+markers = [
+    "integration: marks tests as integration tests (require Windows + real apps)",
+    "slow: marks tests as slow (deselect with '-m not slow')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:pywinauto",
+    "ignore::DeprecationWarning:pyautogui",
+]
+
+# ---------------------------------------------------------------------------
+# Tool: coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*", "*/migrations/*"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 40
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@overload",
+]
