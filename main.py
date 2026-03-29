@@ -22,7 +22,6 @@ from threading import Event
 from typing import List, TYPE_CHECKING
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-import google.generativeai as genai
 import pyautogui
 from PIL import Image
 
@@ -681,10 +680,8 @@ def run_cli_mode(args):
                 "La variabile d'ambiente GEMINI_API_KEY non è impostata. "
                 "Configura il file .env con la tua chiave API di Gemini."
             )
-        
-        # Configure the Gemini SDK with the API key
-        genai.configure(api_key=gemini_api_key)  # type: ignore[attr-defined]
-        logger.info("Gemini API configured successfully")
+
+        logger.info("Gemini API key detected successfully")
         
         # Validate additional configuration
         config.validate()
@@ -817,10 +814,9 @@ async def run_web_mode_async(host: str, port: int):
             "La variabile d'ambiente GEMINI_API_KEY non è impostata. "
             "Configura il file .env con la tua chiave API di Gemini."
         )
-    
-    genai.configure(api_key=gemini_api_key)  # type: ignore[attr-defined]
+
     config.validate()
-    logger.info("Gemini API configured for web mode")
+    logger.info("Gemini API key detected for web mode")
     logger.info(f"Using model: {config.gemini_model_name}")
     logger.info(f"Max loop turns: {config.max_loop_turns}")
     
