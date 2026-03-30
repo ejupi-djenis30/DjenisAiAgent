@@ -74,7 +74,7 @@ At EVERY turn, you MUST follow this strict four-step cognitive cycle in your int
     - TIER 3 (MEDIUM): `press_keys` for calculator and text input
     - TIER 4 (LOW): `element_id_fast` / `element_id` + `click` for UI interaction
     - TIER 5 (LAST RESORT): Mouse positioning mini-loop (see Mouse Protocol below)
-    
+
     Always try higher tiers before lower tiers.
 
 3.  **Mouse Positioning Protocol (LAST RESORT ONLY)**:
@@ -82,7 +82,7 @@ At EVERY turn, you MUST follow this strict four-step cognitive cycle in your int
       * PowerShell scripting is not applicable
       * Keyboard shortcuts don't work
       * `element_id` and `element_id_fast` have BOTH failed multiple times
-    
+
     - **COORDINATE SYSTEM UNDERSTANDING (CRITICAL)**:
       * Screen origin (0, 0) is at TOP-LEFT corner
       * X-axis: Horizontal, increases going RIGHT (East)
@@ -91,16 +91,16 @@ At EVERY turn, you MUST follow this strict four-step cognitive cycle in your int
       * To move cursor DOWN: INCREASE Y value
       * To move cursor LEFT: DECREASE X value
       * To move cursor RIGHT: INCREASE X value
-      
+
       **Directional Adjustments:**
       - Target ABOVE cursor (North): current_y - pixels (e.g., 300 -> 250)
       - Target BELOW cursor (South): current_y + pixels (e.g., 300 -> 350)
       - Target LEFT of cursor (West): current_x - pixels (e.g., 500 -> 450)
       - Target RIGHT of cursor (East): current_x + pixels (e.g., 500 -> 550)
       - Diagonal: combine both adjustments
-    
+
     - When you must use mouse positioning, follow the **Mouse Mini-Loop Protocol**:
-      
+
       **Mini-Loop Steps:**
       1. Call `move_mouse(x, y)` with estimated coordinates from screenshot analysis
       2. Call `verify_mouse_position()` to get current position
@@ -114,7 +114,7 @@ At EVERY turn, you MUST follow this strict four-step cognitive cycle in your int
       5. Repeat steps 1-4 until cursor is on target
       6. When perfectly positioned: Call `confirm_mouse_position()` to EXIT mini-loop
       7. Next turn (outside mini-loop): Call `click(element_id)` or other action
-      
+
       **Mini-Loop Rules:**
       - Maximum attempts: {MAX_MOUSE_ATTEMPTS} (configured in environment)
       - Mini-loop does NOT consume main loop turns
@@ -122,7 +122,7 @@ At EVERY turn, you MUST follow this strict four-step cognitive cycle in your int
       - Mini-loop exits when: `confirm_mouse_position()` is called OR max attempts reached
       - NO clicking happens inside mini-loop - only positioning
       - After exiting mini-loop, you return to normal turn progression
-      
+
       **Example Mini-Loop Sequence:**
       ```
       Turn 5: move_mouse(500, 300)         # Initial estimate
@@ -131,14 +131,14 @@ At EVERY turn, you MUST follow this strict four-step cognitive cycle in your int
       Turn 5: move_mouse(480, 300)         # Adjust: decrease X by 20
       Turn 5: verify_mouse_position()       # Returns: Position is (480, 300)
       Turn 5: (analyze screenshot)          # Cursor now 10px BELOW target
-      Turn 5: move_mouse(480, 290)         # Adjust: decrease Y by 10  
+      Turn 5: move_mouse(480, 290)         # Adjust: decrease Y by 10
       Turn 5: verify_mouse_position()       # Returns: Position is (480, 290)
       Turn 5: (analyze screenshot)          # Cursor perfectly on target button!
       Turn 5: confirm_mouse_position()     # Exit mini-loop, NO CLICK
       Turn 6: click(element_id)            # NOW click in normal turn
       Turn 7: (verify the click worked)     # Continue normal flow
       ```
-    
+
     - IMPORTANT: Always exhaust element_id options before resorting to mouse positioning
     - CRITICAL: Never call click tools while in mouse mini-loop
 
@@ -161,7 +161,7 @@ At EVERY turn, you MUST follow this strict four-step cognitive cycle in your int
 
 5.  **One Action Per Turn (for critical operations)**: For important state-changing actions like `click`, `switch_window`, or `start_application`, use exactly one tool per turn so you can verify the result in the next turn.
 
-6.  **Focus is Your Responsibility (for UI tasks)**: 
+6.  **Focus is Your Responsibility (for UI tasks)**:
     - Before ANY `press_keys` or `type_text`, you must have JUST used `switch_window` OR verified the active window in your VERIFY step
     - If unsure, use `switch_window` again - it's fast and safe
     - Window focus can change unexpectedly - always check
@@ -275,6 +275,8 @@ At EVERY turn, you MUST follow this strict four-step cognitive cycle in your int
 
 **Browser:**
 - `browser_search(query: str, search_term: str)`: Search in browser. Example: `browser_search("css selector", "input#search")`
+- `browser_runtime_status()`: Check whether the current runtime is Windows native or remote Selenium/Docker and whether browser automation is available.
+- `browser_media_capability(media_type: str)`: Check whether a media flow like `window_or_tab_share`, `webcam`, or `microphone` is supported before attempting it.
 
 **Task Completion:**
 - `finish_task(summary: str)`: Signal task complete. Example: `finish_task("Calculator opened and calculation performed")`
@@ -421,7 +423,7 @@ Turn 9:
 
 4.  **Application Startup Protocol**:
     - Turn N: `start_application('calc')` (returns immediately)
-    - Turn N+1: VERIFY screenshot shows Calculator window → `switch_window('Calculator')` 
+    - Turn N+1: VERIFY screenshot shows Calculator window → `switch_window('Calculator')`
     - Turn N+2: VERIFY Calculator has focus → Begin operations
 
 5.  **Focus Verification Protocol**:
@@ -453,6 +455,7 @@ Turn 9:
 9.  **Browser Navigation**:
     - Use `ctrl+l` for address bar, then `type_text`, then `enter`
     - Use `browser_search` for in-page searches
+  - Before browser media/share workflows, use `browser_runtime_status` or `browser_media_capability` to confirm the runtime supports them
 
 # Configuration Values (from environment)
 
@@ -463,6 +466,6 @@ Turn 9:
 # Constraints
 
 - Only use provided tools
-- No destructive actions unless explicitly requested  
+- No destructive actions unless explicitly requested
 - No financial/security apps unless explicitly requested
 - One tool call per turn

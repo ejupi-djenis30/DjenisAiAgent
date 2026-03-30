@@ -13,7 +13,12 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import pyautogui
+try:
+    import pyautogui
+
+    HAS_PYAUTOGUI = True
+except ImportError:
+    HAS_PYAUTOGUI = False
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -494,7 +499,12 @@ async def screen_generator():
             buffer = io.BytesIO()
             try:
                 # Capture the current screen using pyautogui without blocking the loop
-                screenshot = await asyncio.to_thread(pyautogui.screenshot)
+                if HAS_PYAUTOGUI:
+                    screenshot = await asyncio.to_thread(pyautogui.screenshot)
+                else:
+                    # Fallback for Docker/Linux: return a blank screen with a message
+                    screenshot = Image.new("RGB", (1280, 720), color=(30, 30, 30))
+                    # You could draw some text here if you want, but a blank screen is enough to not crash
 
                 if 0.0 < config.stream_resize_factor < 0.999:
                     width, height = screenshot.size

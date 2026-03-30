@@ -5,11 +5,23 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-import pyautogui
+try:
+    import pyautogui
+
+    HAS_PYAUTOGUI = True
+except ImportError:
+    HAS_PYAUTOGUI = False
+
 from PIL import Image
-from pywinauto import Desktop
-from pywinauto.findwindows import ElementNotFoundError
-from pywinauto.timings import TimeoutError as PywinautoTimeoutError
+
+try:
+    from pywinauto import Desktop
+    from pywinauto.findwindows import ElementNotFoundError
+    from pywinauto.timings import TimeoutError as PywinautoTimeoutError
+
+    HAS_PYWINAUTO = True
+except ImportError:
+    HAS_PYWINAUTO = False
 
 from src.config import config
 
@@ -17,6 +29,19 @@ logger = logging.getLogger(__name__)
 
 MAX_SNAPSHOT_DEPTH: int = config.snapshot_depth
 LAST_UI_SNAPSHOT: list[dict[str, Any]] = []
+
+
+def _desktop_unavailable_message() -> str:
+    if config.uses_remote_selenium():
+        return (
+            "Interazione desktop non disponibile nel runtime Docker/browser remoto. "
+            "Questo runtime supporta automazione DOM del browser, ma non accesso al display host "
+            "o condivisione reale di finestra/tab. Per browser media e screen share reali usa il runtime Windows nativo."
+        )
+    return (
+        "Interazione desktop non disponibile in questo ambiente. "
+        "Usa gli strumenti browser per interagire con le pagine web."
+    )
 
 
 def _safe_str(value: Any) -> str:
@@ -208,9 +233,19 @@ def get_multimodal_context() -> tuple[Image.Image, str]:
             - PIL Image object of the screenshot
             - String representation of the UI element tree
     """
-    screenshot_raw = pyautogui.screenshot()
-    screenshot = cast(Image.Image, screenshot_raw)
+    if not HAS_PYAUTOGUI:
+        logger.warning(
+            "pyautogui non disponibile nel runtime corrente. Restituisco uno screenshot vuoto."
+        )
+        screenshot = Image.new("RGB", (1280, 720), color="black")
+    else:
+        screenshot_raw = pyautogui.screenshot()
+        screenshot = cast(Image.Image, screenshot_raw)
+
     screenshot = _downscale_for_perception(screenshot)
+
+    if not HAS_PYWINAUTO:
+        return screenshot, _desktop_unavailable_message()
 
     global LAST_UI_SNAPSHOT
 
@@ -249,6 +284,9 @@ def get_multimodal_context() -> tuple[Image.Image, str]:
 
 def _get_active_window(backend: str) -> Any | None:
     """Return the active window for the requested pywinauto backend."""
+
+    if not HAS_PYWINAUTO:
+        return None
 
     try:
         desktop = Desktop(backend=backend)
@@ -293,6 +331,11 @@ class ScreenCapture:
         Returns:
             PIL.Image.Image: The captured screenshot.
         """
+        if not HAS_PYAUTOGUI:
+            logger.warning(
+                "pyautogui non disponibile nel runtime corrente. Restituisco uno screenshot vuoto."
+            )
+            return Image.new("RGB", (1280, 720), color="black")
         return cast(Image.Image, pyautogui.screenshot())
 
     def prepare_for_gemini(self, image: Image.Image) -> Image.Image:

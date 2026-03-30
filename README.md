@@ -60,10 +60,10 @@ This is useful for:
 | --- | --- | --- |
 | Native desktop automation | Windows | Full pywinauto + pyautogui support lives here. |
 | Web control surface | Windows, Linux, Docker | FastAPI, WebSocket, health endpoint, streaming UI. |
-| Browser automation | Windows native, Docker web mode | Docker is browser-oriented, not full desktop UI automation. |
+| Browser automation | Windows native, Docker web mode | Windows native is the full-capability path. Docker is browser-oriented and limited to remote Selenium/browser DOM automation. |
 | Local transcription | Any environment with Vosk model available | Requires `DJENIS_LOCAL_TRANSCRIPTION=1` and a valid model path. |
 
-Important constraint: Docker does not provide native Windows desktop automation. The containerized setup is intended for web mode, browser automation, remote control, and API integration, not for interacting with arbitrary Windows desktop apps inside the container.
+Important constraint: Docker does not provide native Windows desktop automation or real host browser media flows such as window/tab sharing. The containerized setup is intended for web mode, browser DOM automation, remote control, and API integration, not for interacting with arbitrary Windows desktop apps inside the container.
 
 ## Architecture
 
@@ -228,7 +228,13 @@ The Docker setup is intended for:
 - Exposing `/health`, `/stream`, and WebSocket control endpoints.
 - Driving browser automation through Selenium in a Linux container.
 
-The Docker setup is not intended for native Windows desktop automation.
+The Docker setup is not the right runtime for:
+
+- Real browser window/tab sharing.
+- Host display capture.
+- Windows desktop automation through pywinauto/pyautogui.
+
+For full browser media flows, keep the browser on the Windows host and run the agent in native mode.
 
 ### Build the image
 

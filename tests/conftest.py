@@ -52,6 +52,13 @@ def mock_gemini_client() -> Generator[MagicMock, None, None]:
 @pytest.fixture()
 def fake_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set minimum required environment variables for config loading."""
+    monkeypatch.setattr("src.config.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-api-key-fake")
     monkeypatch.delenv("DJENIS_GEMINI_MODEL", raising=False)
     monkeypatch.delenv("DJENIS_MAX_LOOP_TURNS", raising=False)
+    monkeypatch.delenv("DJENIS_ACTION_TIMEOUT", raising=False)
+    monkeypatch.delenv("DJENIS_PROFILE", raising=False)
+    monkeypatch.delenv("DJENIS_RUNTIME_MODE", raising=False)
+    monkeypatch.delenv("SELENIUM_REMOTE_URL", raising=False)
+    monkeypatch.delenv("DJENIS_BROWSER_DEBUGGING_HOST", raising=False)
+    monkeypatch.delenv("DJENIS_BROWSER_DEBUGGING_PORT", raising=False)

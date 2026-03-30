@@ -44,14 +44,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
+    chromium \
+    chromium-driver \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Google Chrome
-RUN wget -q -O /tmp/chrome.deb \
-    "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
-    apt-get update && apt-get install -y --no-install-recommends /tmp/chrome.deb && \
-    rm /tmp/chrome.deb && \
-    rm -rf /var/lib/apt/lists/*
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv

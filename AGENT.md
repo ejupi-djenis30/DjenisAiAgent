@@ -11,8 +11,8 @@ DjenisAiAgent is a multimodal automation agent built around a ReAct loop:
 
 The repository is designed to support two primary runtime modes:
 
-- CLI mode for direct local execution.
-- Web mode for queue-based execution, streaming updates, and browser control from FastAPI.
+- Windows native mode for full desktop automation, local browser attachment, and browser media/share flows.
+- Web/Docker mode for queue-based execution, streaming updates, and browser DOM control through remote Selenium.
 
 ## Core Modules
 
@@ -41,16 +41,20 @@ The repository is designed to support two primary runtime modes:
 - The task loop now enforces a global wall-clock timeout in addition to the per-turn limit.
 - Perception can be downscaled before sending screenshots to Gemini to control latency and token cost.
 - Structured audit events are appended to a JSONL log so task execution and tool calls can be reconstructed after failures.
+- Docker/browser-remote mode should be treated as browser-only: do not assume access to host display capture, Windows UI automation, or real browser window/tab sharing.
 
 ## Configuration Notes
 
 Important settings live in `.env` / environment variables:
 
 - `GEMINI_API_KEY`: required for all reasoning.
+- `DJENIS_RUNTIME_MODE`: optional runtime override (`auto`, `windows`, `docker`, `headless`).
 - `DJENIS_MAX_LOOP_TURNS`: max number of reasoning turns.
 - `DJENIS_TASK_TIMEOUT`: wall-clock timeout for the full task.
 - `DJENIS_ACTION_TIMEOUT`: timeout for UI-bound actions.
 - `DJENIS_API_TIMEOUT`: timeout per Gemini API attempt.
+- `SELENIUM_REMOTE_URL`: enables remote Selenium mode for Docker/browser-only runtime.
+- `DJENIS_BROWSER_DEBUGGING_HOST` / `DJENIS_BROWSER_DEBUGGING_PORT`: local browser attach settings for Windows native mode.
 - `DJENIS_PERCEPTION_DOWNSCALE`: screenshot resize factor before reasoning.
 - `DJENIS_ENABLE_AUDIT_LOG` / `DJENIS_AUDIT_LOG_PATH`: enable and locate the JSONL audit log.
 - `DJENIS_PROFILE`: applies performance or quality presets.

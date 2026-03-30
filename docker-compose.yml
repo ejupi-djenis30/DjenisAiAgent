@@ -11,7 +11,7 @@ services:
     container_name: djenis-agent
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8008:8000"
     environment:
       # Required secrets — set in .env file or pass via environment
       GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -50,7 +50,7 @@ services:
   # Selenium standalone Chrome (headless browser automation)
   # ---------------------------------------------------------------------------
   chrome:
-    image: selenium/standalone-chrome:4.21.0
+    image: selenium/standalone-chromium:4.21.0
     container_name: djenis-chrome
     restart: unless-stopped
     shm_size: 2g

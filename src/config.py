@@ -60,6 +60,30 @@ def _env_bool(name: str, default: bool) -> bool:
     )
 
 
+def _resolve_runtime_mode() -> str:
+    requested_mode = os.getenv("DJENIS_RUNTIME_MODE", "auto").strip().lower()
+    valid_modes = {"auto", "windows", "docker", "headless"}
+    if requested_mode not in valid_modes:
+        raise ValueError(
+            "Environment variable DJENIS_RUNTIME_MODE must be one of auto, windows, docker, headless"
+        )
+
+    if requested_mode != "auto":
+        return requested_mode
+
+    if os.getenv("SELENIUM_REMOTE_URL", "").strip():
+        return "docker"
+    if os.name == "nt":
+        return "windows"
+    return "headless"
+
+
+def _resolve_browser_connection_mode() -> str:
+    if os.getenv("SELENIUM_REMOTE_URL", "").strip():
+        return "remote-selenium"
+    return "local-debugger"
+
+
 @dataclass
 class AgentConfig:
     """Configuration container with environment overrides and validation."""
@@ -152,6 +176,15 @@ class AgentConfig:
 
     # Performance profile
     profile: str = field(default_factory=lambda: os.getenv("DJENIS_PROFILE", "default").lower())
+    runtime_mode: str = field(default_factory=_resolve_runtime_mode)
+    browser_connection_mode: str = field(default_factory=_resolve_browser_connection_mode)
+    selenium_remote_url: str = field(default_factory=lambda: os.getenv("SELENIUM_REMOTE_URL", ""))
+    browser_debugging_host: str = field(
+        default_factory=lambda: os.getenv("DJENIS_BROWSER_DEBUGGING_HOST", "127.0.0.1")
+    )
+    browser_debugging_port: int = field(
+        default_factory=lambda: _env_int("DJENIS_BROWSER_DEBUGGING_PORT", 9222)
+    )
 
     def validate(self) -> bool:
         """Validate configuration settings and ensure secrets are present."""
@@ -205,6 +238,15 @@ class AgentConfig:
         if self.enable_audit_log and not self.audit_log_path.strip():
             raise ValueError("DJENIS_AUDIT_LOG_PATH must be set when audit logging is enabled")
 
+        if self.runtime_mode not in {"windows", "docker", "headless"}:
+            raise ValueError("DJENIS_RUNTIME_MODE resolved to an unsupported value")
+
+        if self.browser_connection_mode not in {"local-debugger", "remote-selenium"}:
+            raise ValueError("Browser connection mode resolved to an unsupported value")
+
+        if self.browser_debugging_port <= 0:
+            raise ValueError("DJENIS_BROWSER_DEBUGGING_PORT must be greater than 0")
+
         return True
 
     def safe_view(self) -> dict[str, Any]:
@@ -236,6 +278,21 @@ class AgentConfig:
             self.perception_downscale = 1.0
             self.screenshot_quality = max(self.screenshot_quality, 95)
             self.screenshot_format = "PNG"
+
+    def uses_remote_selenium(self) -> bool:
+        """Return True when browser automation is expected to use a remote Selenium endpoint."""
+
+        return self.browser_connection_mode == "remote-selenium"
+
+    def supports_native_desktop(self) -> bool:
+        """Return True when the runtime is expected to have direct access to the host desktop."""
+
+        return self.runtime_mode == "windows" and not self.uses_remote_selenium()
+
+    def supports_real_browser_media(self) -> bool:
+        """Return True when browser media flows can rely on a real host browser session."""
+
+        return self.browser_connection_mode == "local-debugger" and self.runtime_mode == "windows"
 
 
 def load_config(dotenv_path: os.PathLike[str] | None = None) -> AgentConfig:

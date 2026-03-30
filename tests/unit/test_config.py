@@ -51,6 +51,11 @@ class TestAgentConfigDefaults:
         cfg = load_config()
         assert cfg.enable_local_transcription is False
 
+    def test_default_browser_connection_mode_is_local_debugger(self, fake_env: None) -> None:
+        cfg = load_config()
+        assert cfg.browser_connection_mode == "local-debugger"
+        assert cfg.uses_remote_selenium() is False
+
 
 # ---------------------------------------------------------------------------
 # Environment overrides
@@ -94,6 +99,27 @@ class TestAgentConfigEnvOverrides:
         monkeypatch.setenv("GEMINI_API_KEY", "key")
         monkeypatch.setenv("DJENIS_VERBOSE_LOGGING", "maybe")
         with pytest.raises(ValueError):
+            load_config()
+
+    def test_remote_selenium_env_switches_runtime_capabilities(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GEMINI_API_KEY", "key")
+        monkeypatch.setenv("SELENIUM_REMOTE_URL", "http://chrome:4444/wd/hub")
+
+        cfg = load_config()
+
+        assert cfg.runtime_mode == "docker"
+        assert cfg.browser_connection_mode == "remote-selenium"
+        assert cfg.uses_remote_selenium() is True
+        assert cfg.supports_native_desktop() is False
+        assert cfg.supports_real_browser_media() is False
+
+    def test_invalid_runtime_mode_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GEMINI_API_KEY", "key")
+        monkeypatch.setenv("DJENIS_RUNTIME_MODE", "invalid")
+
+        with pytest.raises(ValueError, match="DJENIS_RUNTIME_MODE"):
             load_config()
 
 
@@ -145,6 +171,12 @@ class TestAgentConfigValidation:
         cfg.enable_local_transcription = True
         cfg.vosk_model_path = ""
         with pytest.raises(ValueError, match="VOSK_MODEL_PATH"):
+            cfg.validate()
+
+    def test_zero_browser_debugging_port_raises(self, fake_env: None) -> None:
+        cfg = load_config()
+        cfg.browser_debugging_port = 0
+        with pytest.raises(ValueError, match="DEBUGGING_PORT"):
             cfg.validate()
 
 

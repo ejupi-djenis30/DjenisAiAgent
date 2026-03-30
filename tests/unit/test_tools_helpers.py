@@ -260,6 +260,49 @@ class TestCommandAndClipboard:
 
         assert tools_module.browser_search("search", "term") == "typed search term True"
 
+    def test_browser_runtime_status_reports_remote_selenium_limits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tools_module.browser_tools, "is_browser_available", lambda: True)
+        monkeypatch.setattr(tools_module.config, "runtime_mode", "docker")
+        monkeypatch.setattr(tools_module.config, "browser_connection_mode", "remote-selenium")
+        monkeypatch.setattr(tools_module.config, "supports_native_desktop", lambda: False)
+        monkeypatch.setattr(tools_module.config, "supports_real_browser_media", lambda: False)
+        monkeypatch.setattr(tools_module.config, "uses_remote_selenium", lambda: True)
+
+        result = tools_module.browser_runtime_status()
+
+        assert "remote-selenium" in result
+        assert "Real browser media/share support: no" in result
+        assert "does not support host window/tab sharing" in result
+
+    def test_browser_media_capability_allows_native_windows_media(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tools_module.config, "supports_real_browser_media", lambda: True)
+        monkeypatch.setattr(tools_module.config, "uses_remote_selenium", lambda: False)
+
+        result = tools_module.browser_media_capability("tab_share")
+
+        assert "supported" in result
+        assert "window_or_tab_share" in result
+
+    def test_browser_media_capability_blocks_remote_selenium_media(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tools_module.config, "supports_real_browser_media", lambda: False)
+        monkeypatch.setattr(tools_module.config, "uses_remote_selenium", lambda: True)
+
+        result = tools_module.browser_media_capability("webcam")
+
+        assert "not supported" in result
+        assert "Docker/browser-remote mode" in result
+
+    def test_browser_media_capability_validates_input(self) -> None:
+        result = tools_module.browser_media_capability("unknown")
+
+        assert "Unsupported media_type" in result
+
     def test_copy_and_paste_clipboard_shortcuts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         recorded: list[tuple[str, str]] = []
         fake_pyautogui = SimpleNamespace(hotkey=lambda *keys: recorded.append(tuple(keys)))
