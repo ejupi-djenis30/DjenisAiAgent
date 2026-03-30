@@ -15,10 +15,33 @@ from threading import Lock, Thread
 from typing import Any, TypeVar, cast
 from uuid import uuid4
 
-from pywinauto.application import Application
-from pywinauto.findbestmatch import MatchError
-from pywinauto.findwindows import ElementNotFoundError
-from pywinauto.timings import TimeoutError as PywinautoTimeoutError
+try:
+    from pywinauto.application import Application
+    from pywinauto.findbestmatch import MatchError
+    from pywinauto.findwindows import ElementNotFoundError
+    from pywinauto.timings import TimeoutError as PywinautoTimeoutError
+
+    HAS_PYWINAUTO = True
+except ImportError:
+    HAS_PYWINAUTO = False
+
+    # Define dummy exception classes for Linux environments
+    class MatchError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class ElementNotFoundError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class PywinautoTimeoutError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class Application:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self, *args, **kwargs):
+            raise RuntimeError("Connessione pywinauto non disponibile in questo ambiente.")
+
 
 from src.action import browser_tools
 from src.config import config
@@ -489,7 +512,10 @@ def element_id(
             browser_result = browser_tools.browser_find_and_click(query)
             if "✅" in browser_result:
                 return f"🔍 [Browser Mode] {browser_result}"
-        return "Errore: Impossibile analizzare la finestra corrente (timeout). Se sei in un browser, assicurati che sia avviato con --remote-debugging-port=9222"
+        return (
+            "Errore: Impossibile analizzare la finestra corrente (timeout). "
+            f"Se sei in un browser, {browser_tools.get_browser_setup_hint()}"
+        )
 
     query_norm = _normalize(query)
     control_type_norm = _normalize(control_type)
@@ -1150,11 +1176,101 @@ def browser_search(query: str, search_term: str) -> str:
         return "⚠️ Questo strumento funziona solo all'interno di un browser. Usa type_text per altre applicazioni."
 
     if not browser_tools.is_browser_available():
-        return "❌ Selenium non disponibile. Avvia il browser con --remote-debugging-port=9222"
+        return f"❌ Selenium non disponibile. {browser_tools.get_browser_setup_hint()}"
 
     logger.info(f"🔍 Browser search: cercando '{query}' per digitare '{search_term}'")
     result = browser_tools.browser_find_and_type(query, search_term, press_enter=True)
     return result
+
+
+def browser_runtime_status() -> str:
+    """
+    Report the current browser runtime and its automation capabilities.
+
+    Use this tool before browser media flows, meeting join flows, or troubleshooting
+    browser attach issues. It explains whether the agent is attached to a real host
+    browser session or to a remote Selenium browser in Docker.
+
+    Returns:
+        A human-readable runtime summary including desktop/media capability guidance.
+    """
+    browser_available = browser_tools.is_browser_available()
+    browser_status = "available" if browser_available else "unavailable"
+    desktop_status = "yes" if config.supports_native_desktop() else "no"
+    media_status = "yes" if config.supports_real_browser_media() else "no"
+
+    lines = [
+        f"Browser runtime mode: {config.runtime_mode}",
+        f"Browser connection mode: {config.browser_connection_mode}",
+        f"Browser automation available: {browser_status}",
+        f"Native desktop access: {desktop_status}",
+        f"Real browser media/share support: {media_status}",
+    ]
+
+    if config.uses_remote_selenium():
+        lines.append(
+            "This runtime is browser-only via remote Selenium and does not support host window/tab sharing."
+        )
+    else:
+        lines.append(
+            "This runtime can attach to a host browser session when the browser is started with remote debugging enabled."
+        )
+
+    if not browser_available:
+        lines.append(browser_tools.get_browser_setup_hint())
+
+    return "\n".join(lines)
+
+
+def browser_media_capability(media_type: str = "window_or_tab_share") -> str:
+    """
+    Check whether a browser media flow is supported in the current runtime.
+
+    Use this before workflows that depend on screen sharing, tab sharing, webcam,
+    or microphone access. The tool helps the agent avoid trying unsupported browser
+    media operations in Docker or remote Selenium mode.
+
+    Args:
+        media_type: Requested media flow, such as 'window_or_tab_share', 'screen_share',
+            'webcam', or 'microphone'.
+
+    Returns:
+        A message stating whether the requested media flow is supported.
+    """
+    normalized = media_type.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "tab_share": "window_or_tab_share",
+        "window_share": "window_or_tab_share",
+        "screen_share": "window_or_tab_share",
+        "display_share": "window_or_tab_share",
+        "camera": "webcam",
+        "mic": "microphone",
+        "audio": "microphone",
+    }
+    normalized = aliases.get(normalized, normalized)
+
+    supported_media = {"window_or_tab_share", "webcam", "microphone"}
+    if normalized not in supported_media:
+        supported_values = ", ".join(sorted(supported_media))
+        return f"Unsupported media_type '{media_type}'. " f"Use one of: {supported_values}."
+
+    if config.supports_real_browser_media():
+        return (
+            f"Browser media flow '{normalized}' is supported in the current Windows native runtime. "
+            "Keep the browser on the host and attach via local remote debugging."
+        )
+
+    if config.uses_remote_selenium():
+        return (
+            f"Browser media flow '{normalized}' is not supported in Docker/browser-remote mode. "
+            "Remote Selenium can automate the DOM but cannot provide real host window/tab sharing or host media devices. "
+            "Use Windows native runtime for this flow."
+        )
+
+    return (
+        f"Browser media flow '{normalized}' is not available in the current runtime. "
+        f"{browser_tools.get_browser_setup_hint()}"
+    )
 
 
 def deep_think(reasoning: str) -> str:

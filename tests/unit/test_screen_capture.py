@@ -10,9 +10,11 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from PIL import Image
 
 from src.perception.screen_capture import (
     ScreenCapture,
+    _desktop_unavailable_message,
     _downscale_for_perception,
     _get_active_window,
     _safe_str,
@@ -223,6 +225,18 @@ class _FakeWrapper:
 
 
 class TestSnapshotBuilders:
+    def test_desktop_unavailable_message_reports_remote_browser_limits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "src.perception.screen_capture.config.browser_connection_mode", "remote-selenium"
+        )
+
+        message = _desktop_unavailable_message()
+
+        assert "Docker/browser remoto" in message
+        assert "finestra/tab" in message
+
     def test_build_control_snapshot_walks_children(self) -> None:
         child = _FakeWrapper("Child")
         root = _FakeWrapper("Root", [child])
@@ -245,8 +259,9 @@ class TestSnapshotBuilders:
     def test_get_multimodal_context_uses_uia_backend_first(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        screenshot = MagicMock()
+        screenshot = Image.new("RGB", (100, 80), "white")
         root = _FakeWrapper("Root")
+        monkeypatch.setattr("src.perception.screen_capture.config.perception_downscale", 1.0)
 
         monkeypatch.setattr(
             "src.perception.screen_capture.pyautogui.screenshot", lambda: screenshot
@@ -263,8 +278,10 @@ class TestSnapshotBuilders:
     def test_get_multimodal_context_reports_fallback_failure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr("src.perception.screen_capture.config.perception_downscale", 1.0)
         monkeypatch.setattr(
-            "src.perception.screen_capture.pyautogui.screenshot", lambda: MagicMock()
+            "src.perception.screen_capture.pyautogui.screenshot",
+            lambda: Image.new("RGB", (100, 80), "white"),
         )
 
         def fail_backend(backend: str):

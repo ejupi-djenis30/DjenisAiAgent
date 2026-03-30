@@ -18,6 +18,8 @@ import logging
 from threading import Lock
 from typing import Any, cast
 
+from src.config import config
+
 logger = logging.getLogger(__name__)
 
 # Track Selenium availability and runtime imports
@@ -63,7 +65,21 @@ except ImportError:
 # Global driver instance (reused across calls)
 _driver: Any | None = None
 _driver_lock: Lock = Lock()
-_remote_debugging_port = 9222
+
+
+def _get_debugger_address() -> str:
+    return f"{config.browser_debugging_host}:{config.browser_debugging_port}"
+
+
+def get_browser_setup_hint() -> str:
+    """Return the runtime-specific instructions required to connect Selenium."""
+
+    if config.uses_remote_selenium():
+        remote_url = config.selenium_remote_url.strip()
+        if remote_url:
+            return "Verifica che il servizio Selenium remoto sia raggiungibile su " f"{remote_url}."
+        return "Imposta SELENIUM_REMOTE_URL per usare il runtime browser remoto."
+    return "Avvia Chrome o Edge con " f"--remote-debugging-port={config.browser_debugging_port}."
 
 
 def _get_or_create_driver() -> Any | None:
@@ -90,37 +106,39 @@ def _get_or_create_driver() -> Any | None:
                 logger.warning("Driver esistente non valido, riconnessione...")
                 _driver = None
 
-        # Try to connect to existing browser with remote debugging
+        # Use the configured browser connection strategy for this runtime.
         try:
+            if config.uses_remote_selenium():
+                remote_url = config.selenium_remote_url.strip()
+                options = webdriver.ChromeOptions()
+                _driver = webdriver.Remote(command_executor=remote_url, options=options)
+                logger.info("✅ Connesso a Selenium remoto: %s", remote_url)
+                return _driver
+
+            debugger_address = _get_debugger_address()
             options = webdriver.ChromeOptions()
-            options.add_experimental_option(
-                "debuggerAddress", f"127.0.0.1:{_remote_debugging_port}"
-            )
+            options.add_experimental_option("debuggerAddress", debugger_address)
 
             # Try Edge first (common on Windows 11)
             try:
                 from selenium.webdriver.edge.options import Options as EdgeOptions
 
                 edge_options = EdgeOptions()
-                edge_options.add_experimental_option(
-                    "debuggerAddress", f"127.0.0.1:{_remote_debugging_port}"
-                )
+                edge_options.add_experimental_option("debuggerAddress", debugger_address)
                 _driver = webdriver.Edge(options=edge_options)
-                logger.info(f"✅ Connesso a Edge tramite porta {_remote_debugging_port}")
+                logger.info("✅ Connesso a Edge tramite debugger remoto %s", debugger_address)
                 return _driver
             except Exception:
                 pass
 
             # Fallback to Chrome
             _driver = webdriver.Chrome(options=options)
-            logger.info(f"✅ Connesso a Chrome tramite porta {_remote_debugging_port}")
+            logger.info("✅ Connesso a Chrome tramite debugger remoto %s", debugger_address)
             return _driver
 
         except WebDriverException as e:
             logger.error(
-                f"❌ Impossibile connettersi al browser. "
-                f"Assicurati che sia stato avviato con --remote-debugging-port={_remote_debugging_port}. "
-                f"Errore: {e}"
+                "❌ Impossibile connettersi al browser. %s Errore: %s", get_browser_setup_hint(), e
             )
             return None
         except Exception as e:
@@ -154,7 +172,7 @@ def browser_find_and_click(query: str, timeout: float = 10.0) -> str:
 
     driver = _get_or_create_driver()
     if driver is None:
-        return "❌ Impossibile connettersi al browser. Avvialo con --remote-debugging-port=9222"
+        return f"❌ Impossibile connettersi al browser. {get_browser_setup_hint()}"
 
     try:
         logger.info(f"🔍 Ricerca elemento browser: '{query}'")

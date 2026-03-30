@@ -105,6 +105,25 @@ class TestDriverLifecycle:
 
         assert browser_module._get_or_create_driver() is None
 
+    def test_uses_remote_selenium_when_remote_url_is_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        remote_driver = MagicMock()
+        webdriver_ns = SimpleNamespace(
+            ChromeOptions=_FakeChromeOptions,
+            Remote=MagicMock(return_value=remote_driver),
+        )
+
+        monkeypatch.setattr(browser_module, "SELENIUM_AVAILABLE", True)
+        monkeypatch.setattr(browser_module, "webdriver", webdriver_ns)
+        monkeypatch.setattr(
+            browser_module.config, "selenium_remote_url", "http://chrome:4444/wd/hub"
+        )
+        monkeypatch.setattr(browser_module.config, "browser_connection_mode", "remote-selenium")
+
+        assert browser_module._get_or_create_driver() is remote_driver
+        webdriver_ns.Remote.assert_called_once()
+
 
 class TestBrowserActions:
     def test_is_browser_available_checks_driver(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,6 +146,19 @@ class TestBrowserActions:
         monkeypatch.setattr(browser_module, "_get_or_create_driver", lambda: None)
 
         assert "Impossibile connettersi" in browser_module.browser_find_and_click("search")
+
+    def test_get_browser_setup_hint_uses_remote_selenium_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            browser_module.config, "selenium_remote_url", "http://chrome:4444/wd/hub"
+        )
+        monkeypatch.setattr(browser_module.config, "browser_connection_mode", "remote-selenium")
+
+        hint = browser_module.get_browser_setup_hint()
+
+        assert "SELENIUM" in hint or "Selenium remoto" in hint
+        assert "http://chrome:4444/wd/hub" in hint
 
     def test_find_and_click_uses_first_clickable_match(
         self, monkeypatch: pytest.MonkeyPatch

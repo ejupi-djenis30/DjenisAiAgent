@@ -246,6 +246,8 @@ def _execute_agent_task(
         "write_file": action_tools.write_file,
         # Browser tools
         "browser_search": action_tools.browser_search,
+        "browser_runtime_status": action_tools.browser_runtime_status,
+        "browser_media_capability": action_tools.browser_media_capability,
         # Task completion
         "finish_task": action_tools.finish_task,
     }
