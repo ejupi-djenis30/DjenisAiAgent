@@ -83,13 +83,23 @@ def validate_site(site_root: Path) -> list[str]:
     if not index_path.is_file():
         return ["site/index.html is missing"]
 
+    html_source = index_path.read_text(encoding="utf-8")
     document = SiteDocument()
-    document.feed(index_path.read_text(encoding="utf-8"))
+    document.feed(html_source)
 
     if document.html_lang != "en":
         errors.append('the document language must be "en"')
     if document.meta.get("referrer") != "no-referrer":
         errors.append('the referrer policy must be "no-referrer"')
+
+    for token in (
+        'role="tablist"',
+        'role="tab" aria-controls="demo-panel"',
+        'id="demo-panel" role="tabpanel"',
+        'aria-labelledby="demo-tab-0"',
+    ):
+        if token not in html_source:
+            errors.append(f"the walkthrough is missing accessible tab markup: {token}")
 
     csp = {
         directive.strip()

@@ -23,6 +23,7 @@ const kind = document.querySelector("#demo-kind");
 const counter = document.querySelector("#demo-counter");
 const progress = document.querySelector("#demo-progress");
 const control = document.querySelector("#demo-control");
+const panel = document.querySelector("#demo-panel");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 let activeStep = 0;
 let playing = !reduceMotion;
@@ -34,7 +35,12 @@ function showStep(index) {
   kind.textContent = step.kind;
   counter.textContent = `${String(index + 1).padStart(2, "0")} / 04`;
   content.innerHTML = step.html;
-  tabs.forEach((tab, tabIndex) => tab.setAttribute("aria-selected", tabIndex === index));
+  tabs.forEach((tab, tabIndex) => {
+    const isActive = tabIndex === index;
+    tab.setAttribute("aria-selected", String(isActive));
+    tab.tabIndex = isActive ? 0 : -1;
+  });
+  panel.setAttribute("aria-labelledby", tabs[index].id);
   progress.style.width = `${(index + 1) * 25}%`;
 }
 
@@ -44,10 +50,31 @@ function schedule() {
   timer = setInterval(() => showStep((activeStep + 1) % demoSteps.length), 4200);
 }
 
-tabs.forEach((tab) => tab.addEventListener("click", () => {
-  showStep(Number(tab.dataset.step));
+function selectAndFocusStep(index) {
+  const normalizedIndex = (index + tabs.length) % tabs.length;
+  showStep(normalizedIndex);
+  tabs[normalizedIndex].focus();
   schedule();
-}));
+}
+
+tabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    showStep(Number(tab.dataset.step));
+    schedule();
+  });
+  tab.addEventListener("keydown", (event) => {
+    const currentIndex = Number(tab.dataset.step);
+    const keyTargets = {
+      ArrowLeft: currentIndex - 1,
+      ArrowRight: currentIndex + 1,
+      Home: 0,
+      End: tabs.length - 1,
+    };
+    if (!(event.key in keyTargets)) return;
+    event.preventDefault();
+    selectAndFocusStep(keyTargets[event.key]);
+  });
+});
 
 control.addEventListener("click", () => {
   playing = !playing;

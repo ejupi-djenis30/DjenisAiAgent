@@ -48,7 +48,7 @@
         <p class="hero-lede">DjenisAiAgent reads the current interface, chooses one bounded action, and checks the result before moving on. It is a practical study in making tool-calling agents easier to observe and harder to over-trust.</p>
         <div class="hero-actions">
           <a class="button button-primary" href="#demo">Run the walkthrough</a>
-          <a class="button button-secondary" href="https://github.com/ejupi-djenis30/DjenisAiAgent#quick-start">Read the setup guide</a>
+          <a class="button button-secondary" href="https://github.com/ejupi-djenis30/DjenisAiAgent#quick-start-windows">Read the setup guide</a>
         </div>
       </div>
       <div class="hero-console" aria-label="Agent execution example">
@@ -107,12 +107,12 @@
       </figure>
       <div class="demo" data-demo>
         <div class="demo-steps" role="tablist" aria-label="Walkthrough steps">
-          <button role="tab" aria-selected="true" data-step="0"><span>01</span> Objective</button>
-          <button role="tab" aria-selected="false" data-step="1"><span>02</span> Perception</button>
-          <button role="tab" aria-selected="false" data-step="2"><span>03</span> Tool call</button>
-          <button role="tab" aria-selected="false" data-step="3"><span>04</span> Verification</button>
+          <button id="demo-tab-0" role="tab" aria-controls="demo-panel" aria-selected="true" tabindex="0" data-step="0"><span>01</span> Objective</button>
+          <button id="demo-tab-1" role="tab" aria-controls="demo-panel" aria-selected="false" tabindex="-1" data-step="1"><span>02</span> Perception</button>
+          <button id="demo-tab-2" role="tab" aria-controls="demo-panel" aria-selected="false" tabindex="-1" data-step="2"><span>03</span> Tool call</button>
+          <button id="demo-tab-3" role="tab" aria-controls="demo-panel" aria-selected="false" tabindex="-1" data-step="3"><span>04</span> Verification</button>
         </div>
-        <div class="demo-stage">
+        <div class="demo-stage" id="demo-panel" role="tabpanel" aria-labelledby="demo-tab-0" tabindex="0">
           <div class="demo-topline"><span id="demo-kind">Operator objective</span><span id="demo-counter">01 / 04</span></div>
           <div class="demo-content" id="demo-content" aria-live="polite">
             <p class="demo-command">“Open Calculator and evaluate 12 × 8.”</p>

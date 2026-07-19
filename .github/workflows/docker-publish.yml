@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -74,6 +76,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Normalize owner name
         id: owner
@@ -167,7 +171,11 @@ jobs:
             Run the published image:
 
             ```bash
-            docker run --rm -p 8000:8000 -e GEMINI_API_KEY=your_key \
+            export GEMINI_API_KEY="your-key"
+            export DJENIS_WEB_AUTH_TOKEN="$(openssl rand -hex 24)"
+            docker run --rm -p 8000:8000 \
+              -e GEMINI_API_KEY \
+              -e DJENIS_WEB_AUTH_TOKEN \
               ghcr.io/${{ steps.owner.outputs.value }}/djenis-ai-agent:${{ github.ref_name }}
             ```
 
