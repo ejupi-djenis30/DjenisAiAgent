@@ -1,15 +1,15 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "djenis-ai-agent"
-version = "0.1.0"
-description = "AI-powered Windows automation agent using Google Gemini and the ReAct paradigm"
+version = "0.2.0"
+description = "Permission-gated Windows and browser automation with Gemini function calling"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Djenis" }]
+authors = [{ name = "Djenis Ejupi" }]
 keywords = ["ai", "automation", "windows", "gemini", "agent", "react"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -27,6 +27,11 @@ dependencies = [
     "google-genai>=1.20.0",
     "Pillow>=10.0.0",
     "python-dotenv>=1.0.0",
+    # Imported by the unified CLI entry point even when web mode is not selected.
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7.0",
 ]
 
 [project.optional-dependencies]
@@ -38,16 +43,12 @@ windows = [
 ]
 # Web server mode
 web = [
-    "fastapi>=0.111.0",
-    "uvicorn[standard]>=0.30.0",
+    # Optional WebSocket transport extras used by the local operator console.
     "websockets>=12.0",
-    "python-multipart>=0.0.9",
-    "pydantic>=2.7.0",
 ]
 # Browser automation
 browser = [
     "selenium>=4.21.0",
-    "webdriver-manager>=4.0.1",
 ]
 # Local speech transcription
 transcription = [
@@ -55,11 +56,20 @@ transcription = [
 ]
 # Full install (all optional features except dev)
 full = [
-    "djenis-ai-agent[windows,web,browser,transcription]",
+    "pywinauto>=0.6.8",
+    "pyautogui>=0.9.54",
+    "pyperclip>=1.8.2",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "websockets>=12.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7.0",
+    "selenium>=4.21.0",
+    "vosk>=0.3.45",
 ]
 # Development tooling
 dev = [
-    "pytest>=8.2.0",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.23.6",
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
@@ -74,16 +84,23 @@ dev = [
 djenis = "main:main"
 
 [project.urls]
-Homepage = "https://github.com/ejupi/DjenisAiAgent"
-Repository = "https://github.com/ejupi/DjenisAiAgent"
-Issues = "https://github.com/ejupi/DjenisAiAgent/issues"
+Homepage = "https://ejupi-djenis30.github.io/DjenisAiAgent/"
+Repository = "https://github.com/ejupi-djenis30/DjenisAiAgent"
+Issues = "https://github.com/ejupi-djenis30/DjenisAiAgent/issues"
 
 # ---------------------------------------------------------------------------
 # Tool: setuptools
 # ---------------------------------------------------------------------------
+[tool.setuptools]
+py-modules = ["main"]
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "web*"]
+
+[tool.setuptools.package-data]
+"src.reasoning" = ["system_prompt.txt"]
+"web" = ["static/*.html", "static/*.css", "static/*.js"]
 
 # ---------------------------------------------------------------------------
 # Tool: ruff (linting + formatting)
@@ -132,6 +149,7 @@ warn_return_any = true
 warn_unused_configs = true
 warn_unused_ignores = true
 ignore_missing_imports = true
+follow_imports = "skip"
 exclude = ["tests/", "build/", "dist/"]
 
 [[tool.mypy.overrides]]

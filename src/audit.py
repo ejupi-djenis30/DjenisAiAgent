@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Any
 
 from src.config import config
+from src.redaction import redact
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class AuditLogger:
         event = {
             "timestamp": datetime.now(UTC).isoformat(),
             "event_type": event_type,
-            "payload": _json_safe(payload),
+            "payload": _json_safe(redact(payload)),
         }
 
         try:

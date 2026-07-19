@@ -48,6 +48,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.pytest-tmp*/
 
 # Translations
 *.mo
@@ -111,8 +112,7 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# GitHub Pages source lives in /site and must remain versioned.
 
 # mypy
 .mypy_cache/

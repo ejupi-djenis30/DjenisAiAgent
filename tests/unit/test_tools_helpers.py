@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from collections import OrderedDict
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -36,6 +38,23 @@ class _Control:
 @pytest.fixture(autouse=True)
 def clear_locator_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tools_module, "_LOCATOR_CACHE", OrderedDict())
+    monkeypatch.setattr(tools_module.config, "permission_tier", "system")
+    monkeypatch.setattr(tools_module.config, "confirm_dangerous_actions", True)
+    monkeypatch.setattr(
+        tools_module.config,
+        "allowed_paths",
+        (str(Path.cwd()), tempfile.gettempdir()),
+    )
+    monkeypatch.setattr(
+        tools_module.config,
+        "allowed_applications",
+        ("notepad.exe", "missing.exe"),
+    )
+    monkeypatch.setattr(
+        tools_module.config,
+        "allowed_shell_commands",
+        ("Get-ChildItem", "Remove-Item"),
+    )
 
 
 class TestBasicHelpers:
@@ -323,9 +342,9 @@ class TestCommandAndClipboard:
         assert "hello world" in result
 
     def test_start_application_success_and_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        popen_calls: list[str] = []
+        popen_calls: list[list[str]] = []
 
-        def fake_popen(app_name: str, **kwargs: object) -> None:
+        def fake_popen(app_name: list[str], **kwargs: object) -> None:
             popen_calls.append(app_name)
 
         monkeypatch.setattr(tools_module.subprocess, "Popen", fake_popen)
@@ -333,9 +352,9 @@ class TestCommandAndClipboard:
         result = tools_module.start_application("notepad.exe")
 
         assert "Start command issued" in result
-        assert popen_calls == ["notepad.exe"]
+        assert popen_calls == [["notepad.exe"]]
 
-        def fake_missing(app_name: str, **kwargs: object) -> None:
+        def fake_missing(app_name: list[str], **kwargs: object) -> None:
             raise FileNotFoundError()
 
         monkeypatch.setattr(tools_module.subprocess, "Popen", fake_missing)
@@ -355,11 +374,11 @@ class TestCommandAndClipboard:
         fake_webbrowser = SimpleNamespace(open=lambda url: opened_urls.append(url))
         monkeypatch.setitem(sys.modules, "webbrowser", fake_webbrowser)
 
-        assert "non esiste" in tools_module.open_file(str(tmp_path / "missing.txt"))
-        assert "aperto con successo" in tools_module.open_file(str(file_path))
+        assert "does not exist" in tools_module.open_file(str(tmp_path / "missing.txt"))
+        assert "opened successfully" in tools_module.open_file(str(file_path))
         assert opened_files == [str(file_path)]
 
-        assert "aperto nel browser" in tools_module.open_url("https://example.com")
+        assert "opened in the default browser" in tools_module.open_url("https://example.com")
         assert opened_urls == ["https://example.com"]
 
     def test_take_screenshot_with_explicit_and_default_paths(
@@ -368,6 +387,8 @@ class TestCommandAndClipboard:
         class FakeScreenshot:
             def __init__(self) -> None:
                 self.saved_paths: list[str] = []
+                self.width = 100
+                self.height = 80
 
             def save(self, path: str) -> None:
                 self.saved_paths.append(path)
@@ -382,8 +403,8 @@ class TestCommandAndClipboard:
         default_result = tools_module.take_screenshot()
 
         assert fake_screenshot.saved_paths[0] == explicit
-        assert fake_screenshot.saved_paths[1].startswith("screenshot_")
-        assert "screenshot_" in default_result
+        assert len(fake_screenshot.saved_paths) == 1
+        assert "no file was written" in default_result
 
 
 class TestFilesystemUtilities:

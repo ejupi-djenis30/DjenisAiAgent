@@ -23,6 +23,7 @@ from src.audit import audit_logger
 from src.config import config
 from src.perception.screen_capture import get_multimodal_context
 from src.reasoning.gemini_core import decide_next_action
+from src.redaction import safe_preview
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,76 @@ def _task_timed_out(started_at: float) -> bool:
     """Return True when the wall-clock deadline for the task has been reached."""
 
     return (time.monotonic() - started_at) >= config.task_timeout
+
+
+def _build_available_tools() -> dict[str, Callable[..., str]]:
+    """Build a capability registry that matches the active runtime and operator tier."""
+
+    tools: dict[str, Callable[..., str]] = {
+        "deep_think": action_tools.deep_think,
+        "finish_task": action_tools.finish_task,
+        "browser_runtime_status": action_tools.browser_runtime_status,
+        "browser_media_capability": action_tools.browser_media_capability,
+        "list_files": action_tools.list_files,
+        "read_file": action_tools.read_file,
+    }
+
+    if config.permits("interact"):
+        tools["open_url"] = action_tools.open_url
+        if config.supports_native_desktop():
+            tools.update(
+                {
+                    "element_id": action_tools.element_id,
+                    "element_id_fast": action_tools.element_id_fast,
+                    "click": action_tools.click,
+                    "double_click": action_tools.double_click,
+                    "right_click": action_tools.right_click,
+                    "type_text": action_tools.type_text,
+                    "get_text": action_tools.get_text,
+                    "scroll": action_tools.scroll,
+                    "press_key_repeat": action_tools.press_key_repeat,
+                    "press_keys": action_tools.press_keys,
+                    "hotkey": action_tools.hotkey,
+                    "wait_seconds": action_tools.wait_seconds,
+                    "move_mouse": action_tools.move_mouse,
+                    "verify_mouse_position": action_tools.verify_mouse_position,
+                    "confirm_mouse_position": action_tools.confirm_mouse_position,
+                    "maximize_window": action_tools.maximize_window,
+                    "switch_window": action_tools.switch_window,
+                    "copy_to_clipboard": action_tools.copy_to_clipboard,
+                    "paste_from_clipboard": action_tools.paste_from_clipboard,
+                    "get_clipboard_text": action_tools.get_clipboard_text,
+                    "set_clipboard_text": action_tools.set_clipboard_text,
+                    "read_clipboard": action_tools.read_clipboard,
+                    "browser_search": action_tools.browser_search,
+                }
+            )
+
+        if config.uses_remote_selenium() or config.supports_native_desktop():
+            browser = action_tools.browser_tools
+            tools.update(
+                {
+                    "browser_find_and_click": browser.browser_find_and_click,
+                    "browser_find_and_type": browser.browser_find_and_type,
+                    "browser_type_text": browser.browser_type_text,
+                    "browser_press_enter": browser.browser_press_enter,
+                    "browser_get_current_url": browser.browser_get_current_url,
+                }
+            )
+
+    if config.permits("system"):
+        tools.update(
+            {
+                "run_shell_command": action_tools.run_shell_command,
+                "start_application": action_tools.start_application,
+                "open_file": action_tools.open_file,
+                "take_screenshot": action_tools.take_screenshot,
+                "write_file": action_tools.write_file,
+                "close_window": action_tools.close_window,
+            }
+        )
+
+    return tools
 
 
 def run_agent_loop(user_command: str) -> str:
@@ -106,34 +177,34 @@ async def agent_loop(
     """
     logger.info("Agent loop started in async queue-driven mode")
     await status_queue.put("✅ Agent loop initialized and ready for commands")
+    event_loop = asyncio.get_running_loop()
 
     while True:
         try:
             # Block until a command is available
             user_command = await command_queue.get()
             cancel_event.clear()
-            logger.info(f"Agent loop received command: {user_command}")
-            await status_queue.put(f"📥 Received command: {user_command}")
+            logger.info("Agent loop received a command (%d characters)", len(user_command))
+            await status_queue.put(
+                f"Received an operator command ({len(user_command)} characters)."
+            )
 
             try:
-                # Execute the command with status callback
-                async def status_callback(message: str):
-                    """Send status updates to the queue for broadcasting."""
-                    await status_queue.put(message)
-
                 # Run the agent task (uses run_in_executor for sync code)
-                event_loop = asyncio.get_event_loop()
+                def sync_status_callback(message: str) -> None:
+                    """Bridge worker-thread status updates into the event loop."""
+
+                    future = asyncio.run_coroutine_threadsafe(status_queue.put(message), event_loop)
+                    future.result()
+
                 executor_fn = functools.partial(
                     _execute_agent_task,
                     user_command,
-                    lambda msg, loop=event_loop: asyncio.run_coroutine_threadsafe(
-                        status_queue.put(msg),
-                        loop,
-                    ).result(),
-                    cancel_event,
+                    status_callback=sync_status_callback,
+                    cancel_event=cancel_event,
                 )
                 result = await event_loop.run_in_executor(None, executor_fn)
-                logger.info(f"Command completed: {result}")
+                logger.info("Command completed: %s", safe_preview(result))
                 await status_queue.put(f"✅ {result}")
 
             except Exception as e:
@@ -194,7 +265,7 @@ def _execute_agent_task(
     audit_logger.record_event(
         "task_started",
         task_id=task_id,
-        user_command=user_command,
+        user_command_length=len(user_command),
         max_turns=config.max_loop_turns,
         task_timeout=config.task_timeout,
     )
@@ -202,77 +273,33 @@ def _execute_agent_task(
     # Use config for max turns with fallback
     MAX_TURNS: int = max(1, config.max_loop_turns)
 
-    # Map tool names to actual functions from action module
-    AVAILABLE_TOOLS: dict[str, Callable[..., str]] = {
-        # System and shell tools (PREFERRED for file/system operations)
-        "run_shell_command": action_tools.run_shell_command,
-        # Deep reasoning tool (optional, use sparingly)
-        "deep_think": action_tools.deep_think,
-        # Core UI interaction tools
-        "element_id": action_tools.element_id,
-        "element_id_fast": action_tools.element_id_fast,
-        "click": action_tools.click,
-        "double_click": action_tools.double_click,
-        "right_click": action_tools.right_click,
-        "type_text": action_tools.type_text,
-        "get_text": action_tools.get_text,
-        # Navigation and control tools
-        "scroll": action_tools.scroll,
-        "press_key_repeat": action_tools.press_key_repeat,
-        "press_keys": action_tools.press_keys,
-        "hotkey": action_tools.hotkey,
-        "wait_seconds": action_tools.wait_seconds,
-        # Mouse tools (LAST RESORT - use only when element_id fails)
-        "move_mouse": action_tools.move_mouse,
-        "verify_mouse_position": action_tools.verify_mouse_position,
-        "confirm_mouse_position": action_tools.confirm_mouse_position,
-        # Window management tools
-        "maximize_window": action_tools.maximize_window,
-        "close_window": action_tools.close_window,
-        "switch_window": action_tools.switch_window,
-        # Clipboard tools
-        "copy_to_clipboard": action_tools.copy_to_clipboard,
-        "paste_from_clipboard": action_tools.paste_from_clipboard,
-        "get_clipboard_text": action_tools.get_clipboard_text,
-        "set_clipboard_text": action_tools.set_clipboard_text,
-        "read_clipboard": action_tools.read_clipboard,
-        # Application and file tools
-        "start_application": action_tools.start_application,
-        "open_file": action_tools.open_file,
-        "open_url": action_tools.open_url,
-        "take_screenshot": action_tools.take_screenshot,
-        "list_files": action_tools.list_files,
-        "read_file": action_tools.read_file,
-        "write_file": action_tools.write_file,
-        # Browser tools
-        "browser_search": action_tools.browser_search,
-        "browser_runtime_status": action_tools.browser_runtime_status,
-        "browser_media_capability": action_tools.browser_media_capability,
-        # Task completion
-        "finish_task": action_tools.finish_task,
-    }
+    AVAILABLE_TOOLS = _build_available_tools()
 
-    logger.info("Starting agent loop for command: %s", user_command)
+    logger.info("Starting agent loop for a command (%d characters)", len(user_command))
     logger.info("Maximum turns: %d", MAX_TURNS)
     logger.info("Maximum mouse positioning attempts: %d", config.max_mouse_positioning_attempts)
-    log_status(f"\n{'='*80}")
-    log_status(f"🤖 AVVIO AGENTE - Comando: {user_command}")
-    log_status(f"{'='*80}\n")
+    log_status(f"\n{'=' * 80}")
+    log_status("Agent started the queued operator task.")
+    log_status(f"{'=' * 80}\n")
 
     # Mouse positioning state tracking
     mouse_positioning_active = False
     mouse_positioning_attempts = 0
 
     # ===== MAIN REACT LOOP =====
-    for turn in range(1, MAX_TURNS + 1):
+    # Mouse-positioning steps are bounded separately and do not consume a normal
+    # reasoning turn. All failures do consume a turn, so the loop cannot spin
+    # forever when perception or the model repeatedly fails.
+    turn = 1
+    while turn <= MAX_TURNS:
         if _task_timed_out(task_started_at):
-            timeout_msg = f"⚠️  Il task ha superato il limite di {config.task_timeout} secondi."
+            timeout_msg = f"Task exceeded the {config.task_timeout}-second limit."
             logger.warning(timeout_msg)
             log_status(f"\n{timeout_msg}\n")
             audit_logger.record_event(
                 "task_timeout", task_id=task_id, turn=turn, message=timeout_msg
             )
-            return f"FALLITO: Task terminato per timeout dopo {config.task_timeout} secondi"
+            return f"FAILED: Task timed out after {config.task_timeout} seconds"
 
         audit_logger.record_event(
             "turn_started",
@@ -282,23 +309,16 @@ def _execute_agent_task(
         )
 
         if cancelled():
-            log_status("🛑 Task cancellato dall'utente. Interruzione in corso…")
+            log_status("Task cancelled by the operator.")
             logger.info("Task cancellation detected before turn %s", turn)
             if cancel_event:
                 cancel_event.clear()
             audit_logger.record_event(
                 "task_cancelled", task_id=task_id, turn=turn, phase="pre_turn"
             )
-            return "CANCELLATO: Task interrotto dall'utente"
+            return "CANCELLED: Task interrupted by the operator"
 
-        # Check if task is already completed
-        if task_completed:
-            success_msg = f"✅ Task completato con successo al turno {turn - 1}!"
-            logger.info(success_msg)
-            log_status(f"\n{success_msg}\n")
-            break
-
-        log_status(f"\n--- TURNO {turn}/{MAX_TURNS} ---\n")
+        log_status(f"\n--- TURN {turn}/{MAX_TURNS} ---\n")
         logger.info("Starting turn %s/%s", turn, MAX_TURNS)
 
         # ===== STEP A: OBSERVE (Perception) =====
@@ -306,134 +326,94 @@ def _execute_agent_task(
             logger.debug("Capturing multimodal context (screenshot + UI tree)")
             screenshot, ui_tree = get_multimodal_context()
 
-            log_status("📸 PERCEZIONE: Screenshot e albero UI catturati.")
+            log_status("PERCEPTION: Screenshot and UI tree captured.")
             logger.info("Perception: Successfully captured screen and UI tree")
             logger.debug(f"UI tree length: {len(ui_tree)} characters")
 
         except Exception as e:
-            error_msg = f"Errore durante la percezione: {e!s}"
+            error_msg = f"Perception error: {e!s}"
             logger.error(error_msg, exc_info=True)
             log_status(f"❌ {error_msg}")
             # Add error to history and continue to allow recovery
-            history.append(f"ERRORE PERCEZIONE: {error_msg}")
+            history.append(f"PERCEPTION ERROR: {error_msg}")
             audit_logger.record_event(
                 "perception_error", task_id=task_id, turn=turn, error=error_msg
             )
+            turn += 1
             continue
 
         if _task_timed_out(task_started_at):
-            timeout_msg = f"⚠️  Il task ha superato il limite di {config.task_timeout} secondi durante la percezione."
+            timeout_msg = f"Task exceeded the {config.task_timeout}-second limit during perception."
             logger.warning(timeout_msg)
             log_status(f"\n{timeout_msg}\n")
             audit_logger.record_event(
                 "task_timeout", task_id=task_id, turn=turn, phase="perception", message=timeout_msg
             )
-            return f"FALLITO: Task terminato per timeout dopo {config.task_timeout} secondi"
+            return f"FAILED: Task timed out after {config.task_timeout} seconds"
 
         if cancelled():
-            log_status("🛑 Task cancellato dall'utente durante la fase di percezione.")
+            log_status("Task cancelled during perception.")
             if cancel_event:
                 cancel_event.clear()
             audit_logger.record_event(
                 "task_cancelled", task_id=task_id, turn=turn, phase="perception"
             )
-            return "CANCELLATO: Task interrotto dall'utente"
+            return "CANCELLED: Task interrupted by the operator"
 
-        # ===== STEP B: REASON (Call Gemini with Retry Logic) =====
-        # NOTE: Retries within this loop do NOT increment the turn counter
-        # The turn only advances after a valid tool call is obtained
-        MAX_REASONING_RETRIES = 3
-        response = None
-
-        for retry_attempt in range(MAX_REASONING_RETRIES):
-            try:
-                logger.debug(
-                    f"Calling Gemini API for next action decision (attempt {retry_attempt + 1}/{MAX_REASONING_RETRIES})"
-                )
-
-                # Convert tool functions to list for Gemini
-                tool_functions = list(AVAILABLE_TOOLS.values())
-
-                response = decide_next_action(
-                    screenshot_image=screenshot,
-                    ui_tree=ui_tree,
-                    user_command=user_command,
-                    history=history,
-                    available_tools=tool_functions,
-                )
-
-                # Check if response is a VALID TOOL CALL (not just any response)
-                if response and _is_function_call(response):
-                    logger.info("Reasoning: Received valid tool call from Gemini")
-                    break  # Success, exit retry loop and proceed to ACT step
-                else:
-                    # Log the problematic response for debugging
-                    invalid_response_preview = str(response)[:200] if response else "<empty>"
-                    logger.warning(
-                        f"Attempt {retry_attempt + 1}: Gemini returned invalid response (not a tool call). "
-                        f"Response preview: '{invalid_response_preview}'"
-                    )
-                    if retry_attempt < MAX_REASONING_RETRIES - 1:
-                        log_status(
-                            f"⚠️ Tentativo {retry_attempt + 1} fallito: il modello non ha chiamato uno strumento valido. "
-                            f"Riprovo senza incrementare il turno..."
-                        )
-                        time.sleep(1)  # Brief pause before retry
-                    else:
-                        log_status(
-                            f"❌ Errore: il modello non ha chiamato uno strumento valido dopo {MAX_REASONING_RETRIES} tentativi. "
-                            f"Salto questo turno."
-                        )
-                        history.append(
-                            f"ERRORE: Modello non ha generato tool call valida dopo {MAX_REASONING_RETRIES} tentativi"
-                        )
-                        audit_logger.record_event(
-                            "reasoning_invalid_response",
-                            task_id=task_id,
-                            turn=turn,
-                            response_preview=invalid_response_preview,
-                        )
-                        response = None
-
-            except Exception as e:
-                error_msg = f"Errore durante il ragionamento (tentativo {retry_attempt + 1}): {e!s}"
-                logger.error(error_msg, exc_info=True)
-                if retry_attempt < MAX_REASONING_RETRIES - 1:
-                    log_status(f"⚠️ {error_msg}. Riprovo senza incrementare il turno...")
-                    time.sleep(1)
-                else:
-                    log_status(f"❌ {error_msg}")
-                    history.append(f"ERRORE RAGIONAMENTO: {error_msg}")
-                    audit_logger.record_event(
-                        "reasoning_error", task_id=task_id, turn=turn, error=error_msg
-                    )
-                    response = None
-
-        # If all retries failed, skip this turn (continue will restart the loop, decrementing turn effectively)
-        if not response:
-            logger.error("All reasoning attempts failed, skipping this turn without counting it")
-            audit_logger.record_event(
-                "turn_skipped", task_id=task_id, turn=turn, reason="reasoning_failed"
+        # ===== STEP B: REASON =====
+        # Gemini owns the network retry policy. Keeping a single retry layer here
+        # prevents one logical turn from multiplying into many API calls.
+        try:
+            response = decide_next_action(
+                screenshot_image=screenshot,
+                ui_tree=ui_tree,
+                user_command=user_command,
+                history=history,
+                available_tools=list(AVAILABLE_TOOLS.values()),
+                cancel_event=cancel_event,
             )
-            continue  # This restarts the for loop at the SAME turn number
+        except Exception as exc:
+            error_msg = f"Reasoning error: {exc!s}"
+            logger.error(error_msg, exc_info=True)
+            log_status(f"❌ {error_msg}")
+            history.append(f"REASONING ERROR: {error_msg}")
+            audit_logger.record_event(
+                "reasoning_error", task_id=task_id, turn=turn, error=error_msg
+            )
+            turn += 1
+            continue
+
+        if not _is_function_call(response):
+            invalid_response_preview = safe_preview(response or "<empty>")
+            logger.warning("Gemini returned no valid tool call: %s", invalid_response_preview)
+            log_status("⚠️ The model did not choose a valid action. Moving to the next turn.")
+            history.append(f"REASONING ERROR: {invalid_response_preview}")
+            audit_logger.record_event(
+                "reasoning_invalid_response",
+                task_id=task_id,
+                turn=turn,
+                response_preview=invalid_response_preview,
+            )
+            turn += 1
+            continue
 
         if _task_timed_out(task_started_at):
-            timeout_msg = f"⚠️  Il task ha superato il limite di {config.task_timeout} secondi durante il ragionamento."
+            timeout_msg = f"Task exceeded the {config.task_timeout}-second limit during reasoning."
             logger.warning(timeout_msg)
             log_status(f"\n{timeout_msg}\n")
             audit_logger.record_event(
                 "task_timeout", task_id=task_id, turn=turn, phase="reasoning", message=timeout_msg
             )
-            return f"FALLITO: Task terminato per timeout dopo {config.task_timeout} secondi"
+            return f"FAILED: Task timed out after {config.task_timeout} seconds"
 
         if cancelled():
-            log_status("🛑 Task cancellato dall'utente durante la fase di ragionamento.")
+            log_status("Task cancelled during reasoning.")
             if cancel_event:
                 cancel_event.clear()
             audit_logger.record_event(
                 "task_cancelled", task_id=task_id, turn=turn, phase="reasoning"
             )
-            return "CANCELLATO: Task interrotto dall'utente"
+            return "CANCELLED: Task interrupted by the operator"
 
         # ===== STEP C: ACT (Dispatch the Action) =====
         observation: str = ""
@@ -469,15 +449,18 @@ def _execute_agent_task(
                         log_status(f"❌ {observation}")
                         logger.warning(observation)
                         history.append(
-                            f"PENSIERO: Mouse positioning failed after {config.max_mouse_positioning_attempts} attempts"
+                            f"THOUGHT: Mouse positioning failed after {config.max_mouse_positioning_attempts} attempts"
                         )
-                        history.append(f"OSSERVAZIONE: {observation}")
-                        continue  # Don't increment turn, stay on same turn
+                        history.append(f"OBSERVATION: {observation}")
+                        turn += 1
+                        continue
 
                     log_status(
-                        f"🧠 PENSIERO: Il modello ha deciso di chiamare lo strumento '{tool_name}' (tentativo mouse {mouse_positioning_attempts}/{config.max_mouse_positioning_attempts})"
+                        f"THOUGHT: The model selected '{tool_name}' "
+                        f"(mouse attempt {mouse_positioning_attempts}/"
+                        f"{config.max_mouse_positioning_attempts})"
                     )
-                    log_status(f"   Argomenti: {tool_args}")
+                    log_status(f"   Arguments: {safe_preview(tool_args)}")
                     logger.info(
                         "Mouse mini-loop action: Dispatching tool '%s' (attempt %d/%d)",
                         tool_name,
@@ -490,7 +473,9 @@ def _execute_agent_task(
                     try:
                         observation = tool_function(**tool_args)
                         logger.info(
-                            "Mouse tool '%s' executed, result: %s", tool_name, observation[:100]
+                            "Mouse tool '%s' executed, result: %s",
+                            tool_name,
+                            safe_preview(observation[:100]),
                         )
 
                         # Check if this was confirm_mouse_position - if so, exit mini-loop
@@ -509,18 +494,17 @@ def _execute_agent_task(
                         observation = f"Error executing '{tool_name}': {exc}"
                         logger.error(observation, exc_info=True)
 
-                    log_status(f"👁️  OSSERVAZIONE: {observation}")
+                    log_status(f"OBSERVATION: {safe_preview(observation)}")
 
                     # Update history for mini-loop
                     history.append(
                         f"MOUSE MINI-LOOP [{mouse_positioning_attempts}/{config.max_mouse_positioning_attempts}]: Called {tool_name} with {tool_args}"
                     )
-                    history.append(f"OSSERVAZIONE: {observation}")
+                    history.append(f"OBSERVATION: {observation}")
 
-                    # Important: Don't increment turn counter for mouse mini-loop
-                    # Use a decrement trick to stay on the same turn
-                    turn -= 1
-                    continue  # Continue to next iteration without incrementing turn
+                    # Mouse positioning has its own strict attempt limit, so it can
+                    # gather another frame without spending a normal ReAct turn.
+                    continue
 
                 # If we were in mouse positioning mode but now calling a non-mouse tool, exit mini-loop
                 if mouse_positioning_active and not _is_mouse_positioning_tool(tool_name):
@@ -529,11 +513,13 @@ def _execute_agent_task(
                     mouse_positioning_active = False
                     mouse_positioning_attempts = 0
 
-                log_status(
-                    f"🧠 PENSIERO: Il modello ha deciso di chiamare lo strumento '{tool_name}'"
+                log_status(f"THOUGHT: The model selected tool '{tool_name}'")
+                log_status(f"   Arguments: {safe_preview(tool_args)}")
+                logger.info(
+                    "Action: Dispatching tool '%s' with args: %s",
+                    tool_name,
+                    safe_preview(tool_args),
                 )
-                log_status(f"   Argomenti: {tool_args}")
-                logger.info("Action: Dispatching tool '%s' with args: %s", tool_name, tool_args)
                 audit_logger.record_event(
                     "tool_dispatched",
                     task_id=task_id,
@@ -544,10 +530,10 @@ def _execute_agent_task(
 
                 if tool_name == "finish_task":
                     task_completed = True
-                    summary = tool_args.get("summary", "Task completato")
-                    observation = f"✅ TASK COMPLETATO: {summary}"
+                    summary = tool_args.get("summary", "Task completed")
+                    observation = f"TASK COMPLETED: {summary}"
                     log_status(f"\n{observation}\n")
-                    logger.info("Task marked as completed: %s", summary)
+                    logger.info("Task marked as completed: %s", safe_preview(summary))
                     audit_logger.record_event(
                         "task_completed",
                         task_id=task_id,
@@ -555,14 +541,12 @@ def _execute_agent_task(
                         summary=summary,
                     )
 
-                    history.append("PENSIERO: finish_task chiamato")
+                    history.append("THOUGHT: finish_task called")
                     history.append(observation)
-                    continue
+                    break
 
                 if tool_name not in AVAILABLE_TOOLS:
-                    observation = (
-                        f"Errore: Strumento '{tool_name}' non trovato nei tool disponibili."
-                    )
+                    observation = f"Error: Tool '{tool_name}' is not in the available registry."
                     logger.error(observation)
                     log_status(f"❌ {observation}")
                 else:
@@ -572,12 +556,10 @@ def _execute_agent_task(
                         logger.info(
                             "Action: Tool '%s' executed, result: %s",
                             tool_name,
-                            observation[:100],
+                            safe_preview(observation[:100]),
                         )
                     except TypeError as exc:
-                        observation = (
-                            f"Errore: Argomenti non validi per '{tool_name}'. Dettagli: {exc}"
-                        )
+                        observation = f"Error: Invalid arguments for '{tool_name}'. Details: {exc}"
                         logger.error(observation)
                         audit_logger.record_event(
                             "tool_argument_error",
@@ -587,7 +569,7 @@ def _execute_agent_task(
                             error=str(exc),
                         )
                     except Exception as exc:
-                        observation = f"Errore durante l'esecuzione di '{tool_name}': {exc}"
+                        observation = f"Error while executing '{tool_name}': {exc}"
                         logger.error(observation, exc_info=True)
                         audit_logger.record_event(
                             "tool_execution_error",
@@ -606,7 +588,7 @@ def _execute_agent_task(
                         )
             else:
                 observation = str(response)
-                log_status("💬 PENSIERO: Il modello ha risposto con del testo:")
+                log_status("THOUGHT: The model returned text instead of a tool call:")
                 log_status(f"   {observation}")
                 logger.info("Action: Model responded with text instead of function call")
                 audit_logger.record_event(
@@ -614,7 +596,7 @@ def _execute_agent_task(
                 )
 
         except Exception as e:
-            observation = f"Errore durante il dispatch dell'azione: {e!s}"
+            observation = f"Action dispatch error: {e!s}"
             logger.error(observation, exc_info=True)
             log_status(f"❌ {observation}")
             audit_logger.record_event(
@@ -622,48 +604,47 @@ def _execute_agent_task(
             )
 
         if cancelled():
-            log_status("🛑 Task cancellato dall'utente durante l'esecuzione dell'azione.")
+            log_status("Task cancelled during action execution.")
             if cancel_event:
                 cancel_event.clear()
             audit_logger.record_event("task_cancelled", task_id=task_id, turn=turn, phase="action")
-            return "CANCELLATO: Task interrotto dall'utente"
+            return "CANCELLED: Task interrupted by the operator"
 
         if _task_timed_out(task_started_at):
-            timeout_msg = f"⚠️  Il task ha superato il limite di {config.task_timeout} secondi durante l'esecuzione."
+            timeout_msg = f"Task exceeded the {config.task_timeout}-second limit during execution."
             logger.warning(timeout_msg)
             log_status(f"\n{timeout_msg}\n")
             audit_logger.record_event(
                 "task_timeout", task_id=task_id, turn=turn, phase="action", message=timeout_msg
             )
-            return f"FALLITO: Task terminato per timeout dopo {config.task_timeout} secondi"
+            return f"FAILED: Task timed out after {config.task_timeout} seconds"
 
         # ===== STEP D: VERIFY & UPDATE HISTORY (Feedback) =====
-        log_status(f"👁️  OSSERVAZIONE: {observation}")
+        log_status(f"OBSERVATION: {safe_preview(observation)}")
 
         # Update history with thought and observation for next iteration
         if _is_function_call(response):
             function_call = cast(FunctionCallLike, response)
-            history.append(
-                f"PENSIERO: Chiamato {function_call.name} con {dict(function_call.args)}"
-            )
+            history.append(f"THOUGHT: Called {function_call.name} with {dict(function_call.args)}")
         else:
-            history.append(f"PENSIERO: {str(response)[:200]}")
+            history.append(f"THOUGHT: {str(response)[:200]}")
 
-        history.append(f"OSSERVAZIONE: {observation}")
+        history.append(f"OBSERVATION: {observation}")
 
         logger.debug(f"History updated, total entries: {len(history)}")
+        turn += 1
 
     # ===== HANDLE LOOP TERMINATION =====
     if not task_completed:
         if cancelled():
-            log_status("🛑 Task cancellato dall'utente.")
+            log_status("Task cancelled by the operator.")
             audit_logger.record_event("task_cancelled", task_id=task_id, phase="finalize")
-            return "CANCELLATO: Task interrotto dall'utente"
-        failure_msg = f"⚠️  L'agente non è riuscito a completare il task entro {MAX_TURNS} turni."
+            return "CANCELLED: Task interrupted by the operator"
+        failure_msg = f"FAILED: Agent did not complete the task within {MAX_TURNS} turns."
         logger.warning(failure_msg)
         log_status(f"\n{failure_msg}\n")
         audit_logger.record_event("task_failed", task_id=task_id, message=failure_msg)
-        return f"FALLITO: Task non completato dopo {MAX_TURNS} turni"
+        return f"FAILED: Task incomplete after {MAX_TURNS} turns"
 
     audit_logger.record_event("task_succeeded", task_id=task_id)
-    return "SUCCESSO: Task completato"
+    return "SUCCESS: Task completed"

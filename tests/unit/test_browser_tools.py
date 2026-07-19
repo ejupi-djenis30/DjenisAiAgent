@@ -145,7 +145,7 @@ class TestBrowserActions:
         monkeypatch.setattr(browser_module, "SELENIUM_AVAILABLE", True)
         monkeypatch.setattr(browser_module, "_get_or_create_driver", lambda: None)
 
-        assert "Impossibile connettersi" in browser_module.browser_find_and_click("search")
+        assert "Could not connect" in browser_module.browser_find_and_click("search")
 
     def test_get_browser_setup_hint_uses_remote_selenium_message(
         self, monkeypatch: pytest.MonkeyPatch
@@ -157,8 +157,19 @@ class TestBrowserActions:
 
         hint = browser_module.get_browser_setup_hint()
 
-        assert "SELENIUM" in hint or "Selenium remoto" in hint
-        assert "http://chrome:4444/wd/hub" in hint
+        assert "Selenium" in hint
+        assert "http://chrome:4444/wd/hub" not in hint
+
+    def test_xpath_literal_handles_both_quote_types(self) -> None:
+        literal = browser_module._xpath_literal('Djenis\' "project"')
+
+        assert literal.startswith("concat(")
+        assert "Djenis" in literal
+
+    def test_find_and_click_rejects_empty_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(browser_module, "SELENIUM_AVAILABLE", True)
+
+        assert "cannot be empty" in browser_module.browser_find_and_click("   ")
 
     def test_find_and_click_uses_first_clickable_match(
         self, monkeypatch: pytest.MonkeyPatch
@@ -183,7 +194,7 @@ class TestBrowserActions:
 
         result = browser_module.browser_find_and_click("Search")
 
-        assert "cliccato" in result.lower()
+        assert "clicked" in result.lower()
         element.click.assert_called_once()
 
     def test_find_and_click_returns_not_found_after_all_timeouts(
@@ -211,7 +222,7 @@ class TestBrowserActions:
 
         result = browser_module.browser_find_and_click("Search", timeout=5.0)
 
-        assert "non trovato" in result.lower()
+        assert "not found" in result.lower()
 
     def test_browser_type_text_types_into_active_element(
         self, monkeypatch: pytest.MonkeyPatch
@@ -224,7 +235,8 @@ class TestBrowserActions:
 
         result = browser_module.browser_type_text("hello", clear_first=True)
 
-        assert "digitato" in result.lower()
+        assert "typed 5 characters" in result.lower()
+        assert "hello" not in result
         element.clear.assert_called_once()
         element.send_keys.assert_called_once_with("hello")
 
@@ -244,22 +256,31 @@ class TestBrowserActions:
     def test_browser_find_and_type_stops_on_lookup_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            browser_module, "browser_find_and_click", lambda query, timeout: "❌ nope"
-        )
+        monkeypatch.setattr(browser_module, "browser_find_and_click", lambda query, timeout: "nope")
 
-        assert browser_module.browser_find_and_type("q", "text") == "❌ nope"
+        assert browser_module.browser_find_and_type("q", "text") == "nope"
 
     def test_browser_find_and_type_can_press_enter(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            browser_module, "browser_find_and_click", lambda query, timeout: "✅ found"
+            browser_module,
+            "browser_find_and_click",
+            lambda query, timeout: "Browser element clicked successfully.",
         )
         monkeypatch.setattr(
-            browser_module, "browser_type_text", lambda text, clear_first=True: "✅ typed"
+            browser_module,
+            "browser_type_text",
+            lambda text, clear_first=True: "Typed 4 characters into the active browser element.",
         )
-        monkeypatch.setattr(browser_module, "browser_press_enter", lambda: "✅ pressed")
+        monkeypatch.setattr(
+            browser_module,
+            "browser_press_enter",
+            lambda: "Pressed Enter in the active browser element.",
+        )
 
-        assert browser_module.browser_find_and_type("q", "term", press_enter=True) == "✅ pressed"
+        assert (
+            browser_module.browser_find_and_type("q", "term", press_enter=True)
+            == "Pressed Enter in the active browser element."
+        )
 
     def test_browser_get_current_url_returns_driver_url(
         self, monkeypatch: pytest.MonkeyPatch
@@ -269,7 +290,7 @@ class TestBrowserActions:
         monkeypatch.setattr(browser_module, "SELENIUM_AVAILABLE", True)
         monkeypatch.setattr(browser_module, "_get_or_create_driver", lambda: driver)
 
-        assert browser_module.browser_get_current_url() == "URL corrente: https://example.com"
+        assert browser_module.browser_get_current_url() == "Current URL: https://example.com"
 
     def test_close_connection_quits_driver_and_resets_state(
         self, monkeypatch: pytest.MonkeyPatch

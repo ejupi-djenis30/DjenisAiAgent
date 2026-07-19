@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>DjenisAiAgent — Operator Console</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="DjenisAiAgent home">
+        <span class="mark" aria-hidden="true">D</span>
+        <span>DjenisAiAgent</span>
+      </a>
+      <div class="connection" aria-live="polite">
+        <span class="connection-dot" id="connection-dot"></span>
+        <span id="connection-label">Locked</span>
+      </div>
+    </header>
+
+    <section class="login-panel" id="login-panel" aria-labelledby="login-title">
+      <div>
+        <p class="eyebrow">Local control plane</p>
+        <h1 id="login-title">Operator access.</h1>
+        <p class="lede">Enter the token configured in <code>DJENIS_WEB_AUTH_TOKEN</code>. It is exchanged for an HttpOnly session and is not stored by this page.</p>
+      </div>
+      <form id="login-form" class="login-form">
+        <label for="operator-token">Operator token</label>
+        <div class="input-row">
+          <input id="operator-token" name="token" type="password" autocomplete="off" required minlength="24" placeholder="At least 24 characters">
+          <button type="submit">Unlock console</button>
+        </div>
+        <p class="form-message" id="login-message" role="alert"></p>
+      </form>
+    </section>
+
+    <section class="console" id="console" hidden>
+      <div class="console-heading">
+        <div>
+          <p class="eyebrow">Runtime dashboard</p>
+          <h1>Observe. Direct. Verify.</h1>
+        </div>
+        <button class="button-secondary" id="logout-button" type="button">Lock console</button>
+      </div>
+
+      <div class="status-grid" aria-label="Runtime status">
+        <article>
+          <span>Agent</span>
+          <strong id="agent-state">Idle</strong>
+        </article>
+        <article>
+          <span>Version</span>
+          <strong id="agent-version">—</strong>
+        </article>
+        <article>
+          <span>Uptime</span>
+          <strong id="agent-uptime">—</strong>
+        </article>
+      </div>
+
+      <div class="workspace">
+        <section class="screen-card" aria-labelledby="screen-title">
+          <div class="card-title">
+            <div>
+              <p class="eyebrow">Verification</p>
+              <h2 id="screen-title">Live desktop</h2>
+            </div>
+            <span class="private-label">Authenticated stream</span>
+          </div>
+          <div class="screen-frame">
+            <img id="desktop-stream" alt="Live desktop stream" hidden>
+            <p id="stream-placeholder">The stream starts after authentication.</p>
+          </div>
+        </section>
+
+        <section class="activity-card" aria-labelledby="activity-title">
+          <div class="card-title">
+            <div>
+              <p class="eyebrow">Activity</p>
+              <h2 id="activity-title">Agent log</h2>
+            </div>
+            <button class="text-button" id="clear-log" type="button">Clear</button>
+          </div>
+          <div class="activity-log" id="activity-log" role="log" aria-live="polite"></div>
+        </section>
+      </div>
+
+      <form class="command-bar" id="command-form">
+        <label for="command-input">Operator instruction</label>
+        <div class="input-row">
+          <input id="command-input" name="command" autocomplete="off" maxlength="4096" required placeholder="Describe one clear, bounded task">
+          <button type="submit">Run task</button>
+          <button class="button-danger" id="cancel-button" type="button">Cancel</button>
+        </div>
+      </form>
+    </section>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

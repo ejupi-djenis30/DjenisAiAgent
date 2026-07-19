@@ -5,6 +5,7 @@ All tests use mocks. No real Gemini API calls are made.
 
 from __future__ import annotations
 
+from threading import Event
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -105,6 +106,30 @@ class TestBuildFunctionDeclaration:
         call_kwargs = mock_types.FunctionDeclaration.call_args[1]
         assert call_kwargs["parameters_json_schema"]["properties"] == {}
 
+    def test_resolves_future_annotations_and_container_types(self) -> None:
+        def typed_tool(
+            count: int,
+            enabled: bool,
+            keys: list[str],
+            optional_count: int | None = None,
+        ) -> str:
+            return "ok"
+
+        with patch("src.reasoning.gemini_core.genai_types") as mock_types:
+            _build_function_declaration(typed_tool)
+
+        properties = mock_types.FunctionDeclaration.call_args.kwargs["parameters_json_schema"][
+            "properties"
+        ]
+        assert properties["count"]["type"] == "integer"
+        assert properties["enabled"]["type"] == "boolean"
+        assert properties["keys"] == {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Argument 'keys' for tool 'typed_tool'.",
+        }
+        assert properties["optional_count"]["type"] == "integer"
+
 
 class TestPrepareToolsPayload:
     def test_returns_empty_list_when_no_tools(self) -> None:
@@ -177,7 +202,7 @@ class TestDecideNextAction:
         monkeypatch.setattr(
             gemini_core, "SYSTEM_PROMPT", "Prompt {MAX_LOOP_TURNS} {ACTION_TIMEOUT}"
         )
-        monkeypatch.setattr(gemini_core.genai, "Client", lambda api_key: client)
+        monkeypatch.setattr(gemini_core.genai, "Client", lambda **kwargs: client)
         monkeypatch.setattr(
             gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs
         )
@@ -190,7 +215,22 @@ class TestDecideNextAction:
 
         result = decide_next_action(MagicMock(), "tree", "cmd", [], [])
 
-        assert "Nessun tool disponibile" in result
+        assert "No tools are available" in result
+
+    def test_cancellation_short_circuits_before_schema_or_api_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cancel_event = Event()
+        cancel_event.set()
+        prepare = MagicMock()
+        monkeypatch.setattr(gemini_core, "_prepare_tools_payload", prepare)
+
+        result = decide_next_action(
+            MagicMock(), "tree", "cmd", [], [lambda: None], cancel_event=cancel_event
+        )
+
+        assert result == "Cancelled before the Gemini request."
+        prepare.assert_not_called()
 
     def test_returns_function_call_from_response_property_on_success(
         self, monkeypatch: pytest.MonkeyPatch
@@ -212,7 +252,7 @@ class TestDecideNextAction:
 
         result = decide_next_action(MagicMock(), "tree", "cmd", [], [lambda: None])
 
-        assert "NON ESISTE" in result
+        assert "INVALID TOOL" in result
 
     def test_consecutive_deep_think_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         tool_decl = SimpleNamespace(name="deep_think")
@@ -227,7 +267,7 @@ class TestDecideNextAction:
 
         monkeypatch.setattr(gemini_core, "_prepare_tools_payload", lambda tools: [tool_wrapper])
         monkeypatch.setattr(gemini_core, "SYSTEM_PROMPT", "Prompt")
-        monkeypatch.setattr(gemini_core.genai, "Client", lambda api_key: client)
+        monkeypatch.setattr(gemini_core.genai, "Client", lambda **kwargs: client)
         monkeypatch.setattr(
             gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs
         )
@@ -236,11 +276,11 @@ class TestDecideNextAction:
             MagicMock(),
             "tree",
             "cmd",
-            ["PENSIERO PROFONDO: deep_think already used"],
+            ["THOUGHT: Called deep_think", "OBSERVATION: analysis recorded"],
             [lambda: None],
         )
 
-        assert "usare 'deep_think' consecutivamente" in result
+        assert "deep_think cannot be called twice" in result
 
     def test_text_only_response_returns_critical_error(
         self, monkeypatch: pytest.MonkeyPatch
@@ -254,7 +294,7 @@ class TestDecideNextAction:
 
         result = decide_next_action(MagicMock(), "tree", "cmd", [], [lambda: None])
 
-        assert "ERRORE CRITICO" in result
+        assert "TOOL CALL REQUIRED" in result
 
     def test_empty_candidates_returns_safety_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         response = SimpleNamespace(candidates=[], function_calls=[])
@@ -262,7 +302,7 @@ class TestDecideNextAction:
 
         result = decide_next_action(MagicMock(), "tree", "cmd", [], [lambda: None])
 
-        assert "bloccata per motivi di sicurezza" in result
+        assert "blocked the response for safety" in result
 
     def test_rate_limit_error_retries_then_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class FakeAPIError(Exception):
@@ -282,7 +322,7 @@ class TestDecideNextAction:
         tool_wrapper = SimpleNamespace(function_declarations=[tool_decl])
         monkeypatch.setattr(gemini_core, "_prepare_tools_payload", lambda tools: [tool_wrapper])
         monkeypatch.setattr(gemini_core, "SYSTEM_PROMPT", "Prompt")
-        monkeypatch.setattr(gemini_core.genai, "Client", lambda api_key: client)
+        monkeypatch.setattr(gemini_core.genai, "Client", lambda **kwargs: client)
         monkeypatch.setattr(
             gemini_core.genai_types, "GenerateContentConfig", lambda **kwargs: kwargs
         )
@@ -314,4 +354,4 @@ class TestDecideNextAction:
 
         result = decide_next_action(MagicMock(), "tree", "cmd", [], [lambda: None])
 
-        assert "Timeout dell'API Gemini" in result
+        assert "Gemini timed out" in result

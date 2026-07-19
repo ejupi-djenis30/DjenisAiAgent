@@ -58,7 +58,7 @@ class TestEnsureModel:
         monkeypatch.setattr(audio_module, "Model", MagicMock())
         monkeypatch.setattr(audio_module.config, "vosk_model_path", str(tmp_path / "missing-model"))
 
-        with pytest.raises(audio_module.TranscriptionError, match="non esiste"):
+        with pytest.raises(audio_module.TranscriptionError, match="does not exist"):
             audio_module._ensure_model()
 
     def test_model_is_loaded_once_and_cached(
@@ -92,7 +92,7 @@ class TestEnsureModel:
         monkeypatch.setattr(audio_module, "Model", MagicMock(side_effect=RuntimeError("boom")))
         monkeypatch.setattr(audio_module.config, "vosk_model_path", str(model_dir))
 
-        with pytest.raises(audio_module.TranscriptionError, match="caricamento del modello"):
+        with pytest.raises(audio_module.TranscriptionError, match="load the Vosk model"):
             audio_module._ensure_model()
 
 
@@ -106,7 +106,7 @@ class TestPrepareAudio:
     def test_invalid_channel_count_raises(self) -> None:
         wav_bytes = _make_wav_bytes(channels=3)
 
-        with pytest.raises(audio_module.TranscriptionError, match="mono o stereo"):
+        with pytest.raises(audio_module.TranscriptionError, match="mono or stereo"):
             audio_module._prepare_audio(wav_bytes, 16_000)
 
     def test_missing_audioop_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -144,7 +144,7 @@ class TestPrepareAudio:
 
 class TestTranscribeWavBytes:
     def test_empty_payload_raises(self) -> None:
-        with pytest.raises(audio_module.TranscriptionError, match="payload vuoto"):
+        with pytest.raises(audio_module.TranscriptionError, match="payload is empty"):
             audio_module.transcribe_wav_bytes(b"")
 
     def test_successful_transcription(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -171,7 +171,7 @@ class TestTranscribeWavBytes:
         monkeypatch.setattr(audio_module, "_ensure_model", lambda: object())
         monkeypatch.setattr(audio_module, "KaldiRecognizer", lambda model, rate: recognizer)
 
-        with pytest.raises(audio_module.TranscriptionError, match="Risultato Vosk non valido"):
+        with pytest.raises(audio_module.TranscriptionError, match="invalid result"):
             audio_module.transcribe_wav_bytes(b"wav")
 
     def test_empty_transcription_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,5 +183,5 @@ class TestTranscribeWavBytes:
         monkeypatch.setattr(audio_module, "_ensure_model", lambda: object())
         monkeypatch.setattr(audio_module, "KaldiRecognizer", lambda model, rate: recognizer)
 
-        with pytest.raises(audio_module.TranscriptionError, match="Trascrizione vuota"):
+        with pytest.raises(audio_module.TranscriptionError, match="transcription is empty"):
             audio_module.transcribe_wav_bytes(b"wav")

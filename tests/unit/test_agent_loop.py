@@ -31,6 +31,8 @@ class _AuditCollector:
 def fast_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(loop_module.config, "max_loop_turns", 3)
     monkeypatch.setattr(loop_module.config, "max_mouse_positioning_attempts", 2)
+    monkeypatch.setattr(loop_module.config, "permission_tier", "interact")
+    monkeypatch.setattr(loop_module.config, "supports_native_desktop", lambda: True)
     monkeypatch.setattr(loop_module.time, "sleep", lambda _seconds: None)
 
 
@@ -60,6 +62,33 @@ class TestHelpers:
 
         assert loop_module.run_agent_loop("hello") == "ran:hello"
 
+    def test_tool_registry_obeys_permission_tier(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(loop_module.config, "permission_tier", "observe")
+
+        observe_tools = loop_module._build_available_tools()
+
+        assert "read_file" in observe_tools
+        assert "click" not in observe_tools
+        assert "run_shell_command" not in observe_tools
+
+        monkeypatch.setattr(loop_module.config, "permission_tier", "system")
+        system_tools = loop_module._build_available_tools()
+        assert "click" in system_tools
+        assert "run_shell_command" in system_tools
+
+    def test_remote_runtime_exposes_dom_tools_without_desktop_tools(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(loop_module.config, "permission_tier", "interact")
+        monkeypatch.setattr(loop_module.config, "supports_native_desktop", lambda: False)
+        monkeypatch.setattr(loop_module.config, "uses_remote_selenium", lambda: True)
+
+        tools = loop_module._build_available_tools()
+
+        assert "browser_find_and_click" in tools
+        assert "click" not in tools
+        assert "take_screenshot" not in tools
+
 
 class TestExecuteAgentTask:
     def test_cancellation_before_first_turn_returns_cancelled(self) -> None:
@@ -68,7 +97,7 @@ class TestExecuteAgentTask:
 
         result = loop_module._execute_agent_task("cmd", cancel_event=event)
 
-        assert result.startswith("CANCELLATO")
+        assert result.startswith("CANCELLED")
         assert event.is_set() is False
 
     def test_finish_task_returns_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,8 +114,8 @@ class TestExecuteAgentTask:
 
         result = loop_module._execute_agent_task("cmd", status_callback=logs.append)
 
-        assert result == "SUCCESSO: Task completato"
-        assert any("TASK COMPLETATO" in entry for entry in logs)
+        assert result == "SUCCESS: Task completed"
+        assert any("TASK COMPLETED" in entry for entry in logs)
         assert [event[0] for event in audit.events].count("task_completed") == 1
 
     def test_audit_logs_tool_dispatch_and_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,7 +134,7 @@ class TestExecuteAgentTask:
 
         result = loop_module._execute_agent_task("cmd")
 
-        assert result == "SUCCESSO: Task completato"
+        assert result == "SUCCESS: Task completed"
         event_names = [event[0] for event in audit.events]
         assert "tool_dispatched" in event_names
         assert "tool_result" in event_names
@@ -114,13 +143,21 @@ class TestExecuteAgentTask:
     def test_invalid_reasoning_response_eventually_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        calls = 0
+
+        def invalid_response(**kwargs: object) -> str:
+            nonlocal calls
+            calls += 1
+            return "text only"
+
         monkeypatch.setattr(loop_module.config, "max_loop_turns", 1)
         monkeypatch.setattr(loop_module, "get_multimodal_context", lambda: (object(), "ui-tree"))
-        monkeypatch.setattr(loop_module, "decide_next_action", lambda **kwargs: "solo testo")
+        monkeypatch.setattr(loop_module, "decide_next_action", invalid_response)
 
         result = loop_module._execute_agent_task("cmd")
 
-        assert result.startswith("FALLITO")
+        assert result.startswith("FAILED")
+        assert calls == 1
 
     def test_perception_error_is_recorded_and_task_fails(
         self, monkeypatch: pytest.MonkeyPatch
@@ -134,7 +171,7 @@ class TestExecuteAgentTask:
 
         result = loop_module._execute_agent_task("cmd")
 
-        assert result.startswith("FALLITO")
+        assert result.startswith("FAILED")
 
     def test_task_timeout_stops_execution(self, monkeypatch: pytest.MonkeyPatch) -> None:
         clock = iter([0.0, 0.0, 10.0])
@@ -145,7 +182,7 @@ class TestExecuteAgentTask:
 
         result = loop_module._execute_agent_task("cmd")
 
-        assert result.startswith("FALLITO: Task terminato per timeout")
+        assert result.startswith("FAILED: Task timed out")
 
     def test_unknown_tool_generates_failure_observation(
         self, monkeypatch: pytest.MonkeyPatch
@@ -160,7 +197,7 @@ class TestExecuteAgentTask:
 
         result = loop_module._execute_agent_task("cmd")
 
-        assert result.startswith("FALLITO")
+        assert result.startswith("FAILED")
 
     def test_tool_argument_type_error_is_handled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(loop_module.config, "max_loop_turns", 1)
@@ -174,7 +211,7 @@ class TestExecuteAgentTask:
 
         result = loop_module._execute_agent_task("cmd")
 
-        assert result.startswith("FALLITO")
+        assert result.startswith("FAILED")
 
     def test_mouse_positioning_branch_is_exercised(self, monkeypatch: pytest.MonkeyPatch) -> None:
         responses = iter(
@@ -193,7 +230,7 @@ class TestExecuteAgentTask:
 
         result = loop_module._execute_agent_task("cmd", status_callback=logs.append)
 
-        assert result == "SUCCESSO: Task completato"
+        assert result == "SUCCESS: Task completed"
         assert any("MINI-LOOP MOUSE" in entry for entry in logs)
 
 
@@ -208,7 +245,7 @@ async def test_async_agent_loop_processes_command_and_reports_ready(
     monkeypatch.setattr(
         loop_module,
         "_execute_agent_task",
-        lambda command, callback, event: "SUCCESSO: Task completato",
+        lambda command, callback, event: "SUCCESS: Task completed",
     )
 
     task = asyncio.create_task(loop_module.agent_loop(command_queue, status_queue, cancel_event))
@@ -228,5 +265,5 @@ async def test_async_agent_loop_processes_command_and_reports_ready(
     task.cancel()
     await task
 
-    assert any("Received command" in message for message in drained_messages)
+    assert any("Received an operator command" in message for message in drained_messages)
     assert any("Ready for next command" in message for message in drained_messages)

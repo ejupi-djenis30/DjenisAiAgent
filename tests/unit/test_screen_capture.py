@@ -69,7 +69,7 @@ class TestSafeStr:
 class TestSnapshotToText:
     def test_empty_snapshot_returns_no_active_window_message(self) -> None:
         result = snapshot_to_text([])
-        assert "Nessuna finestra attiva" in result
+        assert "No active window" in result
 
     def test_single_entry_renders_correctly(self) -> None:
         snapshot = [
@@ -234,8 +234,8 @@ class TestSnapshotBuilders:
 
         message = _desktop_unavailable_message()
 
-        assert "Docker/browser remoto" in message
-        assert "finestra/tab" in message
+        assert "Docker/remote-browser" in message
+        assert "window or tab" in message
 
     def test_build_control_snapshot_walks_children(self) -> None:
         child = _FakeWrapper("Child")
@@ -291,7 +291,7 @@ class TestSnapshotBuilders:
 
         _, ui_tree = get_multimodal_context()
 
-        assert "Dettagli" in ui_tree
+        assert "Details" in ui_tree
         assert "UIA" in ui_tree
         assert "Win32" in ui_tree
 

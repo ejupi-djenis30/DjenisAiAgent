@@ -16,7 +16,7 @@ from src.config import AgentConfig, load_config
 class TestAgentConfigDefaults:
     def test_default_gemini_model(self, fake_env: None) -> None:
         cfg = load_config()
-        assert cfg.gemini_model_name == "gemini-flash-latest"
+        assert cfg.gemini_model_name == "gemini-3.5-flash"
 
     def test_default_max_loop_turns(self, fake_env: None) -> None:
         cfg = load_config()
@@ -55,6 +55,11 @@ class TestAgentConfigDefaults:
         cfg = load_config()
         assert cfg.browser_connection_mode == "local-debugger"
         assert cfg.uses_remote_selenium() is False
+
+    def test_default_permission_tier_is_observe(self, fake_env: None) -> None:
+        cfg = load_config()
+        assert cfg.permission_tier == "observe"
+        assert cfg.confirm_dangerous_actions is False
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +183,15 @@ class TestAgentConfigValidation:
         cfg.browser_debugging_port = 0
         with pytest.raises(ValueError, match="DEBUGGING_PORT"):
             cfg.validate()
+
+    def test_web_mode_requires_long_operator_token(self, fake_env: None) -> None:
+        cfg = load_config()
+        cfg.web_auth_token = "too-short"
+        with pytest.raises(ValueError, match="DJENIS_WEB_AUTH_TOKEN"):
+            cfg.validate_web()
+
+        cfg.web_auth_token = "valid-test-token-with-32-characters"
+        assert cfg.validate_web() is True
 
 
 # ---------------------------------------------------------------------------

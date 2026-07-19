@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="DjenisAiAgent is an experimental, permission-gated desktop and browser automation agent built by Djenis Ejupi.">
+  <meta name="theme-color" content="#0a0f0c">
+  <meta property="og:title" content="DjenisAiAgent — observable computer automation">
+  <meta property="og:description" content="A permission-gated Gemini agent that observes, acts, and verifies on Windows and the web.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ejupi-djenis30.github.io/DjenisAiAgent/">
+  <title>DjenisAiAgent — Observable computer automation</title>
+  <link rel="icon" href="./mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="DjenisAiAgent home">
+      <span class="brand-mark" aria-hidden="true">D</span>
+      <span>DjenisAiAgent</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#system">System</a>
+      <a href="#demo">Demo</a>
+      <a href="#security">Security</a>
+      <a class="nav-source" href="https://github.com/ejupi-djenis30/DjenisAiAgent">View source <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-copy">
+        <p class="kicker"><span></span> Experimental agent / Windows + browser</p>
+        <h1>Computer automation you can inspect.</h1>
+        <p class="hero-lede">DjenisAiAgent reads the current interface, chooses one bounded action, and checks the result before moving on. It is a practical study in making tool-calling agents easier to observe and harder to over-trust.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#demo">Run the walkthrough</a>
+          <a class="button button-secondary" href="https://github.com/ejupi-djenis30/DjenisAiAgent#quick-start">Read the setup guide</a>
+        </div>
+      </div>
+      <div class="hero-console" aria-label="Agent execution example">
+        <div class="console-bar">
+          <div><i></i><i></i><i></i></div>
+          <span>operator / local</span>
+        </div>
+        <div class="console-body">
+          <p><span class="line-no">01</span><span class="token-label">objective</span> Open Calculator and evaluate 12 × 8</p>
+          <p><span class="line-no">02</span><span class="token-label">observe</span> Calculator window detected</p>
+          <p><span class="line-no">03</span><span class="token-label">act</span> press_keys(["12", "*", "8", "="])</p>
+          <p><span class="line-no">04</span><span class="token-label">verify</span> Display reads 96</p>
+          <p class="console-success"><span class="line-no">05</span><span class="token-label">finish</span> Result verified <b>✓</b></p>
+        </div>
+      </div>
+      <div class="hero-meta" aria-label="Project facts">
+        <div><span>01</span><strong>One tool</strong><small>per reasoning step</small></div>
+        <div><span>02</span><strong>Three tiers</strong><small>observe, interact, system</small></div>
+        <div><span>03</span><strong>Two runtimes</strong><small>native Windows, remote browser</small></div>
+      </div>
+    </section>
+
+    <section class="statement" id="system">
+      <p class="section-index">01 / System</p>
+      <h2>See the state.<br>Choose one action.<br><em>Check the result.</em></h2>
+      <p class="section-intro">The loop stays deliberately legible. Screenshots and accessibility data provide context; Gemini returns a structured function call; the tool layer executes only what the active runtime and permission tier expose.</p>
+    </section>
+
+    <section class="architecture" aria-labelledby="architecture-title">
+      <div class="section-heading">
+        <p class="section-index">Architecture</p>
+        <h3 id="architecture-title">A short path from intent to evidence.</h3>
+      </div>
+      <ol class="flow">
+        <li><span>01</span><div><strong>Observe</strong><p>Capture the screen and a structured UI snapshot.</p></div></li>
+        <li><span>02</span><div><strong>Reason</strong><p>Ask Gemini for exactly one declared function call.</p></div></li>
+        <li><span>03</span><div><strong>Act</strong><p>Run a tool allowed by the runtime and operator policy.</p></div></li>
+        <li><span>04</span><div><strong>Verify</strong><p>Feed the outcome into the next turn before claiming success.</p></div></li>
+      </ol>
+    </section>
+
+    <section class="demo-section" id="demo" aria-labelledby="demo-title">
+      <div class="section-heading demo-heading">
+        <div>
+          <p class="section-index">02 / Guided demo</p>
+          <h2 id="demo-title">A complete turn,<br>without the black box.</h2>
+        </div>
+        <p>This deterministic walkthrough runs in your browser. It demonstrates the orchestration contract; it is not connected to a live desktop or Gemini account.</p>
+      </div>
+      <figure class="video-shell">
+        <video controls playsinline preload="metadata" width="1280" height="720" poster="./media/djenis-ai-agent-demo-poster.jpg">
+          <source src="./media/djenis-ai-agent-demo.mp4" type="video/mp4">
+          Your browser does not support embedded video. <a href="./media/djenis-ai-agent-demo.mp4">Download the MP4 demo</a>.
+        </video>
+        <figcaption><span>00:09</span> Project walkthrough · interface, function call, permission boundary</figcaption>
+      </figure>
+      <div class="demo" data-demo>
+        <div class="demo-steps" role="tablist" aria-label="Walkthrough steps">
+          <button role="tab" aria-selected="true" data-step="0"><span>01</span> Objective</button>
+          <button role="tab" aria-selected="false" data-step="1"><span>02</span> Perception</button>
+          <button role="tab" aria-selected="false" data-step="2"><span>03</span> Tool call</button>
+          <button role="tab" aria-selected="false" data-step="3"><span>04</span> Verification</button>
+        </div>
+        <div class="demo-stage">
+          <div class="demo-topline"><span id="demo-kind">Operator objective</span><span id="demo-counter">01 / 04</span></div>
+          <div class="demo-content" id="demo-content" aria-live="polite">
+            <p class="demo-command">“Open Calculator and evaluate 12 × 8.”</p>
+            <p>The operator defines one bounded outcome. The task starts with no implied permission to write files or run shell commands.</p>
+          </div>
+          <div class="demo-progress"><span id="demo-progress"></span></div>
+          <button class="demo-control" id="demo-control" type="button">Pause walkthrough</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="capabilities" aria-labelledby="capabilities-title">
+      <div class="section-heading">
+        <p class="section-index">Capability matrix</p>
+        <h3 id="capabilities-title">The runtime determines the tools.</h3>
+      </div>
+      <div class="matrix" role="table" aria-label="Runtime capability comparison">
+        <div class="matrix-row matrix-head" role="row"><span role="columnheader">Capability</span><span role="columnheader">Windows native</span><span role="columnheader">Docker / remote browser</span></div>
+        <div class="matrix-row" role="row"><strong role="cell">Desktop UI automation</strong><span role="cell" class="yes">Supported</span><span role="cell" class="no">Unavailable</span></div>
+        <div class="matrix-row" role="row"><strong role="cell">Browser DOM tools</strong><span role="cell" class="yes">Local debugger</span><span role="cell" class="yes">Remote Selenium</span></div>
+        <div class="matrix-row" role="row"><strong role="cell">Host screen capture</strong><span role="cell" class="yes">Supported</span><span role="cell" class="no">Unavailable</span></div>
+        <div class="matrix-row" role="row"><strong role="cell">Authenticated web console</strong><span role="cell" class="yes">Supported</span><span role="cell" class="yes">Supported</span></div>
+      </div>
+    </section>
+
+    <section class="security" id="security" aria-labelledby="security-title">
+      <div class="security-copy">
+        <p class="section-index">03 / Security model</p>
+        <h2 id="security-title">Useful by choice.<br><em>Restricted by default.</em></h2>
+        <p>The default tier can inspect approved files and reason about the current state. Interaction and system control are separate opt-ins. The web console binds to localhost unless you change it, and web mode refuses to start without an operator token.</p>
+      </div>
+      <div class="tiers">
+        <article><span>Default</span><h3>Observe</h3><p>Read within approved paths, inspect runtime status, and reason. No desktop mutation.</p></article>
+        <article><span>Opt in</span><h3>Interact</h3><p>Use approved UI and browser controls without unlocking shell or file writes.</p></article>
+        <article><span>Double opt in</span><h3>System</h3><p>Shell, file writes, app launch, and saved screenshots require the system tier plus explicit dangerous-action confirmation.</p></article>
+      </div>
+    </section>
+
+    <section class="build" aria-labelledby="build-title">
+      <p class="section-index">04 / Build it locally</p>
+      <div class="build-grid">
+        <div>
+          <h2 id="build-title">Read the code.<br>Set the boundaries.<br><em>Then run it.</em></h2>
+        </div>
+        <div>
+          <pre><code><span>git clone</span> https://github.com/ejupi-djenis30/DjenisAiAgent.git
+<span>cd</span> DjenisAiAgent
+<span>py -3.12 -m venv</span> .venv
+<span>pip install -e</span> ".[dev,full]"</code></pre>
+          <p>This is experimental software with powerful optional tools. Review the security model and <code>.env.example</code> before enabling interaction or system access.</p>
+          <a class="text-link" href="https://github.com/ejupi-djenis30/DjenisAiAgent">Open the repository <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">D</span><span>DjenisAiAgent</span></div>
+    <p>Designed and engineered by Djenis Ejupi in Switzerland.</p>
+    <div><a href="https://github.com/ejupi-djenis30">GitHub</a><a href="https://ejupilabs.com">Ejupi Labs</a></div>
+  </footer>
+  <script src="./app.js" defer></script>
+</body>
+</html>

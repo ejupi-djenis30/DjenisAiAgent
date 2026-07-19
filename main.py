@@ -21,15 +21,26 @@ except ImportError:
     HAS_PYAUTOGUI = False
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, field_validator
 
 from src.config import VERSION, config
 from src.orchestration.agent_loop import agent_loop, run_agent_loop
 from src.perception.audio_transcription import TranscriptionError, transcribe_wav_bytes
+from src.redaction import safe_preview
 from src.runtime_state import AgentState, create_runtime_state
+from src.web_security import SESSION_COOKIE, web_security
 
 IMAGE_RESAMPLING_LANCZOS = Image.Resampling.LANCZOS
 
@@ -48,7 +59,7 @@ async def enqueue_command(command: str) -> bool:
 
     async with runtime.command_queue_lock:
         await runtime.command_queue.put(cleaned)
-    logging.getLogger(__name__).info("Queued command: %s", cleaned)
+    logging.getLogger(__name__).info("Queued command (%d characters)", len(cleaned))
     return True
 
 
@@ -126,7 +137,7 @@ async def status_broadcaster():
         while True:
             status_message = await runtime.status_queue.get()
 
-            logger.debug(f"Broadcasting status: {status_message[:100]}")
+            logger.debug("Broadcasting status: %s", safe_preview(status_message))
 
             is_final_message = False
             new_state: AgentState | None = None
@@ -135,17 +146,15 @@ async def status_broadcaster():
                 is_final_message = True
                 new_state = "idle"
                 logger.info("Agent state changing to 'idle' - ready for next command")
-            elif (
-                "✅ SUCCESSO" in status_message or "Task completato con successo" in status_message
-            ):
+            elif "SUCCESS:" in status_message or "Task completed successfully" in status_message:
                 is_final_message = True
                 new_state = "idle"
                 logger.info("Agent state changing to 'idle' - task completed successfully")
-            elif "⚠️" in status_message and "non è riuscito a completare" in status_message:
+            elif "FAILED:" in status_message:
                 is_final_message = True
                 new_state = "idle"
                 logger.info("Agent state changing to 'idle' - task failed (max turns)")
-            elif "🛑" in status_message or "CANCELLATO" in status_message:
+            elif "🛑" in status_message or "CANCELLED:" in status_message:
                 is_final_message = True
                 new_state = "idle"
                 logger.info("Agent state changing to 'idle' - task cancelled")
@@ -180,6 +189,24 @@ app = FastAPI(
     description="AI-powered Windows automation agent",
     lifespan=lifespan,
 )
+WEB_STATIC_DIR = Path(__file__).parent / "web" / "static"
+app.mount("/static", StaticFiles(directory=WEB_STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Apply conservative browser defaults to the local operator console."""
+
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' data: blob:; "
+        "connect-src 'self' ws: wss:; style-src 'self'; script-src 'self'",
+    )
+    return response
 
 
 class ConnectionManager:
@@ -311,19 +338,51 @@ async def health_check():
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    """
-    Serve the main frontend HTML page.
+    """Serve the local operator console, separate from the public project site."""
 
-    Returns:
-        HTMLResponse: The content of index.html
-    """
-    try:
-        index_path = Path(__file__).parent / "index.html"
-        with open(index_path, encoding="utf-8") as f:
-            html_content = f.read()
-        return HTMLResponse(content=html_content)
-    except FileNotFoundError:
-        return HTMLResponse(content="<h1>Error: index.html not found</h1>", status_code=404)
+    index_path = WEB_STATIC_DIR / "index.html"
+    if not index_path.is_file():
+        return HTMLResponse(content="<h1>Operator console not found</h1>", status_code=404)
+    return FileResponse(index_path, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/session")
+async def create_web_session(request: Request) -> JSONResponse:
+    """Exchange the operator bearer token for an opaque, HttpOnly browser session."""
+
+    session_id = web_security.login(request)
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_id,
+        max_age=config.web_session_ttl,
+        httponly=True,
+        secure=config.web_session_cookie_secure,
+        samesite="strict",
+        path="/",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/session")
+async def inspect_web_session(request: Request) -> JSONResponse:
+    """Confirm whether the current opaque browser session is still valid."""
+
+    web_security.require_request(request, "session-status")
+    return JSONResponse({"authenticated": True}, headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/api/session", status_code=204)
+async def delete_web_session(request: Request) -> Response:
+    """Revoke the current browser session."""
+
+    web_security.require_request(request, "logout")
+    web_security.revoke_session(request.cookies.get(SESSION_COOKIE))
+    response = Response(status_code=204)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.websocket("/ws")
@@ -341,6 +400,9 @@ async def websocket_endpoint(websocket: WebSocket):
     Args:
         websocket: The WebSocket connection
     """
+    if not await web_security.require_websocket(websocket):
+        return
+
     await manager.connect(websocket)
     logger = logging.getLogger(__name__)
 
@@ -358,7 +420,13 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            logger.info("Received WebSocket payload: %s", data)
+            logger.info("Received WebSocket payload (%d characters)", len(data))
+            if not web_security.allow_websocket_message(websocket):
+                await websocket.send_json(
+                    {"type": "log", "payload": "Rate limit exceeded. Try again later."}
+                )
+                await websocket.close(code=4429, reason="Rate limit exceeded")
+                break
 
             try:
                 payload = json.loads(data)
@@ -398,13 +466,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "type": "status",
                                 "payload": {
                                     "agent_state": "running",
-                                    "message": f"Processing: {command_text}",
+                                    "message": "Processing the queued operator task.",
                                 },
                             }
                         )
-                        await websocket.send_json(
-                            {"type": "log", "payload": f"✅ Command queued: {command_text}"}
-                        )
+                        await websocket.send_json({"type": "log", "payload": "Command queued."})
                     else:
                         await runtime.set_agent_state("idle")
 
@@ -436,18 +502,28 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.post("/api/transcribe")
-async def transcribe_audio_endpoint(file: UploadFile = File(...)):
+async def transcribe_audio_endpoint(request: Request, file: UploadFile = File(...)):
     """Receive an audio clip (WAV) and return its local transcription."""
+
+    web_security.require_request(request, "transcribe")
 
     if not config.enable_local_transcription:
         raise HTTPException(
             status_code=503,
-            detail="La trascrizione locale è disabilitata. Configura DJENIS_LOCAL_TRANSCRIPTION=1 per abilitarla.",
+            detail=(
+                "Local transcription is disabled. Set DJENIS_LOCAL_TRANSCRIPTION=true to enable it."
+            ),
         )
 
-    audio_bytes = await file.read()
+    allowed_content_types = {"audio/wav", "audio/x-wav", "audio/wave", "application/octet-stream"}
+    if file.content_type and file.content_type.casefold() not in allowed_content_types:
+        raise HTTPException(status_code=415, detail="Only WAV audio is accepted.")
+
+    audio_bytes = await file.read(config.web_upload_max_bytes + 1)
+    if len(audio_bytes) > config.web_upload_max_bytes:
+        raise HTTPException(status_code=413, detail="Audio payload exceeds the configured limit.")
     if not audio_bytes:
-        raise HTTPException(status_code=400, detail="Payload audio vuoto.")
+        raise HTTPException(status_code=400, detail="The audio payload is empty.")
 
     try:
         text = await asyncio.get_event_loop().run_in_executor(
@@ -456,12 +532,8 @@ async def transcribe_audio_endpoint(file: UploadFile = File(...)):
     except TranscriptionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - unexpected failures
-        logging.getLogger(__name__).error(
-            "Errore inatteso durante la trascrizione audio", exc_info=True
-        )
-        raise HTTPException(
-            status_code=500, detail="Errore interno durante la trascrizione audio."
-        ) from exc
+        logging.getLogger(__name__).error("Unexpected audio transcription error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal audio transcription error.") from exc
 
     return {"transcript": text}
 
@@ -539,7 +611,7 @@ async def screen_generator():
             # Yield the frame in multipart/x-mixed-replace format
             # This format allows the browser to continuously replace frames
             # Format: boundary + content type header + frame data + boundary
-            yield (b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
             # Control frame rate: ~10 FPS (100ms delay)
             # This prevents overwhelming the CPU while providing smooth video
@@ -554,7 +626,7 @@ async def screen_generator():
 
 
 @app.get("/stream")
-async def video_stream():
+async def video_stream(request: Request):
     """
     FastAPI endpoint that streams live desktop video to the client.
 
@@ -590,6 +662,7 @@ async def video_stream():
         ```
     """
     logger = logging.getLogger(__name__)
+    web_security.require_request(request, "stream")
     logger.info("Screen streaming endpoint accessed")
 
     return StreamingResponse(
@@ -620,10 +693,7 @@ def run_cli_mode(args):
         gemini_api_key = os.getenv("GEMINI_API_KEY")
 
         if not gemini_api_key or gemini_api_key == "YOUR_API_KEY_HERE":
-            raise ValueError(
-                "La variabile d'ambiente GEMINI_API_KEY non è impostata. "
-                "Configura il file .env con la tua chiave API di Gemini."
-            )
+            raise ValueError("GEMINI_API_KEY is not configured. Add your Gemini API key to .env.")
 
         logger.info("Gemini API key detected successfully")
 
@@ -636,16 +706,16 @@ def run_cli_mode(args):
         # Single command mode or interactive loop
         if args.command and not args.interactive:
             user_command = args.command
-            logger.info(f"Command provided via CLI: {user_command}")
+            logger.info("Command provided via CLI (%d characters)", len(user_command))
 
             # Run the main agent loop
-            logger.info(f"Starting agent loop with command: {user_command}")
+            logger.info("Starting agent loop with a %d-character command", len(user_command))
             result = run_agent_loop(user_command)
 
-            logger.info(f"Agent loop completed with result: {result}")
-            print(f"\n{'='*80}")
-            print(f"  Risultato finale: {result}")
-            print(f"{'='*80}\n")
+            logger.info("Agent loop completed: %s", safe_preview(result))
+            print(f"\n{'=' * 80}")
+            print(f"  Final result: {result}")
+            print(f"{'=' * 80}\n")
 
         else:
             # Interactive mode: Continuous command loop
@@ -660,45 +730,47 @@ def run_cli_mode(args):
 
                     # Check for exit commands (case-insensitive)
                     if user_command.lower() in ["exit", "quit"]:
-                        print("\n👋 Arrivederci! Chiusura di DjenisAiAgent.\n")
+                        print("\n👋 Goodbye. DjenisAiAgent is shutting down.\n")
                         logger.info("User requested exit")
                         break
 
                     # Skip empty commands
                     if not user_command:
-                        print("⚠️  Comando vuoto. Inserisci un comando valido.\n")
+                        print("⚠️  Empty command. Enter a valid instruction.\n")
                         continue
 
                     # Execute the command
-                    logger.info(f"Starting agent loop with command: {user_command}")
+                    logger.info(
+                        "Starting agent loop with a %d-character command", len(user_command)
+                    )
                     result = run_agent_loop(user_command)
 
-                    logger.info(f"Agent loop completed with result: {result}")
-                    print(f"\n{'='*80}")
-                    print(f"  Risultato: {result}")
-                    print(f"{'='*80}\n")
+                    logger.info("Agent loop completed: %s", safe_preview(result))
+                    print(f"\n{'=' * 80}")
+                    print(f"  Result: {result}")
+                    print(f"{'=' * 80}\n")
 
                 except KeyboardInterrupt:
-                    print("\n\n⚠️  Interruzione rilevata. Usa 'exit' per uscire in modo pulito.\n")
+                    print("\n\n⚠️  Interrupted. Enter 'exit' to shut down cleanly.\n")
                     continue
 
                 except Exception as e:
                     logger.error(f"Error during command execution: {e}", exc_info=True)
-                    print(f"\n❌ Errore durante l'esecuzione: {e}\n")
-                    print("Puoi provare un altro comando o digitare 'exit' per uscire.\n")
+                    print(f"\n❌ Execution error: {e}\n")
+                    print("Try another instruction or enter 'exit' to quit.\n")
                     continue
 
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
-        print(f"\n❌ Errore di configurazione: {e}\n")
+        print(f"\n❌ Configuration error: {e}\n")
         sys.exit(1)
     except KeyboardInterrupt:
         logger.info("Agent interrupted by user")
-        print("\n\n⚠️  Agente interrotto dall'utente.\n")
+        print("\n\n⚠️  Agent interrupted by the operator.\n")
         sys.exit(0)
     except Exception as e:
         logger.error(f"Unexpected error: {e}", exc_info=True)
-        print(f"\n❌ Errore imprevisto: {e}\n")
+        print(f"\n❌ Unexpected error: {e}\n")
         sys.exit(1)
 
 
@@ -754,12 +826,9 @@ async def run_web_mode_async(host: str, port: int):
     # Configure Gemini API for web mode
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key or gemini_api_key == "YOUR_API_KEY_HERE":
-        raise ValueError(
-            "La variabile d'ambiente GEMINI_API_KEY non è impostata. "
-            "Configura il file .env con la tua chiave API di Gemini."
-        )
+        raise ValueError("GEMINI_API_KEY is not configured. Add your Gemini API key to .env.")
 
-    config.validate()
+    config.validate_web()
     logger.info("Gemini API key detected for web mode")
     logger.info(f"Using model: {config.gemini_model_name}")
     logger.info(f"Max loop turns: {config.max_loop_turns}")
@@ -830,7 +899,7 @@ def run_web_mode(args):
         print("\n\n⚠️  Web server stopped by user.\n")
     except Exception as e:
         logger.error(f"Web mode error: {e}", exc_info=True)
-        print(f"\n❌ Errore in modalità web: {e}\n")
+        print(f"\n❌ Web mode error: {e}\n")
         sys.exit(1)
 
 
@@ -876,8 +945,8 @@ def main():
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host address for web server mode (default: 0.0.0.0)",
+        default=config.web_host,
+        help="Host address for web server mode (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--port", type=int, default=8000, help="Port for web server mode (default: 8000)"
@@ -903,7 +972,7 @@ def main():
         sys.exit(0)
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}", exc_info=True)
-        print(f"\n❌ Errore imprevisto: {e}\n")
+        print(f"\n❌ Unexpected error: {e}\n")
         sys.exit(1)
 
 

@@ -15,4 +15,3 @@ pydantic>=2.7.0
 
 # Browser automation (headless Chrome via Selenium)
 selenium>=4.21.0
-webdriver-manager>=4.0.1

@@ -19,6 +19,7 @@ from threading import Lock
 from typing import Any, cast
 
 from src.config import config
+from src.redaction import safe_preview
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ try:
 except ImportError:
     logger.warning(
         "Selenium not available. Browser automation will be limited. "
-        "Install with: pip install selenium webdriver-manager"
+        "Install with: pip install selenium"
     )
     webdriver = cast(Any, None)
     By = cast(Any, None)
@@ -75,11 +76,28 @@ def get_browser_setup_hint() -> str:
     """Return the runtime-specific instructions required to connect Selenium."""
 
     if config.uses_remote_selenium():
-        remote_url = config.selenium_remote_url.strip()
-        if remote_url:
-            return "Verifica che il servizio Selenium remoto sia raggiungibile su " f"{remote_url}."
-        return "Imposta SELENIUM_REMOTE_URL per usare il runtime browser remoto."
-    return "Avvia Chrome o Edge con " f"--remote-debugging-port={config.browser_debugging_port}."
+        if config.selenium_remote_url.strip():
+            return "Check that the configured remote Selenium service is reachable."
+        return "Set SELENIUM_REMOTE_URL to use the remote browser runtime."
+    return f"Start Chrome or Edge with --remote-debugging-port={config.browser_debugging_port}."
+
+
+def _xpath_literal(value: str) -> str:
+    """Encode an arbitrary string as a safe XPath 1.0 literal."""
+
+    if "'" not in value:
+        return f"'{value}'"
+    if '"' not in value:
+        return f'"{value}"'
+
+    parts: list[str] = []
+    segments = value.split("'")
+    for index, segment in enumerate(segments):
+        if segment:
+            parts.append(f"'{segment}'")
+        if index < len(segments) - 1:
+            parts.append('"\'"')
+    return f"concat({', '.join(parts)})"
 
 
 def _get_or_create_driver() -> Any | None:
@@ -93,7 +111,7 @@ def _get_or_create_driver() -> Any | None:
     global _driver
 
     if not SELENIUM_AVAILABLE:
-        logger.error("Selenium non disponibile")
+        logger.error("Selenium is not available")
         return None
 
     with _driver_lock:
@@ -103,7 +121,7 @@ def _get_or_create_driver() -> Any | None:
                 _ = _driver.title
                 return _driver
             except WebDriverException:
-                logger.warning("Driver esistente non valido, riconnessione...")
+                logger.warning("The cached browser driver is no longer valid; reconnecting")
                 _driver = None
 
         # Use the configured browser connection strategy for this runtime.
@@ -112,7 +130,7 @@ def _get_or_create_driver() -> Any | None:
                 remote_url = config.selenium_remote_url.strip()
                 options = webdriver.ChromeOptions()
                 _driver = webdriver.Remote(command_executor=remote_url, options=options)
-                logger.info("✅ Connesso a Selenium remoto: %s", remote_url)
+                logger.info("Connected to the configured remote Selenium service")
                 return _driver
 
             debugger_address = _get_debugger_address()
@@ -126,23 +144,25 @@ def _get_or_create_driver() -> Any | None:
                 edge_options = EdgeOptions()
                 edge_options.add_experimental_option("debuggerAddress", debugger_address)
                 _driver = webdriver.Edge(options=edge_options)
-                logger.info("✅ Connesso a Edge tramite debugger remoto %s", debugger_address)
+                logger.info("Connected to Edge through remote debugging at %s", debugger_address)
                 return _driver
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Existing WebDriver health check failed: %s", exc)
 
             # Fallback to Chrome
             _driver = webdriver.Chrome(options=options)
-            logger.info("✅ Connesso a Chrome tramite debugger remoto %s", debugger_address)
+            logger.info("Connected to Chrome through remote debugging at %s", debugger_address)
             return _driver
 
         except WebDriverException as e:
             logger.error(
-                "❌ Impossibile connettersi al browser. %s Errore: %s", get_browser_setup_hint(), e
+                "Could not connect to the browser. %s Error: %s",
+                get_browser_setup_hint(),
+                safe_preview(e),
             )
             return None
         except Exception as e:
-            logger.error(f"❌ Errore inaspettato nella connessione al browser: {e}")
+            logger.error("Unexpected browser connection error: %s", safe_preview(e))
             return None
 
 
@@ -168,34 +188,35 @@ def browser_find_and_click(query: str, timeout: float = 10.0) -> str:
         Success message or error description
     """
     if not SELENIUM_AVAILABLE:
-        return "❌ Selenium non installato. Esegui: pip install selenium webdriver-manager"
+        return "Selenium is not installed. Run: pip install selenium"
+
+    normalized_query = query.strip()
+    if not normalized_query:
+        return "Browser element query cannot be empty."
 
     driver = _get_or_create_driver()
     if driver is None:
-        return f"❌ Impossibile connettersi al browser. {get_browser_setup_hint()}"
+        return f"Could not connect to the browser. {get_browser_setup_hint()}"
 
     try:
-        logger.info(f"🔍 Ricerca elemento browser: '{query}'")
+        logger.info("Searching for a browser element (%d characters)", len(normalized_query))
+
+        uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        lowercase = "abcdefghijklmnopqrstuvwxyz"
+        needle = _xpath_literal(normalized_query.casefold())
+        xpath = (
+            "//*["
+            f"contains(translate(string(@placeholder), '{uppercase}', '{lowercase}'), {needle}) or "
+            f"contains(translate(string(@aria-label), '{uppercase}', '{lowercase}'), {needle}) or "
+            f"contains(translate(normalize-space(string(.)), '{uppercase}', '{lowercase}'), {needle})"
+            "]"
+        )
 
         # Multiple search strategies (from most specific to most general)
         strategies = [
-            (By.NAME, query),
-            (By.ID, query),
-            (By.CSS_SELECTOR, f"input[name*='{query}' i]"),
-            (By.CSS_SELECTOR, f"input[placeholder*='{query}' i]"),
-            (By.CSS_SELECTOR, f"button[aria-label*='{query}' i]"),
-            (
-                By.XPATH,
-                f"//*[contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{query.lower()}')]",
-            ),
-            (
-                By.XPATH,
-                f"//*[contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{query.lower()}')]",
-            ),
-            (
-                By.XPATH,
-                f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{query.lower()}')]",
-            ),
+            (By.NAME, normalized_query),
+            (By.ID, normalized_query),
+            (By.XPATH, xpath),
         ]
 
         for by, value in strategies:
@@ -204,19 +225,19 @@ def browser_find_and_click(query: str, timeout: float = 10.0) -> str:
                     EC.element_to_be_clickable((by, value))
                 )
                 element.click()
-                logger.info(f"✅ Browser: Cliccato su '{query}' usando strategia {by}")
-                return f"✅ Elemento '{query}' cliccato con successo nel browser"
+                logger.info("Browser element clicked using strategy %s", by)
+                return "Browser element clicked successfully."
             except TimeoutException:
                 continue
             except Exception as e:
-                logger.debug(f"Strategia {by} fallita: {e}")
+                logger.debug("Browser lookup strategy %s failed: %s", by, safe_preview(e))
                 continue
 
-        return f"❌ Elemento '{query}' non trovato nel browser dopo {timeout}s. Prova con un altro termine di ricerca."
+        return f"Browser element not found within {timeout:g} seconds. Try a different label."
 
     except Exception as e:
-        logger.error(f"Errore durante click nel browser: {e}")
-        return f"❌ Errore browser: {e!s}"
+        logger.error("Browser click failed: %s", safe_preview(e))
+        return "Browser click failed. Check the application logs for details."
 
 
 def browser_type_text(text: str, clear_first: bool = True) -> str:
@@ -231,11 +252,11 @@ def browser_type_text(text: str, clear_first: bool = True) -> str:
         Success message or error description
     """
     if not SELENIUM_AVAILABLE:
-        return "❌ Selenium non disponibile"
+        return "Selenium is not available."
 
     driver = _get_or_create_driver()
     if driver is None:
-        return "❌ Impossibile connettersi al browser"
+        return "Could not connect to the browser."
 
     try:
         active_element = driver.switch_to.active_element
@@ -245,12 +266,12 @@ def browser_type_text(text: str, clear_first: bool = True) -> str:
             active_element.clear()
 
         active_element.send_keys(text)
-        logger.info(f"✅ Browser: Digitato '{text}' nell'elemento attivo")
-        return f"✅ Testo '{text}' digitato con successo nel browser"
+        logger.info("Typed %d characters into the active browser element", len(text))
+        return f"Typed {len(text)} characters into the active browser element."
 
     except Exception as e:
-        logger.error(f"Errore durante digitazione nel browser: {e}")
-        return f"❌ Errore: {e!s}"
+        logger.error("Browser typing failed: %s", safe_preview(e))
+        return "Browser typing failed. Check the application logs for details."
 
 
 def browser_press_enter() -> str:
@@ -261,21 +282,21 @@ def browser_press_enter() -> str:
         Success message or error description
     """
     if not SELENIUM_AVAILABLE:
-        return "❌ Selenium non disponibile"
+        return "Selenium is not available."
 
     driver = _get_or_create_driver()
     if driver is None:
-        return "❌ Impossibile connettersi al browser"
+        return "Could not connect to the browser."
 
     try:
         active_element = driver.switch_to.active_element
         active_element.send_keys(Keys.RETURN)
-        logger.info("✅ Browser: Premuto Enter")
-        return "✅ Enter premuto con successo nel browser"
+        logger.info("Pressed Enter in the active browser element")
+        return "Pressed Enter in the active browser element."
 
     except Exception as e:
-        logger.error(f"Errore durante pressione Enter nel browser: {e}")
-        return f"❌ Errore: {e!s}"
+        logger.error("Browser Enter keypress failed: %s", safe_preview(e))
+        return "Browser keypress failed. Check the application logs for details."
 
 
 def browser_find_and_type(
@@ -295,19 +316,19 @@ def browser_find_and_type(
     """
     # First, find and click the element
     result = browser_find_and_click(query, timeout)
-    if "❌" in result:
+    if not result.startswith("Browser element clicked"):
         return result
 
     # Then type the text
     result = browser_type_text(text, clear_first=True)
-    if "❌" in result:
+    if not result.startswith("Typed "):
         return result
 
     # Optionally press enter
     if press_enter:
         return browser_press_enter()
 
-    return f"✅ Digitato '{text}' in '{query}'" + (" e premuto Enter" if press_enter else "")
+    return f"Typed {len(text)} characters into the selected browser element."
 
 
 def browser_get_current_url() -> str:
@@ -318,18 +339,19 @@ def browser_get_current_url() -> str:
         Current URL or error message
     """
     if not SELENIUM_AVAILABLE:
-        return "❌ Selenium non disponibile"
+        return "Selenium is not available."
 
     driver = _get_or_create_driver()
     if driver is None:
-        return "❌ Impossibile connettersi al browser"
+        return "Could not connect to the browser."
 
     try:
         url = driver.current_url
-        logger.info(f"📍 URL corrente: {url}")
-        return f"URL corrente: {url}"
+        logger.info("Current URL: %s", safe_preview(url))
+        return f"Current URL: {url}"
     except Exception as e:
-        return f"❌ Errore: {e!s}"
+        logger.error("Could not read the current browser URL: %s", safe_preview(e))
+        return "Could not read the current browser URL."
 
 
 def browser_close_connection() -> None:
@@ -339,8 +361,8 @@ def browser_close_connection() -> None:
         if _driver is not None:
             try:
                 _driver.quit()
-                logger.info("✅ Connessione Selenium chiusa")
+                logger.info("Closed the Selenium connection")
             except Exception as e:
-                logger.warning(f"Errore durante chiusura driver: {e}")
+                logger.warning("Could not close the browser driver: %s", safe_preview(e))
             finally:
                 _driver = None

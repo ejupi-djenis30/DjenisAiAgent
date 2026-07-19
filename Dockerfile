@@ -22,30 +22,10 @@ RUN python -m venv /opt/venv && \
 # =============================================================================
 FROM python:3.12-slim AS runtime
 
-# Install Chrome + dependencies for headless Selenium
+# The agent talks to the separate remote Selenium service; no browser is bundled here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget \
     curl \
-    gnupg \
     ca-certificates \
-    unzip \
-    fonts-liberation \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libnspr4 \
-    libnss3 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    xdg-utils \
-    chromium \
-    chromium-driver \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy virtual environment from builder
@@ -62,7 +42,7 @@ WORKDIR /app
 
 # Copy application source
 COPY --chown=djenis:djenis src/ ./src/
-COPY --chown=djenis:djenis index.html ./
+COPY --chown=djenis:djenis web/ ./web/
 COPY --chown=djenis:djenis main.py ./
 
 # Create directories for logs and models
@@ -72,7 +52,9 @@ RUN mkdir -p /app/logs /app/models && chown -R djenis:djenis /app
 ENV DJENIS_LOG_LEVEL=INFO \
     DJENIS_STREAM_MAX_FPS=15 \
     DJENIS_MAX_LOOP_TURNS=50 \
-    DJENIS_API_TIMEOUT=120
+    DJENIS_API_TIMEOUT=120 \
+    DJENIS_RUNTIME_MODE=docker \
+    DJENIS_PERMISSION_TIER=interact
 
 EXPOSE 8000
 

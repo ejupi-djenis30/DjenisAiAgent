@@ -9,10 +9,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-__all__ = ["AgentConfig", "load_config", "config", "VERSION"]
+__all__ = ["VERSION", "AgentConfig", "config", "load_config"]
 
 #: Human-readable application version — keep in sync with pyproject.toml
-VERSION: str = "0.1.0"
+VERSION: str = "0.2.0"
 
 
 def _load_dotenv(dotenv_path: Path | None) -> None:
@@ -60,6 +60,18 @@ def _env_bool(name: str, default: bool) -> bool:
     )
 
 
+def _env_csv(name: str, default: str = "") -> tuple[str, ...]:
+    """Return a normalized, de-duplicated tuple from a comma-separated variable."""
+
+    raw_value = os.getenv(name, default)
+    values: list[str] = []
+    for value in raw_value.split(","):
+        normalized = value.strip()
+        if normalized and normalized not in values:
+            values.append(normalized)
+    return tuple(values)
+
+
 def _resolve_runtime_mode() -> str:
     requested_mode = os.getenv("DJENIS_RUNTIME_MODE", "auto").strip().lower()
     valid_modes = {"auto", "windows", "docker", "headless"}
@@ -91,7 +103,7 @@ class AgentConfig:
     # Gemini API Configuration (secret accessed lazily for safety)
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     gemini_model_name: str = field(
-        default_factory=lambda: os.getenv("DJENIS_GEMINI_MODEL", "gemini-flash-latest")
+        default_factory=lambda: os.getenv("DJENIS_GEMINI_MODEL", "gemini-3.5-flash")
     )
 
     # Agent Behavior Parameters
@@ -105,8 +117,8 @@ class AgentConfig:
     )
 
     # Model Parameters
-    temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.7))
-    max_tokens: int = field(default_factory=lambda: _env_int("DJENIS_MAX_TOKENS", 60096))
+    temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.2))
+    max_tokens: int = field(default_factory=lambda: _env_int("DJENIS_MAX_TOKENS", 4096))
 
     # API Timeout and Retry Configuration
     api_timeout: int = field(default_factory=lambda: _env_int("DJENIS_API_TIMEOUT", 120))
@@ -186,6 +198,43 @@ class AgentConfig:
         default_factory=lambda: _env_int("DJENIS_BROWSER_DEBUGGING_PORT", 9222)
     )
 
+    # Web security. Web mode deliberately refuses to start without an operator token.
+    web_host: str = field(default_factory=lambda: os.getenv("DJENIS_WEB_HOST", "127.0.0.1"))
+    web_auth_token: str = field(default_factory=lambda: os.getenv("DJENIS_WEB_AUTH_TOKEN", ""))
+    web_allowed_origins: tuple[str, ...] = field(
+        default_factory=lambda: _env_csv("DJENIS_WEB_ALLOWED_ORIGINS")
+    )
+    web_session_ttl: int = field(default_factory=lambda: _env_int("DJENIS_WEB_SESSION_TTL", 3600))
+    web_rate_limit_per_minute: int = field(
+        default_factory=lambda: _env_int("DJENIS_WEB_RATE_LIMIT_PER_MINUTE", 60)
+    )
+    web_login_rate_limit_per_minute: int = field(
+        default_factory=lambda: _env_int("DJENIS_WEB_LOGIN_RATE_LIMIT_PER_MINUTE", 10)
+    )
+    web_upload_max_bytes: int = field(
+        default_factory=lambda: _env_int("DJENIS_WEB_UPLOAD_MAX_BYTES", 5 * 1024 * 1024)
+    )
+    web_session_cookie_secure: bool = field(
+        default_factory=lambda: _env_bool("DJENIS_WEB_SESSION_COOKIE_SECURE", False)
+    )
+
+    # Tool permissions. Observe-only is the safe default.
+    permission_tier: str = field(
+        default_factory=lambda: os.getenv("DJENIS_PERMISSION_TIER", "observe").strip().lower()
+    )
+    confirm_dangerous_actions: bool = field(
+        default_factory=lambda: _env_bool("DJENIS_CONFIRM_DANGEROUS_ACTIONS", False)
+    )
+    allowed_paths: tuple[str, ...] = field(
+        default_factory=lambda: _env_csv("DJENIS_ALLOWED_PATHS", os.getcwd())
+    )
+    allowed_applications: tuple[str, ...] = field(
+        default_factory=lambda: _env_csv("DJENIS_ALLOWED_APPLICATIONS")
+    )
+    allowed_shell_commands: tuple[str, ...] = field(
+        default_factory=lambda: _env_csv("DJENIS_ALLOWED_SHELL_COMMANDS")
+    )
+
     def validate(self) -> bool:
         """Validate configuration settings and ensure secrets are present."""
 
@@ -197,8 +246,29 @@ class AgentConfig:
         if self.max_loop_turns <= 0:
             raise ValueError("DJENIS_MAX_LOOP_TURNS must be greater than 0")
 
+        if self.max_mouse_positioning_attempts <= 0:
+            raise ValueError("DJENIS_MAX_MOUSE_POSITIONING_ATTEMPTS must be greater than 0")
+
         if self.action_timeout <= 0:
             raise ValueError("DJENIS_ACTION_TIMEOUT must be greater than 0")
+
+        if self.screenshot_interval < 0:
+            raise ValueError("DJENIS_SCREENSHOT_INTERVAL cannot be negative")
+
+        if not 0 <= self.temperature <= 2:
+            raise ValueError("DJENIS_TEMPERATURE must be between 0 and 2")
+
+        if self.max_tokens <= 0:
+            raise ValueError("DJENIS_MAX_TOKENS must be greater than 0")
+
+        if self.api_timeout <= 0:
+            raise ValueError("DJENIS_API_TIMEOUT must be greater than 0")
+
+        if self.api_max_retries <= 0:
+            raise ValueError("DJENIS_API_MAX_RETRIES must be greater than 0")
+
+        if self.api_retry_delay < 0:
+            raise ValueError("DJENIS_API_RETRY_DELAY cannot be negative")
 
         if not 1 <= self.screenshot_quality <= 100:
             raise ValueError("DJENIS_SCREENSHOT_QUALITY must be between 1 and 100")
@@ -217,7 +287,7 @@ class AgentConfig:
 
         if self.enable_local_transcription and not self.vosk_model_path.strip():
             raise ValueError(
-                "DJENIS_LOCAL_TRANSCRIPTION è abilitato ma DJENIS_VOSK_MODEL_PATH non è impostato"
+                "DJENIS_VOSK_MODEL_PATH must be set when DJENIS_LOCAL_TRANSCRIPTION is enabled"
             )
 
         if self.shell_timeout <= 0:
@@ -247,15 +317,49 @@ class AgentConfig:
         if self.browser_debugging_port <= 0:
             raise ValueError("DJENIS_BROWSER_DEBUGGING_PORT must be greater than 0")
 
+        if self.permission_tier not in {"observe", "interact", "system"}:
+            raise ValueError("DJENIS_PERMISSION_TIER must be one of observe, interact, or system")
+
+        for name, value in (
+            ("DJENIS_WEB_SESSION_TTL", self.web_session_ttl),
+            ("DJENIS_WEB_RATE_LIMIT_PER_MINUTE", self.web_rate_limit_per_minute),
+            (
+                "DJENIS_WEB_LOGIN_RATE_LIMIT_PER_MINUTE",
+                self.web_login_rate_limit_per_minute,
+            ),
+            ("DJENIS_WEB_UPLOAD_MAX_BYTES", self.web_upload_max_bytes),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than 0")
+
+        return True
+
+    def validate_web(self) -> bool:
+        """Validate the additional controls required before exposing web mode."""
+
+        self.validate()
+        if len(self.web_auth_token) < 24:
+            raise ValueError(
+                "DJENIS_WEB_AUTH_TOKEN must contain at least 24 characters in web mode"
+            )
         return True
 
     def safe_view(self) -> dict[str, Any]:
         """Return a sanitized view of the configuration for logging/debugging."""
 
         data = asdict(self)
+        redacted_value = "***" + "redacted" + "***"
         if "gemini_api_key" in data:
-            data["gemini_api_key"] = "***redacted***"
+            data["gemini_api_key"] = redacted_value
+        if "web_auth_token" in data:
+            data["web_auth_token"] = redacted_value
         return data
+
+    def permits(self, required_tier: str) -> bool:
+        """Return whether the configured operator tier includes the requested capability."""
+
+        ranks = {"observe": 0, "interact": 1, "system": 2}
+        return ranks.get(self.permission_tier, -1) >= ranks.get(required_tier, 99)
 
     def apply_profile(self) -> None:
         """Apply performance presets for ultra-fast or quality-focused modes."""

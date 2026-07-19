@@ -100,7 +100,7 @@ test-ci: ## Run tests in CI mode (no integration, with coverage)
 # ---------------------------------------------------------------------------
 .PHONY: run
 run: ## Run the agent in CLI mode (set COMMAND env var)
-	$(PYTHON) main.py --command "$(COMMAND)"
+	$(PYTHON) main.py "$(COMMAND)"
 
 .PHONY: run-web
 run-web: ## Start the web server (port 8000)
@@ -115,7 +115,7 @@ docker-build: ## Build the Docker image
 
 .PHONY: docker-run
 docker-run: ## Run the container in web mode
-	$(DOCKER) run --rm -p 8000:8000 \
+	$(DOCKER) run --rm -p 127.0.0.1:8000:8000 \
 		--env-file .env \
 		$(IMAGE_NAME):$(IMAGE_TAG)
 

@@ -43,6 +43,7 @@ Thumbs.db
 
 # Docs
 docs/
+site/
 *.md
 
 # Dev tooling

@@ -10,6 +10,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Final
 
+from src.config import config
+
 stdlib_audioop: Any | None
 try:
     import audioop as stdlib_audioop
@@ -22,8 +24,6 @@ try:
 except ImportError:  # pragma: no cover - optional dependency during install
     VoskKaldiRecognizer = None
     VoskModel = None
-
-from src.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,8 @@ def _ensure_model() -> object:
 
     if KaldiRecognizer is None or Model is None:  # pragma: no cover - import guard
         raise TranscriptionError(
-            "Il pacchetto 'vosk' non è installato. Esegui 'pip install vosk' oppure aggiorna requirements.txt."
+            "The 'vosk' package is not installed. Run 'pip install vosk' or install "
+            "the transcription extra."
         )
 
     global _MODEL
@@ -54,24 +55,22 @@ def _ensure_model() -> object:
     model_path = config.vosk_model_path.strip()
     if not model_path:
         raise TranscriptionError(
-            "Impossibile inizializzare Vosk: la variabile DJENIS_VOSK_MODEL_PATH non è configurata."
+            "Vosk cannot start because DJENIS_VOSK_MODEL_PATH is not configured."
         )
 
     path = Path(model_path)
     if not path.exists() or not path.is_dir():
         raise TranscriptionError(
-            f"Il percorso del modello Vosk '{model_path}' non esiste o non è una cartella valida."
+            f"The Vosk model path '{model_path}' does not exist or is not a directory."
         )
 
     with _MODEL_LOCK:
         if _MODEL is None:
-            logger.info("Caricamento modello Vosk da %s", path)
+            logger.info("Loading the Vosk model from %s", path)
             try:
                 _MODEL = Model(model_path)
             except Exception as exc:  # pragma: no cover - third party errors
-                raise TranscriptionError(
-                    f"Errore durante il caricamento del modello Vosk: {exc}"
-                ) from exc
+                raise TranscriptionError(f"Could not load the Vosk model: {exc}") from exc
     return _MODEL
 
 
@@ -85,14 +84,14 @@ def _prepare_audio(wav_bytes: bytes, target_sample_rate: int) -> tuple[bytes, in
         frames = wav_file.readframes(wav_file.getnframes())
 
     if sample_width != 2:
-        raise TranscriptionError("L'audio deve essere in formato PCM 16-bit (sample width = 2).")
+        raise TranscriptionError("Audio must use 16-bit PCM (sample width = 2).")
 
     if channels not in (1, 2):
-        raise TranscriptionError("Sono supportati solo audio mono o stereo.")
+        raise TranscriptionError("Only mono or stereo audio is supported.")
 
     if audioop is None:
         raise TranscriptionError(
-            "Il modulo standard 'audioop' non è disponibile in questo interprete Python."
+            "The standard 'audioop' module is not available in this Python runtime."
         )
 
     processed = frames
@@ -113,7 +112,7 @@ def _prepare_audio(wav_bytes: bytes, target_sample_rate: int) -> tuple[bytes, in
             )
         except Exception as exc:  # pragma: no cover - audioop specific failures
             raise TranscriptionError(
-                f"Errore durante la conversione del sample rate ({sample_rate} → {target_sample_rate}): {exc}"
+                f"Could not convert the sample rate ({sample_rate} → {target_sample_rate}): {exc}"
             ) from exc
         sample_rate = target_sample_rate
 
@@ -124,7 +123,7 @@ def transcribe_wav_bytes(wav_bytes: bytes) -> str:
     """Transcribe audio data provided as WAV bytes using a local Vosk model."""
 
     if not wav_bytes:
-        raise TranscriptionError("Audio non valido: payload vuoto.")
+        raise TranscriptionError("Invalid audio: the payload is empty.")
 
     target_sample_rate = config.transcription_sample_rate
     waveform, sample_rate = _prepare_audio(wav_bytes, target_sample_rate)
@@ -146,16 +145,14 @@ def transcribe_wav_bytes(wav_bytes: bytes) -> str:
         result_json = recognizer.FinalResult()
         result = json.loads(result_json)
     except json.JSONDecodeError as exc:  # pragma: no cover - unexpected recognizer output
-        raise TranscriptionError(f"Risultato Vosk non valido: {exc}") from exc
+        raise TranscriptionError(f"Vosk returned an invalid result: {exc}") from exc
 
     text = str(result.get("text", "")).strip()
     if not text:
-        raise TranscriptionError(
-            "Trascrizione vuota: parla più chiaramente o verifica il microfono."
-        )
+        raise TranscriptionError("The transcription is empty. Check the microphone and try again.")
 
-    logger.debug("Trascrizione locale: %s", text)
+    logger.debug("Local transcription produced %d characters", len(text))
     return text
 
 
-__all__ = ["transcribe_wav_bytes", "TranscriptionError"]
+__all__ = ["TranscriptionError", "transcribe_wav_bytes"]

@@ -6,7 +6,10 @@ import difflib
 import json
 import logging
 import re
-import subprocess
+import shutil
+
+# subprocess is confined to explicitly permission-gated tools below.
+import subprocess  # nosec B404
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -44,8 +47,17 @@ except ImportError:
 
 
 from src.action import browser_tools
+from src.action.permissions import (
+    ToolPermissionError,
+    require_allowed_application,
+    require_allowed_shell_command,
+    require_safe_url,
+    require_tier,
+    resolve_allowed_path,
+)
 from src.config import config
 from src.perception.screen_capture import get_latest_ui_snapshot, refresh_ui_snapshot
+from src.redaction import safe_preview
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +331,9 @@ def _score_candidate(
     else:
         score += 0.2
 
-    score += max(0.0, 1.5 - entry.get("depth", 0) * 0.1)
+    raw_depth = entry.get("depth", 0)
+    depth = float(raw_depth) if isinstance(raw_depth, int | float) else 0.0
+    score += max(0.0, 1.5 - depth * 0.1)
     return score
 
 
@@ -384,10 +398,16 @@ def run_shell_command(command: str) -> str:
     Returns:
         A JSON string with "stdout", "stderr", and "return_code".
     """
-    logger.info("Executing shell command: %s", command)
+    try:
+        require_tier("system", dangerous=True)
+        require_allowed_shell_command(command)
+    except ToolPermissionError as exc:
+        return json.dumps({"stdout": "", "stderr": str(exc), "return_code": -1})
+
+    logger.info("Executing approved shell command: %s", safe_preview(command))
     validation_error = _validate_shell_command(command)
     if validation_error:
-        logger.warning("Blocked shell command '%s': %s", command, validation_error)
+        logger.warning("Blocked shell command '%s': %s", safe_preview(command), validation_error)
         return json.dumps(
             {
                 "stdout": "",
@@ -400,8 +420,18 @@ def run_shell_command(command: str) -> str:
     try:
         # Using PowerShell is more powerful on Windows
         # Timeout is crucial to prevent the agent from getting stuck
-        result = subprocess.run(
-            ["powershell", "-Command", command],
+        powershell_path = shutil.which("powershell.exe") or shutil.which("powershell")
+        if not powershell_path:
+            return json.dumps(
+                {
+                    "stdout": "",
+                    "stderr": "PowerShell executable was not found.",
+                    "return_code": -1,
+                }
+            )
+        # The command passed three controls: tier, allowlist, and syntax validation.
+        result = subprocess.run(  # nosec B603
+            [powershell_path, "-NoProfile", "-NonInteractive", "-Command", command],
             capture_output=True,
             text=True,
             timeout=config.shell_timeout,
@@ -416,7 +446,7 @@ def run_shell_command(command: str) -> str:
         logger.info("Shell command completed with return code %d", result.returncode)
         return json.dumps(output, ensure_ascii=False)
     except subprocess.TimeoutExpired:
-        logger.error("Shell command timed out: %s", command)
+        logger.error("Shell command timed out: %s", safe_preview(command))
         return json.dumps(
             {
                 "stdout": "",
@@ -425,7 +455,7 @@ def run_shell_command(command: str) -> str:
             }
         )
     except Exception as e:
-        logger.error("Error executing shell command '%s': %s", command, e)
+        logger.error("Error executing shell command '%s': %s", safe_preview(command), e)
         return json.dumps(
             {"stdout": "", "stderr": f"Error: An unexpected error occurred: {e}", "return_code": -1}
         )
@@ -506,9 +536,9 @@ def element_id(
 
     # If snapshot refresh timed out or failed, try browser fallback immediately
     if not snapshot:
-        logger.warning(f"⏱️ UI snapshot refresh timed out or failed for query '{query}'")
+        logger.warning("UI snapshot refresh failed for query: %s", safe_preview(query))
         if _is_browser_window(window) and browser_tools.is_browser_available():
-            logger.info(f"⚠️ Fallback diretto a Selenium per '{query}' (timeout pywinauto)")
+            logger.info("Falling back to Selenium after UI lookup timeout")
             browser_result = browser_tools.browser_find_and_click(query)
             if "✅" in browser_result:
                 return f"🔍 [Browser Mode] {browser_result}"
@@ -547,7 +577,7 @@ def element_id(
     if not scored:
         # Try browser fallback if we're in a browser window
         if _is_browser_window(window) and browser_tools.is_browser_available():
-            logger.info(f"⚠️ element_id fallito con pywinauto, tentativo con Selenium per '{query}'")
+            logger.info("Falling back to Selenium after UI element lookup failed")
             browser_result = browser_tools.browser_find_and_click(query)
             if "✅" in browser_result:
                 return f"🔍 [Browser Mode] {browser_result}"
@@ -595,7 +625,7 @@ def element_id_fast(query: str, control_type: str | None = None, auto_id: str | 
     if not window:
         return "Error: No active window set. Use 'switch_window' first."
 
-    logger.info("Fast search for element '%s' in window: '%s'", query, window.window_text())
+    logger.info("Fast element search: %s", safe_preview(query))
 
     # Strategy 1: Fast, direct search using pywinauto's native finders
     try:
@@ -1113,7 +1143,7 @@ def press_keys(keys: list[str]) -> str:
                 else:
                     # Type it as text for better keyboard layout compatibility
                     pyautogui.write(key_item, interval=0.05)
-                    logger.debug(f"Typed text: {key_item}")
+                    logger.debug("Typed %d characters", len(key_item))
 
                 time.sleep(0.05)  # Small delay between keys
 
@@ -1178,7 +1208,11 @@ def browser_search(query: str, search_term: str) -> str:
     if not browser_tools.is_browser_available():
         return f"❌ Selenium non disponibile. {browser_tools.get_browser_setup_hint()}"
 
-    logger.info(f"🔍 Browser search: cercando '{query}' per digitare '{search_term}'")
+    logger.info(
+        "Browser search for element %s with %d characters of input",
+        safe_preview(query),
+        len(search_term),
+    )
     result = browser_tools.browser_find_and_type(query, search_term, press_enter=True)
     return result
 
@@ -1252,7 +1286,7 @@ def browser_media_capability(media_type: str = "window_or_tab_share") -> str:
     supported_media = {"window_or_tab_share", "webcam", "microphone"}
     if normalized not in supported_media:
         supported_values = ", ".join(sorted(supported_media))
-        return f"Unsupported media_type '{media_type}'. " f"Use one of: {supported_values}."
+        return f"Unsupported media_type '{media_type}'. Use one of: {supported_values}."
 
     if config.supports_real_browser_media():
         return (
@@ -1300,7 +1334,7 @@ def deep_think(reasoning: str) -> str:
                    Best approach: Alt+F is most reliable for accessing File menu across applications.")
     """
     logger.info("Deep thinking engaged for complex reasoning")
-    logger.debug(f"Reasoning content (first 200 chars): {reasoning[:200]}...")
+    logger.debug("Reasoning content: %s", safe_preview(reasoning))
 
     # Return a message that will be added to history
     return f"PENSIERO PROFONDO registrato: {reasoning}"
@@ -1316,7 +1350,7 @@ def finish_task(summary: str) -> str:
     Returns:
         A string message confirming task completion.
     """
-    logger.info(f"Task completed: {summary}")
+    logger.info("Task completed: %s", safe_preview(summary))
     return f"✅ Task completato con successo: {summary}"
 
 
@@ -1684,20 +1718,26 @@ def start_application(app_name: str) -> str:
     Returns:
         A string message indicating the result.
     """
-    import subprocess
-
-    logger.info(f"Issuing command to start application: {app_name}")
     try:
+        require_tier("system", dangerous=True)
+        require_allowed_application(app_name)
+        logger.info("Issuing approved application start: %s", safe_preview(app_name))
         # Use Popen for a non-blocking call
         # DETACHED_PROCESS flag allows the process to run independently
-        subprocess.Popen(
-            app_name,
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        # app_name passed an exact operator allowlist check.
+        creation_flags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        subprocess.Popen(  # nosec B603
+            [app_name],
+            creationflags=creation_flags,
             close_fds=True,
         )
         logger.info(f"Successfully issued start command for '{app_name}'")
         return f"Start command issued for '{app_name}'. Use 'switch_window' in the next turn to focus it."
 
+    except ToolPermissionError as exc:
+        return f"Error: {exc}"
     except FileNotFoundError:
         error_msg = f"Application '{app_name}' not found in system PATH."
         logger.error(error_msg)
@@ -1718,18 +1758,28 @@ def open_file(file_path: str) -> str:
     Returns:
         A string message indicating the result.
     """
-    import os
-
     try:
-        logger.info(f"Opening file: {file_path}")
-        if not os.path.exists(file_path):
-            return f"Errore: Il file '{file_path}' non esiste."
+        require_tier("system", dangerous=True)
+        path = resolve_allowed_path(file_path)
+        logger.info("Opening approved file: %s", path)
+        if not path.exists():
+            return f"Error: File '{file_path}' does not exist."
 
-        os.startfile(file_path)
-        logger.info(f"Successfully opened file: {file_path}")
-        return f"File '{file_path}' aperto con successo."
+        import os
+
+        # Windows has no shell-free cross-platform equivalent for default-app open.
+        start_file = getattr(os, "startfile", None)
+        if not callable(start_file):
+            return (
+                "Error: Opening files with their default application is only supported on Windows."
+            )
+        start_file(str(path))  # nosec B606
+        logger.info("Successfully opened file: %s", path)
+        return f"File '{path}' opened successfully."
+    except ToolPermissionError as exc:
+        return f"Error: {exc}"
     except Exception as e:
-        error_msg = f"Errore durante l'apertura del file '{file_path}': {e!s}"
+        error_msg = f"Error opening file '{file_path}': {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 
@@ -1747,12 +1797,15 @@ def open_url(url: str) -> str:
     import webbrowser
 
     try:
-        logger.info(f"Opening URL: {url}")
+        require_safe_url(url)
+        logger.info("Opening URL: %s", safe_preview(url))
         webbrowser.open(url)
-        logger.info(f"Successfully opened URL: {url}")
-        return f"URL '{url}' aperto nel browser predefinito."
+        logger.info("Successfully opened URL")
+        return f"URL '{url}' opened in the default browser."
+    except ToolPermissionError as exc:
+        return f"Error: {exc}"
     except Exception as e:
-        error_msg = f"Errore durante l'apertura dell'URL '{url}': {e!s}"
+        error_msg = f"Error opening URL '{safe_preview(url)}': {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 
@@ -1767,27 +1820,27 @@ def take_screenshot(save_path: str | None = None) -> str:
     Returns:
         A string message indicating the result.
     """
-    from datetime import datetime
-
     import pyautogui
 
     try:
         logger.info("Taking screenshot")
         screenshot = pyautogui.screenshot()
 
-        if save_path:
-            screenshot.save(save_path)
-            logger.info(f"Screenshot saved to: {save_path}")
-            return f"Screenshot salvato in: {save_path}"
-        else:
-            # Save with timestamp if no path provided
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_path = f"screenshot_{timestamp}.png"
-            screenshot.save(default_path)
-            logger.info(f"Screenshot saved to: {default_path}")
-            return f"Screenshot salvato in: {default_path}"
+        if not save_path:
+            return (
+                f"Screenshot captured in memory ({screenshot.width}x{screenshot.height}); "
+                "no file was written."
+            )
+
+        require_tier("system", dangerous=True)
+        approved_path = resolve_allowed_path(save_path)
+        screenshot.save(str(approved_path))
+        logger.info("Screenshot saved to approved path: %s", approved_path)
+        return f"Screenshot saved to: {approved_path}"
+    except ToolPermissionError as exc:
+        return f"Error: {exc}"
     except Exception as e:
-        error_msg = f"Errore durante lo screenshot: {e!s}"
+        error_msg = f"Error taking screenshot: {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 
@@ -1864,10 +1917,9 @@ def list_files(directory_path: str = ".") -> str:
     Returns:
         A formatted list of files and directories or an error message.
     """
-    from pathlib import Path
 
     try:
-        path = Path(directory_path).expanduser().resolve()
+        path = resolve_allowed_path(directory_path)
 
         if not path.exists():
             return f"Error: Path '{directory_path}' does not exist."
@@ -1892,6 +1944,8 @@ def list_files(directory_path: str = ".") -> str:
         logger.info(f"Successfully listed {len(items)} items in {path}")
         return result
 
+    except ToolPermissionError as exc:
+        return f"Error: {exc}"
     except PermissionError:
         error_msg = f"Error: Permission denied to access '{directory_path}'."
         logger.error(error_msg)
@@ -1912,10 +1966,9 @@ def read_file(file_path: str) -> str:
     Returns:
         The file content or an error message.
     """
-    from pathlib import Path
 
     try:
-        path = Path(file_path).expanduser().resolve()
+        path = resolve_allowed_path(file_path)
 
         if not path.exists():
             return f"Error: File '{file_path}' does not exist."
@@ -1950,6 +2003,8 @@ def read_file(file_path: str) -> str:
 
         return f"Content of '{path.name}':\n{content}"
 
+    except ToolPermissionError as exc:
+        return f"Error: {exc}"
     except PermissionError:
         error_msg = f"Error: Permission denied to read '{file_path}'."
         logger.error(error_msg)
@@ -1971,10 +2026,10 @@ def write_file(file_path: str, content: str) -> str:
     Returns:
         A confirmation message or an error message.
     """
-    from pathlib import Path
 
     try:
-        path = Path(file_path).expanduser().resolve()
+        require_tier("system", dangerous=True)
+        path = resolve_allowed_path(file_path)
 
         # Create parent directories if they don't exist
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1988,6 +2043,8 @@ def write_file(file_path: str, content: str) -> str:
         logger.info(f"Successfully wrote {size_kb:.1f} KB to {path}")
         return f"Successfully wrote {len(content)} characters to '{path}'."
 
+    except ToolPermissionError as exc:
+        return f"Error: {exc}"
     except PermissionError:
         error_msg = f"Error: Permission denied to write to '{file_path}'."
         logger.error(error_msg)

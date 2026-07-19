@@ -34,13 +34,13 @@ LAST_UI_SNAPSHOT: list[dict[str, Any]] = []
 def _desktop_unavailable_message() -> str:
     if config.uses_remote_selenium():
         return (
-            "Interazione desktop non disponibile nel runtime Docker/browser remoto. "
-            "Questo runtime supporta automazione DOM del browser, ma non accesso al display host "
-            "o condivisione reale di finestra/tab. Per browser media e screen share reali usa il runtime Windows nativo."
+            "Desktop interaction is unavailable in the Docker/remote-browser runtime. "
+            "This runtime supports browser DOM automation, but it cannot access the host display "
+            "or share a real window or tab. Use the native Windows runtime for host screen access."
         )
     return (
-        "Interazione desktop non disponibile in questo ambiente. "
-        "Usa gli strumenti browser per interagire con le pagine web."
+        "Desktop interaction is unavailable in this environment. "
+        "Use the browser tools to interact with web pages."
     )
 
 
@@ -156,7 +156,7 @@ def snapshot_to_text(snapshot: list[dict[str, Any]]) -> str:
     """Convert a control snapshot into a readable tree for the LLM."""
 
     if not snapshot:
-        return "Nessuna finestra attiva trovata."
+        return "No active window was found."
 
     lines: list[str] = []
     for entry in snapshot:
@@ -234,9 +234,7 @@ def get_multimodal_context() -> tuple[Image.Image, str]:
             - String representation of the UI element tree
     """
     if not HAS_PYAUTOGUI:
-        logger.warning(
-            "pyautogui non disponibile nel runtime corrente. Restituisco uno screenshot vuoto."
-        )
+        logger.warning("pyautogui is unavailable; returning a blank screenshot")
         screenshot = Image.new("RGB", (1280, 720), color="black")
     else:
         screenshot_raw = pyautogui.screenshot()
@@ -255,13 +253,13 @@ def get_multimodal_context() -> tuple[Image.Image, str]:
     try:
         active_window = _get_active_window("uia")
         if active_window is None:
-            raise RuntimeError("UIA backend non ha restituito una finestra attiva.")
+            raise RuntimeError("The UIA backend returned no active window.")
         ui_tree_text = capture_ui_tree(active_window)
     except Exception as primary_exc:
         try:
             active_window = _get_active_window("win32")
             if active_window is None:
-                raise RuntimeError("Win32 backend non ha restituito una finestra attiva.")
+                raise RuntimeError("The Win32 backend returned no active window.")
             ui_tree_text = capture_ui_tree(active_window)
         except Exception as fallback_exc:
             reasons = []
@@ -271,12 +269,12 @@ def get_multimodal_context() -> tuple[Image.Image, str]:
             fallback_reason = str(fallback_exc).strip()
             if fallback_reason:
                 reasons.append(f"Win32: {fallback_reason}")
-            details = " | ".join(reasons) if reasons else "nessun dettaglio disponibile"
+            details = " | ".join(reasons) if reasons else "no details available"
             ui_tree_text = (
-                "Nessuna finestra attiva trovata o impossibile accedere agli elementi UI. "
-                f"Dettagli: {details}"
+                "No active window was found, or its UI elements could not be read. "
+                f"Details: {details}"
             )
-            logger.warning("Impossibile acquisire l'albero UI: %s", details)
+            logger.warning("Could not capture the UI tree: %s", details)
             LAST_UI_SNAPSHOT = []
 
     return screenshot, ui_tree_text
@@ -332,9 +330,7 @@ class ScreenCapture:
             PIL.Image.Image: The captured screenshot.
         """
         if not HAS_PYAUTOGUI:
-            logger.warning(
-                "pyautogui non disponibile nel runtime corrente. Restituisco uno screenshot vuoto."
-            )
+            logger.warning("pyautogui is unavailable; returning a blank screenshot")
             return Image.new("RGB", (1280, 720), color="black")
         return cast(Image.Image, pyautogui.screenshot())
 

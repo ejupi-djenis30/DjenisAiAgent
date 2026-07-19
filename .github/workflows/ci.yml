@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -240,6 +240,7 @@ jobs:
             --name djenis-smoke \
             -p 8000:8000 \
             -e GEMINI_API_KEY=placeholder_for_smoke_test \
+            -e DJENIS_WEB_AUTH_TOKEN=test_operator_token_for_ci_only_12345 \
             djenis-ai-agent:ci-${{ github.sha }}
 
           for attempt in $(seq 1 20); do
