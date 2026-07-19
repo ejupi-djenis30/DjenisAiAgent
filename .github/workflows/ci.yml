@@ -251,7 +251,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test container health endpoint
+      - name: Smoke test container HTTP and WebSocket contracts
         shell: bash
         run: |
           cleanup() {
@@ -259,25 +259,89 @@ jobs:
             docker rm -f djenis-smoke || true
           }
           trap cleanup EXIT
+          smoke_token="test_operator_token_for_ci_only_12345"
 
           docker run -d \
             --name djenis-smoke \
             -p 8000:8000 \
             -e GEMINI_API_KEY=placeholder_for_smoke_test \
-            -e DJENIS_WEB_AUTH_TOKEN=test_operator_token_for_ci_only_12345 \
+            -e DJENIS_WEB_AUTH_TOKEN="${smoke_token}" \
             djenis-ai-agent:ci-${{ github.sha }}
 
+          healthy=false
           for attempt in $(seq 1 20); do
             if curl -fsS http://localhost:8000/health; then
               echo "Health check passed"
-              exit 0
+              healthy=true
+              break
             fi
             echo "Attempt ${attempt}/20: waiting for /health..."
             sleep 2
           done
 
-          echo "Container failed to become healthy in time"
-          exit 1
+          if [[ "${healthy}" != "true" ]]; then
+            echo "Container failed to become healthy in time"
+            exit 1
+          fi
+
+          docker exec -i \
+            -e DJENIS_SMOKE_AUTH_TOKEN="${smoke_token}" \
+            djenis-smoke python - <<'PYTHON'
+          import asyncio
+          import json
+          import os
+          from http.cookies import SimpleCookie
+          from urllib.request import Request, urlopen
+
+          import websockets
+
+          http_origin = "http://127.0.0.1:8000"
+          login_request = Request(
+              f"{http_origin}/api/session",
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {os.environ['DJENIS_SMOKE_AUTH_TOKEN']}",
+                  "Origin": http_origin,
+              },
+          )
+
+          with urlopen(login_request, timeout=5) as response:
+              if response.status != 200:
+                  raise RuntimeError(f"Session login returned HTTP {response.status}")
+              if json.load(response) != {"authenticated": True}:
+                  raise RuntimeError("Session login returned an unexpected payload")
+              set_cookie = response.headers.get("Set-Cookie")
+
+          cookies = SimpleCookie()
+          cookies.load(set_cookie or "")
+          session_cookie = cookies.get("djenis_session")
+          if session_cookie is None:
+              raise RuntimeError("Session login did not issue the expected cookie")
+
+
+          async def verify_websocket_contract() -> None:
+              async with websockets.connect(
+                  "ws://127.0.0.1:8000/ws",
+                  origin=http_origin,
+                  additional_headers={
+                      "Cookie": f"djenis_session={session_cookie.value}",
+                  },
+                  open_timeout=5,
+                  close_timeout=5,
+                  proxy=None,
+              ) as websocket:
+                  raw_message = await asyncio.wait_for(websocket.recv(), timeout=5)
+                  message = json.loads(raw_message)
+                  if message.get("type") != "status":
+                      raise RuntimeError(f"Unexpected WebSocket message: {message!r}")
+                  payload = message.get("payload")
+                  if not isinstance(payload, dict) or "agent_state" not in payload:
+                      raise RuntimeError(f"Invalid WebSocket status payload: {message!r}")
+
+
+          asyncio.run(verify_websocket_contract())
+          print("Authenticated WebSocket smoke test passed")
+          PYTHON
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
