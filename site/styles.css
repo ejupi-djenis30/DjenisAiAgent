@@ -111,6 +111,7 @@ em { color: var(--acid); font-style: normal; }
 .matrix-row > * { padding: 24px 16px; }
 .matrix-row > * + * { border-left: 1px solid var(--line); }
 .matrix-row span { color: var(--muted); }
+.matrix-row small { display: none; }
 .matrix-head { color: #68716c; font-size: .72rem; text-transform: uppercase; letter-spacing: .12em; }
 .matrix-row .yes { color: var(--acid); }
 .matrix-row .no { color: #8d9690; }
@@ -162,8 +163,15 @@ footer > div:last-child { display: flex; gap: 22px; }
   .flow div { display: block; }
   .flow p { margin-top: 8px; }
   .demo-stage { min-height: 580px; padding: 25px 20px; }
-  .matrix { overflow-x: auto; }
-  .matrix-row { min-width: 700px; }
+  .demo-steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; padding: 8px; }
+  .demo-steps button { min-width: 0; gap: 8px; padding: 16px 12px; }
+  .matrix { display: grid; gap: 12px; overflow: visible; border-top: 0; }
+  .matrix-head { display: none; }
+  .matrix-row:not(.matrix-head) { min-width: 0; grid-template-columns: 1fr 1fr; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; }
+  .matrix-row:not(.matrix-head) strong { grid-column: 1 / -1; border-bottom: 1px solid var(--line); }
+  .matrix-row > * { padding: 16px 14px; }
+  .matrix-row small { display: block; margin-bottom: 8px; color: #68716c; font: .62rem ui-monospace, monospace; text-transform: uppercase; letter-spacing: .08em; }
+  .build pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 
 @media (prefers-reduced-motion: reduce) {

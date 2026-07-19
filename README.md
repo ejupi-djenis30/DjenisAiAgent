@@ -59,7 +59,7 @@ DJENIS_PERMISSION_TIER="system"
 DJENIS_CONFIRM_DANGEROUS_ACTIONS="true"
 ```
 
-File access is restricted by `DJENIS_ALLOWED_PATHS`; app launch is restricted by `DJENIS_ALLOWED_APPLICATIONS`; shell entry points are restricted by `DJENIS_ALLOWED_SHELL_COMMANDS`. Shell chaining, pipelines, substitutions, and multiline commands are rejected. A denied tool call is a hard boundary, not a suggestion for the agent to find a workaround.
+File access is restricted by `DJENIS_ALLOWED_PATHS`; app launch is restricted by `DJENIS_ALLOWED_APPLICATIONS`; native program execution is restricted by `DJENIS_ALLOWED_SHELL_COMMANDS`. The execution tool does not invoke PowerShell or another command shell, and it rejects chaining, pipelines, substitutions, and multiline commands. Runtime and captured output are bounded by `DJENIS_SHELL_TIMEOUT` and `DJENIS_SHELL_OUTPUT_MAX_BYTES`. An allowlisted program can still perform any operation exposed by its own flags, so only add narrow diagnostic executables you trust. A denied tool call is a hard boundary, not a suggestion for the agent to find a workaround.
 
 ## Quick start: Windows
 
@@ -67,16 +67,14 @@ Requirements:
 
 - Windows 10 or 11
 - Python 3.11 or 3.12
+- [uv](https://docs.astral.sh/uv/) 0.11.29 or a compatible release
 - a Google Gemini API key
 - Chrome or Edge only if you want DOM-level browser tools
 
 ```powershell
 git clone https://github.com/ejupi-djenis30/DjenisAiAgent.git
 Set-Location DjenisAiAgent
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -e ".[dev,full]"
+uv sync --frozen --extra dev --extra full
 Copy-Item .env.example .env
 ```
 
@@ -85,13 +83,13 @@ Set `GEMINI_API_KEY` in `.env`. Keep `DJENIS_PERMISSION_TIER="observe"` while in
 Run one task:
 
 ```powershell
-python .\main.py "Open Calculator and calculate 12 times 8"
+uv run --frozen --no-sync python .\main.py "Open Calculator and calculate 12 times 8"
 ```
 
 Or start the interactive CLI:
 
 ```powershell
-python .\main.py
+uv run --frozen --no-sync python .\main.py
 ```
 
 ## Local web console
@@ -105,10 +103,10 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 Put the result in `.env` as `DJENIS_WEB_AUTH_TOKEN`, then run:
 
 ```powershell
-python .\main.py --web
+uv run --frozen --no-sync python .\main.py --web
 ```
 
-Open `http://127.0.0.1:8000`. The page exchanges the operator token for a short-lived, opaque HttpOnly cookie. WebSocket commands, the screen stream, and audio uploads require that session. Requests are subject to same-origin checks, rate limits, and upload limits.
+Open `http://127.0.0.1:8000`. The page exchanges the operator token for a short-lived, opaque HttpOnly cookie. WebSocket commands, the screen stream, and audio uploads require that session. Logout revokes live sockets immediately. Requests are subject to same-origin checks, rate limits, bounded session/connection pools, pre-parse upload limits, and concurrency limits for expensive workers.
 
 The server binds to `127.0.0.1` by default. If you deliberately expose it beyond the machine, use TLS, set `DJENIS_WEB_SESSION_COOKIE_SECURE=true`, and define exact `DJENIS_WEB_ALLOWED_ORIGINS` values.
 
@@ -155,8 +153,12 @@ The console is available at `http://127.0.0.1:8008`. The published port is loopb
 | `DJENIS_ALLOWED_PATHS` | current directory | Comma-separated roots for file tools. |
 | `DJENIS_WEB_HOST` | `127.0.0.1` | Default web bind address. |
 | `DJENIS_WEB_SESSION_TTL` | `3600` | Browser session lifetime in seconds. |
+| `DJENIS_WEB_MAX_CONNECTIONS` | `8` | Maximum simultaneous authenticated WebSockets. |
+| `DJENIS_WEB_STREAM_MAX_CLIENTS` | `2` | Maximum concurrent native desktop streams. |
 | `DJENIS_API_TIMEOUT` | `120` | Per-request Gemini HTTP timeout in seconds. |
 | `DJENIS_TASK_TIMEOUT` | `900` | Wall-clock limit for one operator task. |
+| `DJENIS_OBSERVATION_MAX_CHARS` | `16384` | Maximum tool-result text retained in model context. |
+| `DJENIS_AUDIT_LOG_MAX_BYTES` | `10485760` | Rotate the local JSONL audit log at this size. |
 
 `config.safe_view()` redacts API and web tokens for diagnostics.
 
@@ -165,22 +167,30 @@ The console is available at `http://127.0.0.1:8008`. The published port is loopb
 Install the development environment on Windows:
 
 ```powershell
-pip install -e ".[dev,full]"
-pre-commit install
+uv sync --frozen --extra dev --extra full
+uv run --frozen --no-sync pre-commit install
 ```
 
 Run the same local gates used by CI:
 
 ```powershell
-ruff check src tests main.py
-ruff format --check src tests main.py
-mypy src
-pytest tests/unit
-bandit -r src
-pip-audit
+uv lock --check
+uv run --frozen --no-sync ruff check src tests scripts main.py
+uv run --frozen --no-sync ruff format --check src tests scripts main.py
+uv run --frozen --no-sync mypy src scripts
+uv run --frozen --no-sync pytest tests/unit
+uv run --frozen --no-sync bandit -r src scripts main.py
+uv run --frozen --no-sync pip-audit
+uv run --frozen --no-sync python scripts/validate_site.py
 ```
 
-The CI workflow targets the repository's actual default branch, `master`. Portable tests run on Linux and Python 3.11/3.12; the full desktop-aware coverage suite runs on Windows. A separate workflow builds and smoke-tests the Docker image.
+`uv.lock` freezes development and native-runtime dependencies across supported platforms. The CI workflow targets the repository's actual default branch, `master`. Portable tests run on Linux and Python 3.11/3.12; the full desktop-aware coverage suite runs on Windows. A separate workflow builds and smoke-tests the Docker image.
+
+Docker installs from `requirements-docker.lock` with package hashes. Regenerate it only after reviewing dependency updates:
+
+```powershell
+uv pip compile requirements-docker.txt --output-file requirements-docker.lock --generate-hashes --python-version 3.12 --python-platform linux
+```
 
 ## Repository map
 
@@ -191,6 +201,7 @@ src/perception/      screenshots, UI snapshots, audio preprocessing
 src/reasoning/       Gemini schemas, prompt, retries, response validation
 web/static/          authenticated runtime dashboard
 site/                public GitHub Pages presentation
+scripts/             dependency-free release validators
 tests/unit/          deterministic unit tests with mocked external services
 ```
 
@@ -200,8 +211,8 @@ The public project site and the runtime dashboard are deliberately separate. Git
 
 - The project is alpha software. Use it in a disposable or well-bounded environment first.
 - UI automation depends on application accessibility quality and window focus.
-- Cancellation can interrupt loop work and retry waits, but an in-flight third-party request remains bounded by its HTTP timeout.
-- The in-memory web session and rate limiter are designed for a single-process local control plane, not a multi-instance public service.
+- Cancellation can interrupt loop work and retry waits, but an in-flight third-party request remains bounded by its HTTP timeout. Timed-out transcription threads retain their worker slot until they actually exit.
+- The bounded in-memory web session and rate limiter are designed for a single-process local control plane, not a multi-instance public service.
 - Canvas-heavy interfaces may not expose enough structure for reliable control.
 
 ## License

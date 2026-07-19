@@ -18,7 +18,7 @@ from google.genai import types as genai_types
 from PIL import Image
 
 from src.config import config
-from src.redaction import safe_preview
+from src.redaction import bounded_text, safe_preview
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +304,11 @@ def decide_next_action(
 
         # Assemble the multimodal prompt in the correct order
         history_text = (
-            "PREVIOUS STEPS:\n" + "\n".join(history[-config.max_loop_turns :])
+            "PREVIOUS STEPS:\n"
+            + bounded_text(
+                "\n".join(history[-config.max_loop_turns :]),
+                config.prompt_history_max_chars,
+            )
             if history
             else "PREVIOUS STEPS:\n- None"
         )
@@ -313,7 +317,7 @@ def decide_next_action(
             system_prompt_with_config,
             history_text,
             f"CURRENT OBJECTIVE: {user_command}",
-            "STRUCTURAL UI ELEMENTS:\n" + ui_tree,
+            "STRUCTURAL UI ELEMENTS:\n" + bounded_text(ui_tree, config.ui_tree_max_chars),
             screenshot_image,
         ]
 

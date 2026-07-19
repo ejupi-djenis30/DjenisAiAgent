@@ -62,6 +62,13 @@ class TestHelpers:
 
         assert loop_module.run_agent_loop("hello") == "ran:hello"
 
+    def test_run_agent_loop_rejects_oversized_cli_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(loop_module.config, "command_max_chars", 4)
+
+        assert loop_module.run_agent_loop("12345").startswith("FAILED")
+
     def test_tool_registry_obeys_permission_tier(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(loop_module.config, "permission_tier", "observe")
 
@@ -139,6 +146,26 @@ class TestExecuteAgentTask:
         assert "tool_dispatched" in event_names
         assert "tool_result" in event_names
         assert "task_completed" in event_names
+
+    def test_audit_events_do_not_persist_arbitrary_tool_content(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = _AuditCollector()
+        confidential = "customer-private-value-that-is-not-a-token"
+        monkeypatch.setattr(loop_module.config, "max_loop_turns", 2)
+        monkeypatch.setattr(loop_module, "audit_logger", audit)
+        monkeypatch.setattr(loop_module, "get_multimodal_context", lambda: (object(), "ui-tree"))
+        monkeypatch.setattr(loop_module.action_tools, "click", lambda element_id: confidential)
+        responses = iter(
+            [
+                _FunctionCall("click", {"element_id": confidential}),
+                _FunctionCall("finish_task", {"summary": confidential}),
+            ]
+        )
+        monkeypatch.setattr(loop_module, "decide_next_action", lambda **kwargs: next(responses))
+
+        assert loop_module._execute_agent_task("cmd") == "SUCCESS: Task completed"
+        assert confidential not in str(audit.events)
 
     def test_invalid_reasoning_response_eventually_fails(
         self, monkeypatch: pytest.MonkeyPatch

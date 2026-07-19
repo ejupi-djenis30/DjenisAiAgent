@@ -193,6 +193,35 @@ class TestAgentConfigValidation:
         cfg.web_auth_token = "valid-test-token-with-32-characters"
         assert cfg.validate_web() is True
 
+    @pytest.mark.parametrize(
+        ("attribute", "environment_name"),
+        [
+            ("web_max_sessions", "DJENIS_WEB_MAX_SESSIONS"),
+            ("web_max_connections", "DJENIS_WEB_MAX_CONNECTIONS"),
+            ("web_socket_send_timeout", "DJENIS_WEB_SOCKET_SEND_TIMEOUT"),
+            ("web_stream_max_clients", "DJENIS_WEB_STREAM_MAX_CLIENTS"),
+            (
+                "web_transcription_max_concurrency",
+                "DJENIS_WEB_TRANSCRIPTION_MAX_CONCURRENCY",
+            ),
+            ("web_transcription_timeout", "DJENIS_WEB_TRANSCRIPTION_TIMEOUT"),
+            ("audit_log_max_bytes", "DJENIS_AUDIT_LOG_MAX_BYTES"),
+            ("command_max_chars", "DJENIS_COMMAND_MAX_CHARS"),
+            ("observation_max_chars", "DJENIS_OBSERVATION_MAX_CHARS"),
+            ("prompt_history_max_chars", "DJENIS_PROMPT_HISTORY_MAX_CHARS"),
+            ("ui_tree_max_chars", "DJENIS_UI_TREE_MAX_CHARS"),
+            ("shell_output_max_bytes", "DJENIS_SHELL_OUTPUT_MAX_BYTES"),
+        ],
+    )
+    def test_resource_limits_must_be_positive(
+        self, fake_env: None, attribute: str, environment_name: str
+    ) -> None:
+        cfg = load_config()
+        setattr(cfg, attribute, 0)
+
+        with pytest.raises(ValueError, match=environment_name):
+            cfg.validate()
+
 
 # ---------------------------------------------------------------------------
 # Safe view — API key redaction

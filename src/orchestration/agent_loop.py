@@ -23,7 +23,7 @@ from src.audit import audit_logger
 from src.config import config
 from src.perception.screen_capture import get_multimodal_context
 from src.reasoning.gemini_core import decide_next_action
-from src.redaction import safe_preview
+from src.redaction import bounded_text, safe_preview
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,8 @@ def run_agent_loop(user_command: str) -> str:
     Returns:
         str: Final status message indicating success or failure.
     """
+    if len(user_command) > config.command_max_chars:
+        return f"FAILED: Command exceeds the {config.command_max_chars}-character limit"
     return _execute_agent_task(user_command, status_callback=print)
 
 
@@ -494,11 +496,13 @@ def _execute_agent_task(
                         observation = f"Error executing '{tool_name}': {exc}"
                         logger.error(observation, exc_info=True)
 
+                    observation = bounded_text(observation, config.observation_max_chars)
                     log_status(f"OBSERVATION: {safe_preview(observation)}")
 
                     # Update history for mini-loop
                     history.append(
-                        f"MOUSE MINI-LOOP [{mouse_positioning_attempts}/{config.max_mouse_positioning_attempts}]: Called {tool_name} with {tool_args}"
+                        f"MOUSE MINI-LOOP [{mouse_positioning_attempts}/{config.max_mouse_positioning_attempts}]: "
+                        f"Called {tool_name} with {safe_preview(tool_args)}"
                     )
                     history.append(f"OBSERVATION: {observation}")
 
@@ -525,7 +529,8 @@ def _execute_agent_task(
                     task_id=task_id,
                     turn=turn,
                     tool_name=tool_name,
-                    tool_args=tool_args,
+                    tool_arg_names=sorted(tool_args),
+                    tool_arg_lengths={key: len(str(value)) for key, value in tool_args.items()},
                 )
 
                 if tool_name == "finish_task":
@@ -538,7 +543,7 @@ def _execute_agent_task(
                         "task_completed",
                         task_id=task_id,
                         turn=turn,
-                        summary=summary,
+                        summary_length=len(str(summary)),
                     )
 
                     history.append("THOUGHT: finish_task called")
@@ -552,7 +557,9 @@ def _execute_agent_task(
                 else:
                     tool_function = AVAILABLE_TOOLS[tool_name]
                     try:
-                        observation = tool_function(**tool_args)
+                        observation = bounded_text(
+                            tool_function(**tool_args), config.observation_max_chars
+                        )
                         logger.info(
                             "Action: Tool '%s' executed, result: %s",
                             tool_name,
@@ -584,7 +591,8 @@ def _execute_agent_task(
                             task_id=task_id,
                             turn=turn,
                             tool_name=tool_name,
-                            observation=observation,
+                            observation_length=len(observation),
+                            observation_is_error=observation.casefold().startswith("error"),
                         )
             else:
                 observation = str(response)
@@ -625,7 +633,9 @@ def _execute_agent_task(
         # Update history with thought and observation for next iteration
         if _is_function_call(response):
             function_call = cast(FunctionCallLike, response)
-            history.append(f"THOUGHT: Called {function_call.name} with {dict(function_call.args)}")
+            history.append(
+                f"THOUGHT: Called {function_call.name} with {safe_preview(dict(function_call.args))}"
+            )
         else:
             history.append(f"THOUGHT: {str(response)[:200]}")
 

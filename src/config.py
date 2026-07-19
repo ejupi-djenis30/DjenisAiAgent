@@ -127,6 +127,18 @@ class AgentConfig:
         default_factory=lambda: _env_float("DJENIS_API_RETRY_DELAY", 2.0)
     )
     task_timeout: int = field(default_factory=lambda: _env_int("DJENIS_TASK_TIMEOUT", 900))
+    command_max_chars: int = field(
+        default_factory=lambda: _env_int("DJENIS_COMMAND_MAX_CHARS", 4096)
+    )
+    observation_max_chars: int = field(
+        default_factory=lambda: _env_int("DJENIS_OBSERVATION_MAX_CHARS", 16_384)
+    )
+    prompt_history_max_chars: int = field(
+        default_factory=lambda: _env_int("DJENIS_PROMPT_HISTORY_MAX_CHARS", 65_536)
+    )
+    ui_tree_max_chars: int = field(
+        default_factory=lambda: _env_int("DJENIS_UI_TREE_MAX_CHARS", 65_536)
+    )
 
     # Logging Configuration
     log_level: str = field(default_factory=lambda: os.getenv("DJENIS_LOG_LEVEL", "INFO"))
@@ -138,6 +150,9 @@ class AgentConfig:
     )
     audit_log_path: str = field(
         default_factory=lambda: os.getenv("DJENIS_AUDIT_LOG_PATH", "logs/agent-audit.jsonl")
+    )
+    audit_log_max_bytes: int = field(
+        default_factory=lambda: _env_int("DJENIS_AUDIT_LOG_MAX_BYTES", 10 * 1024 * 1024)
     )
 
     # Screen Capture Settings
@@ -172,6 +187,9 @@ class AgentConfig:
 
     # Shell command timeout (seconds)
     shell_timeout: int = field(default_factory=lambda: _env_int("DJENIS_SHELL_TIMEOUT", 60))
+    shell_output_max_bytes: int = field(
+        default_factory=lambda: _env_int("DJENIS_SHELL_OUTPUT_MAX_BYTES", 1_048_576)
+    )
 
     # UI snapshot maximum traversal depth
     snapshot_depth: int = field(default_factory=lambda: _env_int("DJENIS_SNAPSHOT_DEPTH", 4))
@@ -216,6 +234,22 @@ class AgentConfig:
     )
     web_session_cookie_secure: bool = field(
         default_factory=lambda: _env_bool("DJENIS_WEB_SESSION_COOKIE_SECURE", False)
+    )
+    web_max_sessions: int = field(default_factory=lambda: _env_int("DJENIS_WEB_MAX_SESSIONS", 32))
+    web_max_connections: int = field(
+        default_factory=lambda: _env_int("DJENIS_WEB_MAX_CONNECTIONS", 8)
+    )
+    web_socket_send_timeout: float = field(
+        default_factory=lambda: _env_float("DJENIS_WEB_SOCKET_SEND_TIMEOUT", 5.0)
+    )
+    web_stream_max_clients: int = field(
+        default_factory=lambda: _env_int("DJENIS_WEB_STREAM_MAX_CLIENTS", 2)
+    )
+    web_transcription_max_concurrency: int = field(
+        default_factory=lambda: _env_int("DJENIS_WEB_TRANSCRIPTION_MAX_CONCURRENCY", 1)
+    )
+    web_transcription_timeout: float = field(
+        default_factory=lambda: _env_float("DJENIS_WEB_TRANSCRIPTION_TIMEOUT", 60.0)
     )
 
     # Tool permissions. Observe-only is the safe default.
@@ -293,8 +327,20 @@ class AgentConfig:
         if self.shell_timeout <= 0:
             raise ValueError("DJENIS_SHELL_TIMEOUT must be greater than 0")
 
+        if self.shell_output_max_bytes <= 0:
+            raise ValueError("DJENIS_SHELL_OUTPUT_MAX_BYTES must be greater than 0")
+
         if self.task_timeout <= 0:
             raise ValueError("DJENIS_TASK_TIMEOUT must be greater than 0")
+
+        for name, bounded_size in (
+            ("DJENIS_COMMAND_MAX_CHARS", self.command_max_chars),
+            ("DJENIS_OBSERVATION_MAX_CHARS", self.observation_max_chars),
+            ("DJENIS_PROMPT_HISTORY_MAX_CHARS", self.prompt_history_max_chars),
+            ("DJENIS_UI_TREE_MAX_CHARS", self.ui_tree_max_chars),
+        ):
+            if bounded_size <= 0:
+                raise ValueError(f"{name} must be greater than 0")
 
         if self.snapshot_depth <= 0:
             raise ValueError("DJENIS_SNAPSHOT_DEPTH must be greater than 0")
@@ -307,6 +353,9 @@ class AgentConfig:
 
         if self.enable_audit_log and not self.audit_log_path.strip():
             raise ValueError("DJENIS_AUDIT_LOG_PATH must be set when audit logging is enabled")
+
+        if self.audit_log_max_bytes <= 0:
+            raise ValueError("DJENIS_AUDIT_LOG_MAX_BYTES must be greater than 0")
 
         if self.runtime_mode not in {"windows", "docker", "headless"}:
             raise ValueError("DJENIS_RUNTIME_MODE resolved to an unsupported value")
@@ -328,8 +377,22 @@ class AgentConfig:
                 self.web_login_rate_limit_per_minute,
             ),
             ("DJENIS_WEB_UPLOAD_MAX_BYTES", self.web_upload_max_bytes),
+            ("DJENIS_WEB_MAX_SESSIONS", self.web_max_sessions),
+            ("DJENIS_WEB_MAX_CONNECTIONS", self.web_max_connections),
+            ("DJENIS_WEB_STREAM_MAX_CLIENTS", self.web_stream_max_clients),
+            (
+                "DJENIS_WEB_TRANSCRIPTION_MAX_CONCURRENCY",
+                self.web_transcription_max_concurrency,
+            ),
         ):
             if value <= 0:
+                raise ValueError(f"{name} must be greater than 0")
+
+        for name, positive_float in (
+            ("DJENIS_WEB_SOCKET_SEND_TIMEOUT", self.web_socket_send_timeout),
+            ("DJENIS_WEB_TRANSCRIPTION_TIMEOUT", self.web_transcription_timeout),
+        ):
+            if positive_float <= 0:
                 raise ValueError(f"{name} must be greater than 0")
 
         return True

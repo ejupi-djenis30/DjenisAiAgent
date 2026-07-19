@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -53,7 +55,7 @@ def clear_locator_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         tools_module.config,
         "allowed_shell_commands",
-        ("Get-ChildItem", "Remove-Item"),
+        (sys.executable, "Remove-Item"),
     )
 
 
@@ -185,7 +187,7 @@ class TestScoringAndFormatting:
             "depth": 1,
         }
 
-        assert tools_module._describe_target(entry) == "elemento 'Save'"
+        assert tools_module._describe_target(entry) == "element 'Save'"
         assert tools_module._score_candidate(entry, "save", "button", "", exact=False) > 0
         assert tools_module._score_candidate(entry, "save", "edit", "", exact=False) == -1.0
         assert 'title="Save"' in tools_module._format_metadata(entry)
@@ -194,20 +196,30 @@ class TestScoringAndFormatting:
         snapshot = [{"index": 1, "title": "Save", "name": "", "auto_id": ""}]
 
         assert "#1 Save" in tools_module._build_suggestions(snapshot)
-        assert "Suggerimento" in tools_module._build_suggestions([])
+        assert "Suggestion" in tools_module._build_suggestions([])
 
 
 class TestCommandAndClipboard:
     def test_run_shell_command_returns_json_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        completed = subprocess.CompletedProcess(
-            args=["powershell"], returncode=0, stdout="hello\n", stderr=""
-        )
-        monkeypatch.setattr(tools_module.subprocess, "run", lambda *args, **kwargs: completed)
+        def fake_run(*_args: object, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            kwargs["stdout"].write(b"hello\n")
+            return subprocess.CompletedProcess(args=["python"], returncode=0)
 
-        payload = json.loads(tools_module.run_shell_command("Get-ChildItem"))
+        monkeypatch.setattr(tools_module.subprocess, "run", fake_run)
+
+        payload = json.loads(tools_module.run_shell_command(f'"{sys.executable}" --version'))
 
         assert payload["stdout"] == "hello"
         assert payload["return_code"] == 0
+        assert payload["stdout_truncated"] is False
+
+    def test_process_output_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(tools_module.config, "shell_output_max_bytes", 4)
+
+        text, truncated = tools_module._read_bounded_process_output(io.BytesIO(b"abcdef"))
+
+        assert text == "abcd\n...[output truncated]"
+        assert truncated is True
 
     def test_run_shell_command_blocks_mutating_commands(self) -> None:
         payload = json.loads(tools_module.run_shell_command("Remove-Item test.txt"))
@@ -216,7 +228,9 @@ class TestCommandAndClipboard:
         assert "blocked" in payload["stderr"].lower()
 
     def test_run_shell_command_blocks_redirection(self) -> None:
-        payload = json.loads(tools_module.run_shell_command("Get-ChildItem > out.txt"))
+        payload = json.loads(
+            tools_module.run_shell_command(f'"{sys.executable}" --version > out.txt')
+        )
 
         assert payload["return_code"] == -1
         assert "redirection" in payload["stderr"].lower()
@@ -230,7 +244,7 @@ class TestCommandAndClipboard:
             ),
         )
 
-        payload = json.loads(tools_module.run_shell_command("Get-ChildItem"))
+        payload = json.loads(tools_module.run_shell_command(f'"{sys.executable}" --version'))
 
         assert payload["return_code"] == -1
         assert "timed out" in payload["stderr"].lower()
@@ -257,15 +271,15 @@ class TestCommandAndClipboard:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(tools_module, "_get_active_window", lambda: None)
-        assert "Nessuna finestra attiva" in tools_module.browser_search("search", "term")
+        assert "No active window" in tools_module.browser_search("search", "term")
 
         monkeypatch.setattr(tools_module, "_get_active_window", lambda: SimpleNamespace())
         monkeypatch.setattr(tools_module, "_is_browser_window", lambda window: False)
-        assert "solo all'interno di un browser" in tools_module.browser_search("search", "term")
+        assert "only works inside a browser" in tools_module.browser_search("search", "term")
 
         monkeypatch.setattr(tools_module, "_is_browser_window", lambda window: True)
         monkeypatch.setattr(tools_module.browser_tools, "is_browser_available", lambda: False)
-        assert "Selenium non disponibile" in tools_module.browser_search("search", "term")
+        assert "Selenium is unavailable" in tools_module.browser_search("search", "term")
 
     def test_browser_search_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(tools_module, "_get_active_window", lambda: SimpleNamespace())
@@ -339,7 +353,7 @@ class TestCommandAndClipboard:
         result = tools_module.set_clipboard_text("hello world")
 
         assert copied == ["hello world"]
-        assert "hello world" in result
+        assert result == "Copied 11 characters to the clipboard."
 
     def test_start_application_success_and_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
         popen_calls: list[list[str]] = []

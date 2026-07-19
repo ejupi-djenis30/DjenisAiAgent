@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible problem in DjenisAiAgent
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve the project.
+
+        **Do not attach raw logs, tokens, cookies, API keys, private prompts, or screenshots containing personal data.** Replace sensitive values with clear placeholders before submitting.
+
+        Security vulnerabilities belong in [private vulnerability reporting](https://github.com/ejupi-djenis30/DjenisAiAgent/security/advisories/new), not a public issue.
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Windows desktop
+        - Docker web mode
+        - Headless or other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Use a release number or short commit SHA.
+      placeholder: v0.2.0 or abc1234
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem in plain language.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic commands and data only.
+      placeholder: |
+        1. Start the agent with...
+        2. Send the command...
+        3. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include only the smallest relevant excerpt after removing credentials, private content, file paths, and personal data.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, cookies, private prompts, personal data, and unrelated log content.
+          required: true
+        - label: I searched existing issues before opening this report.
+          required: true

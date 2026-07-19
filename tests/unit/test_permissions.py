@@ -13,6 +13,7 @@ from src.action.permissions import (
     require_safe_url,
     require_tier,
     resolve_allowed_path,
+    split_command_arguments,
 )
 from src.config import config
 
@@ -61,6 +62,8 @@ def test_application_allowlist_distinguishes_exact_paths(
 
     monkeypatch.setattr(config, "allowed_applications", ("notepad.exe",))
     require_allowed_application("notepad.exe")
+    with pytest.raises(ToolPermissionError, match="not allowlisted"):
+        require_allowed_application(str(tmp_path / "untrusted" / "notepad.exe"))
 
 
 def test_shell_allowlist_rejects_unlisted_and_compound_commands(
@@ -75,6 +78,12 @@ def test_shell_allowlist_rejects_unlisted_and_compound_commands(
         require_allowed_shell_command("Get-ChildItem; Get-Process")
     with pytest.raises(ToolPermissionError, match="chaining"):
         require_allowed_shell_command("Get-ChildItem | Out-File result.txt")
+
+
+def test_native_command_parser_preserves_quoted_arguments_without_shell_evaluation() -> None:
+    parsed = split_command_arguments('"C:\\Program Files\\tool.exe" "literal value" --safe')
+
+    assert parsed == ["C:\\Program Files\\tool.exe", "literal value", "--safe"]
 
 
 def test_url_policy_accepts_http_but_rejects_credentials_and_active_schemes(

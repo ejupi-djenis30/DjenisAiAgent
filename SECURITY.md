@@ -17,8 +17,8 @@ Do not open a public issue for a vulnerability or exposed credential. Use GitHub
 - Enable `system` only with narrow `DJENIS_ALLOWED_PATHS` and `DJENIS_ALLOWED_APPLICATIONS` values.
 - Keep the web console bound to `127.0.0.1` unless you have added TLS and explicit network controls.
 - Use a separate browser profile for automation.
-- Review `logs/agent-audit.jsonl` before sharing it, even though known secrets and oversized values are redacted.
+- Review `logs/agent-audit.jsonl` before sharing it, even though known credential shapes are redacted, tool contents are recorded as metadata, and the file rotates at a configured size.
 
 ## Security boundaries
 
-The project validates operator sessions, origins, upload size, request rate, tool names, permission tiers, paths, applications, and URL schemes. These controls reduce accidental exposure; they are not a formal sandbox. The `system` tier intentionally grants high-impact capabilities to the local process.
+The project validates operator sessions, origins, upload size, request rate, connection and worker capacity, tool names, permission tiers, paths, applications, and URL schemes. Native program execution never passes model output to a command shell, but any explicitly allowlisted executable retains the powers of that executable. These controls reduce accidental exposure; they are not a formal sandbox. The `system` tier intentionally grants high-impact capabilities to the local process.

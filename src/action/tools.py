@@ -10,12 +10,14 @@ import shutil
 
 # subprocess is confined to explicitly permission-gated tools below.
 import subprocess  # nosec B404
+import tempfile
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock, Thread
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 from uuid import uuid4
 
 try:
@@ -43,7 +45,7 @@ except ImportError:
             pass
 
         def connect(self, *args, **kwargs):
-            raise RuntimeError("Connessione pywinauto non disponibile in questo ambiente.")
+            raise RuntimeError("pywinauto is not available in this environment.")
 
 
 from src.action import browser_tools
@@ -54,6 +56,7 @@ from src.action.permissions import (
     require_safe_url,
     require_tier,
     resolve_allowed_path,
+    split_command_arguments,
 )
 from src.config import config
 from src.perception.screen_capture import get_latest_ui_snapshot, refresh_ui_snapshot
@@ -62,6 +65,13 @@ from src.redaction import safe_preview
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+class _ProcessOutputStream(Protocol):
+    def seek(self, offset: int, whence: int = 0) -> int: ...
+
+    def read(self, size: int = -1) -> bytes: ...
+
 
 _LOCATOR_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _LOCATOR_CACHE_LOCK: Lock = Lock()
@@ -137,7 +147,7 @@ def _execute_with_timeout(
             raise value
         return cast(T, value)
     except Empty:
-        logger.warning(f"⏱️ Timeout di {timeout}s raggiunto durante operazione pywinauto")
+        logger.warning("pywinauto operation timed out after %s seconds", timeout)
         return default
 
 
@@ -270,15 +280,15 @@ def _resolve_control(window: Any, identifier: str) -> tuple[Any | None, dict[str
 
 def _describe_target(metadata: dict[str, Any] | None) -> str:
     if not metadata:
-        return "elemento"
+        return "element"
     for key in ("title", "name", "auto_id", "selector"):
         value = metadata.get(key)
         if value:
-            return f"elemento '{value}'"
+            return f"element '{value}'"
     control_type = metadata.get("control_type") or metadata.get("class_name")
     if control_type:
-        return f"elemento {control_type}"
-    return "elemento"
+        return f"{control_type} element"
+    return "element"
 
 
 def _score_candidate(
@@ -347,7 +357,7 @@ def _format_metadata(metadata: dict[str, Any]) -> str:
             parts.append(f"{key}={value}")
         else:
             parts.append(f'{key}="{value}"')
-    return ", ".join(parts) if parts else "elemento"
+    return ", ".join(parts) if parts else "element"
 
 
 def _build_suggestions(snapshot: list[dict[str, Any]], limit: int = 5) -> str:
@@ -360,8 +370,8 @@ def _build_suggestions(snapshot: list[dict[str, Any]], limit: int = 5) -> str:
         if len(suggestions) >= limit:
             break
     if suggestions:
-        return "Suggerimenti: " + ", ".join(suggestions)
-    return "Suggerimento: verifica che la finestra corretta sia attiva e che gli elementi siano visibili."
+        return "Suggestions: " + ", ".join(suggestions)
+    return "Suggestion: activate the correct window and make sure the target is visible."
 
 
 def _validate_shell_command(command: str) -> str | None:
@@ -385,15 +395,28 @@ def _validate_shell_command(command: str) -> str | None:
     return None
 
 
+def _read_bounded_process_output(stream: _ProcessOutputStream) -> tuple[str, bool]:
+    """Read a process output stream without returning an unbounded payload."""
+
+    stream.seek(0)
+    raw = stream.read(config.shell_output_max_bytes + 1)
+    truncated = len(raw) > config.shell_output_max_bytes
+    text = raw[: config.shell_output_max_bytes].decode("utf-8", errors="replace").strip()
+    if truncated:
+        text = f"{text}\n...[output truncated]" if text else "...[output truncated]"
+    return text, truncated
+
+
 def run_shell_command(command: str) -> str:
     """
-    Executes a read-only command in Windows PowerShell and returns its output.
-    This method is intended for inspection and diagnostics. Mutating shell
-    commands are blocked so that file, process, and system changes go through
-    explicit automation tools instead of arbitrary PowerShell.
+    Execute one operator-allowlisted native program without a command shell.
+
+    Shell parsing, pipelines, substitutions, and nested expressions are not
+    supported. The operator remains responsible for allowlisting programs whose
+    own command-line flags match the intended capability boundary.
 
     Args:
-        command: The PowerShell command to execute (e.g., "ls", "Get-Process").
+        command: One native executable invocation with optional arguments.
 
     Returns:
         A JSON string with "stdout", "stderr", and "return_code".
@@ -418,30 +441,38 @@ def run_shell_command(command: str) -> str:
         )
 
     try:
-        # Using PowerShell is more powerful on Windows
-        # Timeout is crucial to prevent the agent from getting stuck
-        powershell_path = shutil.which("powershell.exe") or shutil.which("powershell")
-        if not powershell_path:
+        arguments = split_command_arguments(command)
+        executable = arguments[0]
+        executable_path = (
+            shutil.which(executable)
+            if Path(executable).name == executable
+            else str(Path(executable).expanduser().resolve())
+        )
+        if not executable_path or not Path(executable_path).is_file():
             return json.dumps(
                 {
                     "stdout": "",
-                    "stderr": "PowerShell executable was not found.",
+                    "stderr": "The allowlisted executable was not found.",
                     "return_code": -1,
                 }
             )
-        # The command passed three controls: tier, allowlist, and syntax validation.
-        result = subprocess.run(  # nosec B603
-            [powershell_path, "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True,
-            text=True,
-            timeout=config.shell_timeout,
-            encoding="utf-8",
-            errors="ignore",
-        )
+        # File-backed capture prevents a noisy allowlisted process from exhausting memory.
+        with tempfile.TemporaryFile() as stdout_stream, tempfile.TemporaryFile() as stderr_stream:
+            # No shell interpreter is involved, so arguments cannot become nested commands.
+            result = subprocess.run(  # nosec B603
+                [executable_path, *arguments[1:]],
+                stdout=stdout_stream,
+                stderr=stderr_stream,
+                timeout=config.shell_timeout,
+            )
+            stdout, stdout_truncated = _read_bounded_process_output(stdout_stream)
+            stderr, stderr_truncated = _read_bounded_process_output(stderr_stream)
         output = {
-            "stdout": result.stdout.strip(),
-            "stderr": result.stderr.strip(),
+            "stdout": stdout,
+            "stderr": stderr,
             "return_code": result.returncode,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
         }
         logger.info("Shell command completed with return code %d", result.returncode)
         return json.dumps(output, ensure_ascii=False)
@@ -518,10 +549,10 @@ def element_id(
 
     window = _get_active_window()
     if window is None:
-        return "Errore: Nessuna finestra attiva trovata. Apri o attiva l'applicazione prima di continuare."
+        return "Error: No active window found. Open or focus the application before continuing."
 
     window_title = window.window_text()
-    logger.info(f"Ricerca elemento limitata alla finestra attiva: '{window_title}'")
+    logger.info("Element search scoped to active window: '%s'", window_title)
 
     snapshot = get_latest_ui_snapshot()
     # CRITICAL: Always refresh snapshot with the active window to ensure we're searching in the right context
@@ -543,8 +574,8 @@ def element_id(
             if "✅" in browser_result:
                 return f"🔍 [Browser Mode] {browser_result}"
         return (
-            "Errore: Impossibile analizzare la finestra corrente (timeout). "
-            f"Se sei in un browser, {browser_tools.get_browser_setup_hint()}"
+            "Error: The active window could not be inspected before the timeout. "
+            f"For browser content, {browser_tools.get_browser_setup_hint()}"
         )
 
     query_norm = _normalize(query)
@@ -565,7 +596,7 @@ def element_id(
     if resolved_index:
         candidates = [entry for entry in snapshot if entry.get("index") == resolved_index]
         if not candidates:
-            return f"Errore: Nessun elemento con indice #{resolved_index} trovato nella finestra corrente."
+            return f"Error: No element with index #{resolved_index} exists in the active window."
 
     scored: list[tuple[float, dict[str, Any]]] = []
     for entry in candidates:
@@ -583,7 +614,7 @@ def element_id(
                 return f"🔍 [Browser Mode] {browser_result}"
 
         suggestion = _build_suggestions(snapshot)
-        return "Errore: Nessun elemento corrispondente trovato. " + suggestion
+        return "Error: No matching element was found. " + suggestion
 
     scored.sort(key=lambda item: (-item[0], item[1].get("depth", 0), item[1].get("index", 0)))
     best_entry = scored[0][1]
@@ -591,8 +622,8 @@ def element_id(
     descriptor = _format_metadata(metadata)
 
     response = (
-        f"🔍 Locator generato: {token} -> {descriptor}. "
-        "Usa questo valore con gli strumenti click, type_text o get_text."
+        f"Locator created: {token} -> {descriptor}. "
+        "Use this token with click, type_text, or get_text."
     )
 
     if len(scored) > 1:
@@ -601,9 +632,9 @@ def element_id(
             alt_entry.get("title")
             or alt_entry.get("name")
             or alt_entry.get("auto_id")
-            or f"indice #{alt_entry.get('index')}"
+            or f"index #{alt_entry.get('index')}"
         )
-        response += f" Alternativa suggerita: index=#{alt_entry.get('index')} ({alt_label})."
+        response += f" Suggested alternative: index=#{alt_entry.get('index')} ({alt_label})."
 
     return response
 
@@ -654,7 +685,10 @@ def element_id_fast(query: str, control_type: str | None = None, auto_id: str | 
             token, stored_meta = _store_locator(metadata)
             descriptor = _format_metadata(stored_meta)
             logger.info("Fast search succeeded: %s", descriptor)
-            return f"🔍 Locator generato (fast): {token} -> {descriptor}. Usa questo valore con gli strumenti click, type_text o get_text."
+            return (
+                f"Locator created: {token} -> {descriptor}. "
+                "Use this token with click, type_text, or get_text."
+            )
     except (ElementNotFoundError, AttributeError, IndexError, Exception) as e:
         logger.info("Fast search failed (%s), falling back to snapshot search", type(e).__name__)
 
@@ -678,7 +712,7 @@ def click(element_id: str) -> str:
     """
     window = _get_active_window()
     if window is None:
-        return "Errore: Nessuna finestra attiva trovata."
+        return "Error: No active window found."
 
     control, metadata = _resolve_control(window, element_id)
     if control is None:
@@ -689,8 +723,8 @@ def click(element_id: str) -> str:
             if "✅" in browser_result:
                 return f"[Browser Mode] {browser_result}"
 
-        reason = metadata.get("error") if metadata else "Elemento non trovato."
-        return f"Errore: Impossibile trovare o interagire con l'elemento '{element_id}'. Dettagli: {reason}"
+        reason = metadata.get("error") if metadata else "Element not found."
+        return f"Error: Could not find or interact with element '{element_id}'. Details: {reason}"
 
     descriptor = _describe_target(metadata)
 
@@ -698,10 +732,10 @@ def click(element_id: str) -> str:
         wrapper = _prepare_wrapper(control)
         wrapper.click_input()
         logger.info("Successfully clicked %s (%s)", element_id, descriptor)
-        return f"{descriptor.capitalize()} cliccato con successo."
+        return f"Clicked {descriptor} successfully."
     except Exception as exc:  # pragma: no cover - safety net for unexpected issues
         logger.error("Unexpected error while clicking %s: %s", descriptor, exc, exc_info=True)
-        return f"Errore imprevisto durante il click su {descriptor}. Dettagli: {exc}"
+        return f"Unexpected error while clicking {descriptor}. Details: {exc}"
 
 
 def type_text(element_id: str, text: str) -> str:
@@ -720,12 +754,12 @@ def type_text(element_id: str, text: str) -> str:
     """
     window = _get_active_window()
     if window is None:
-        return "Errore: Nessuna finestra attiva trovata."
+        return "Error: No active window found."
 
     control, metadata = _resolve_control(window, element_id)
     if control is None:
-        reason = metadata.get("error") if metadata else "Elemento non trovato."
-        return f"Errore: Impossibile trovare o digitare in '{element_id}'. Dettagli: {reason}"
+        reason = metadata.get("error") if metadata else "Element not found."
+        return f"Error: Could not find or type into '{element_id}'. Details: {reason}"
 
     descriptor = _describe_target(metadata)
 
@@ -733,10 +767,10 @@ def type_text(element_id: str, text: str) -> str:
         wrapper = _prepare_wrapper(control)
         wrapper.type_keys(text, with_spaces=True)
         logger.info("Successfully typed into %s (%s)", element_id, descriptor)
-        return f"Testo '{text}' digitato con successo in {descriptor}."
+        return f"Typed {len(text)} characters into {descriptor}."
     except Exception as exc:  # pragma: no cover - safety net for unexpected issues
         logger.error("Unexpected error while typing into %s: %s", descriptor, exc, exc_info=True)
-        return f"Errore imprevisto durante la digitazione in {descriptor}. Dettagli: {exc}"
+        return f"Unexpected error while typing into {descriptor}. Details: {exc}"
 
 
 def get_text(element_id: str) -> str:
@@ -754,12 +788,12 @@ def get_text(element_id: str) -> str:
     """
     window = _get_active_window()
     if window is None:
-        return "Errore: Nessuna finestra attiva trovata."
+        return "Error: No active window found."
 
     control, metadata = _resolve_control(window, element_id)
     if control is None:
-        reason = metadata.get("error") if metadata else "Elemento non trovato."
-        return f"Errore: Impossibile recuperare testo da '{element_id}'. Dettagli: {reason}"
+        reason = metadata.get("error") if metadata else "Element not found."
+        return f"Error: Could not read text from '{element_id}'. Details: {reason}"
 
     descriptor = _describe_target(metadata)
 
@@ -767,12 +801,12 @@ def get_text(element_id: str) -> str:
         wrapper = _prepare_wrapper(control)
         text_value = _safe_attr(wrapper, "window_text")
         logger.info("Successfully retrieved text from %s (%s)", element_id, descriptor)
-        return f"Testo recuperato da {descriptor}: '{text_value}'"
+        return f"Text read from {descriptor}: '{text_value}'"
     except Exception as exc:  # pragma: no cover - safety net for unexpected issues
         logger.error(
             "Unexpected error while retrieving text from %s: %s", descriptor, exc, exc_info=True
         )
-        return f"Errore imprevisto durante il recupero del testo da {descriptor}. Dettagli: {exc}"
+        return f"Unexpected error while reading text from {descriptor}. Details: {exc}"
 
 
 def scroll(direction: str, amount: int = 3) -> str:
@@ -798,20 +832,20 @@ def scroll(direction: str, amount: int = 3) -> str:
             scroll_amount = amount if direction == "up" else -amount
             pyautogui.scroll(scroll_amount)
             logger.info(f"Successfully scrolled {direction}")
-            return f"Scroll {direction} di {amount} unità eseguito con successo."
+            return f"Scrolled {direction} by {amount} units."
         elif direction in ["left", "right"]:
             # Horizontal scroll using hscroll
             scroll_amount = -amount if direction == "left" else amount
             pyautogui.hscroll(scroll_amount)
             logger.info(f"Successfully scrolled {direction}")
-            return f"Scroll {direction} di {amount} unità eseguito con successo."
+            return f"Scrolled {direction} by {amount} units."
         else:
-            error_msg = f"Direzione non valida: '{direction}'. Usa 'up', 'down', 'left', o 'right'."
+            error_msg = f"Invalid direction: '{direction}'. Use 'up', 'down', 'left', or 'right'."
             logger.warning(error_msg)
             return error_msg
 
     except Exception as e:
-        error_msg = f"Errore durante lo scroll {direction}: {e!s}"
+        error_msg = f"Error while scrolling {direction}: {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 
@@ -1200,13 +1234,13 @@ def browser_search(query: str, search_term: str) -> str:
     """
     window = _get_active_window()
     if window is None:
-        return "Errore: Nessuna finestra attiva trovata."
+        return "Error: No active window found."
 
     if not _is_browser_window(window):
-        return "⚠️ Questo strumento funziona solo all'interno di un browser. Usa type_text per altre applicazioni."
+        return "This tool only works inside a browser. Use type_text for other applications."
 
     if not browser_tools.is_browser_available():
-        return f"❌ Selenium non disponibile. {browser_tools.get_browser_setup_hint()}"
+        return f"Selenium is unavailable. {browser_tools.get_browser_setup_hint()}"
 
     logger.info(
         "Browser search for element %s with %d characters of input",
@@ -1351,7 +1385,7 @@ def finish_task(summary: str) -> str:
         A string message confirming task completion.
     """
     logger.info("Task completed: %s", safe_preview(summary))
-    return f"✅ Task completato con successo: {summary}"
+    return f"Task completed: {summary}"
 
 
 def double_click(element_id: str) -> str:
@@ -1366,23 +1400,23 @@ def double_click(element_id: str) -> str:
     """
     window = _get_active_window()
     if not window:
-        return "Errore: Impossibile accedere alla finestra attiva."
+        return "Error: Could not access the active window."
 
     control, metadata = _resolve_control(window, element_id)
     if not control:
         snapshot = refresh_ui_snapshot(window)
         suggestions = _build_suggestions(snapshot)
-        return f"Errore: Elemento '{element_id}' non trovato o non più valido. {suggestions}"
+        return f"Error: Element '{element_id}' was not found or is no longer valid. {suggestions}"
 
     descriptor = _describe_target(metadata)
     try:
         wrapper = _prepare_wrapper(control)
         wrapper.double_click_input()
-        logger.info("Successfully double-clicked %s (elemento '%s')", element_id, descriptor)
-        return f"Elemento '{descriptor}' doppio-cliccato con successo."
+        logger.info("Successfully double-clicked %s (%s)", element_id, descriptor)
+        return f"Double-clicked {descriptor}."
     except Exception as exc:
         logger.error("Failed to double-click %s: %s", element_id, exc, exc_info=True)
-        return f"Errore durante il doppio-click su '{descriptor}': {exc}"
+        return f"Error while double-clicking {descriptor}: {exc}"
 
 
 def right_click(element_id: str) -> str:
@@ -1397,23 +1431,23 @@ def right_click(element_id: str) -> str:
     """
     window = _get_active_window()
     if not window:
-        return "Errore: Impossibile accedere alla finestra attiva."
+        return "Error: Could not access the active window."
 
     control, metadata = _resolve_control(window, element_id)
     if not control:
         snapshot = refresh_ui_snapshot(window)
         suggestions = _build_suggestions(snapshot)
-        return f"Errore: Elemento '{element_id}' non trovato o non più valido. {suggestions}"
+        return f"Error: Element '{element_id}' was not found or is no longer valid. {suggestions}"
 
     descriptor = _describe_target(metadata)
     try:
         wrapper = _prepare_wrapper(control)
         wrapper.right_click_input()
-        logger.info("Successfully right-clicked %s (elemento '%s')", element_id, descriptor)
-        return f"Click destro su elemento '{descriptor}' eseguito con successo."
+        logger.info("Successfully right-clicked %s (%s)", element_id, descriptor)
+        return f"Right-clicked {descriptor}."
     except Exception as exc:
         logger.error("Failed to right-click %s: %s", element_id, exc, exc_info=True)
-        return f"Errore durante il click destro su '{descriptor}': {exc}"
+        return f"Error while right-clicking {descriptor}: {exc}"
 
 
 def move_mouse(x: int, y: int) -> str:
@@ -1553,14 +1587,14 @@ def wait_seconds(seconds: int) -> str:
 
     try:
         if seconds < 1 or seconds > 30:
-            return "Errore: Il tempo di attesa deve essere tra 1 e 30 secondi."
+            return "Error: Wait time must be between 1 and 30 seconds."
 
         logger.info("Waiting for %s seconds", seconds)
         time.sleep(seconds)
         logger.info("Wait completed after %s seconds", seconds)
-        return f"Attesa di {seconds} secondi completata."
+        return f"Waited {seconds} seconds."
     except Exception as exc:  # pragma: no cover - defensive logging
-        error_msg = f"Errore durante l'attesa: {exc}"
+        error_msg = f"Error while waiting: {exc}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 
@@ -1574,15 +1608,15 @@ def maximize_window() -> str:
     """
     window = _get_active_window()
     if not window:
-        return "Errore: Impossibile accedere alla finestra attiva."
+        return "Error: Could not access the active window."
 
     try:
         window.maximize()
         logger.info("Successfully maximized active window")
-        return "Finestra attiva massimizzata con successo."
+        return "Maximized the active window."
     except Exception as exc:
         logger.error("Failed to maximize window: %s", exc, exc_info=True)
-        return f"Errore durante la massimizzazione della finestra: {exc}"
+        return f"Error while maximizing the active window: {exc}"
 
 
 def close_window() -> str:
@@ -1594,15 +1628,15 @@ def close_window() -> str:
     """
     window = _get_active_window()
     if not window:
-        return "Errore: Impossibile accedere alla finestra attiva."
+        return "Error: Could not access the active window."
 
     try:
         window.close()
         logger.info("Successfully closed active window")
-        return "Finestra attiva chiusa con successo."
+        return "Closed the active window."
     except Exception as exc:
         logger.error("Failed to close window: %s", exc, exc_info=True)
-        return f"Errore durante la chiusura della finestra: {exc}"
+        return f"Error while closing the active window: {exc}"
 
 
 def copy_to_clipboard() -> str:
@@ -1618,9 +1652,9 @@ def copy_to_clipboard() -> str:
         logger.info("Copying to clipboard with Ctrl+C")
         pyautogui.hotkey("ctrl", "c")
         logger.info("Successfully executed Ctrl+C")
-        return "Testo copiato negli appunti con Ctrl+C."
+        return "Copied the selected text with Ctrl+C."
     except Exception as e:
-        error_msg = f"Errore durante la copia negli appunti: {e!s}"
+        error_msg = f"Error while copying to the clipboard: {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 
@@ -1638,9 +1672,9 @@ def paste_from_clipboard() -> str:
         logger.info("Pasting from clipboard with Ctrl+V")
         pyautogui.hotkey("ctrl", "v")
         logger.info("Successfully executed Ctrl+V")
-        return "Testo incollato dagli appunti con Ctrl+V."
+        return "Pasted text from the clipboard with Ctrl+V."
     except Exception as e:
-        error_msg = f"Errore durante l'incolla dagli appunti: {e!s}"
+        error_msg = f"Error while pasting from the clipboard: {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 
@@ -1699,9 +1733,9 @@ def set_clipboard_text(text: str) -> str:
         logger.info(f"Setting clipboard text ({len(text)} characters)")
         pyperclip.copy(text)
         logger.info("Successfully set clipboard text")
-        return f"Testo copiato negli appunti: '{text[:50]}{'...' if len(text) > 50 else ''}'"
+        return f"Copied {len(text)} characters to the clipboard."
     except Exception as e:
-        error_msg = f"Errore durante l'impostazione degli appunti: {e!s}"
+        error_msg = f"Error while setting clipboard content: {e!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 
@@ -1773,7 +1807,7 @@ def open_file(file_path: str) -> str:
             return (
                 "Error: Opening files with their default application is only supported on Windows."
             )
-        start_file(str(path))  # nosec B606
+        start_file(str(path))
         logger.info("Successfully opened file: %s", path)
         return f"File '{path}' opened successfully."
     except ToolPermissionError as exc:
@@ -1863,13 +1897,13 @@ def focus_window(window_title: str) -> str:
         main_window.set_focus()
         focused_title = main_window.window_text()
         logger.info(f"Successfully focused window: '{focused_title}'")
-        return f"Finestra '{focused_title}' portata in primo piano con successo."
+        return f"Focused window '{focused_title}'."
     except ElementNotFoundError:
         logger.error(f"Window with title containing '{window_title}' not found.")
-        return f"❌ Errore: Nessuna finestra trovata con il titolo '{window_title}'."
+        return f"Error: No window title contains '{window_title}'."
     except Exception as e:
         logger.error(f"Failed to focus window '{window_title}': {e}")
-        return f"❌ Errore: Impossibile mettere a fuoco la finestra '{window_title}': {e}"
+        return f"Error: Could not focus window '{window_title}': {e}"
 
 
 def switch_window(window_title: str) -> str:

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
+import threading
+import time
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -27,6 +30,12 @@ def main_module(monkeypatch: pytest.MonkeyPatch) -> object:
     monkeypatch.setattr(module.config, "web_rate_limit_per_minute", 100)
     monkeypatch.setattr(module.config, "web_login_rate_limit_per_minute", 100)
     monkeypatch.setattr(module.config, "web_upload_max_bytes", 1024)
+    monkeypatch.setattr(module.config, "web_max_sessions", 8)
+    monkeypatch.setattr(module.config, "web_max_connections", 4)
+    monkeypatch.setattr(module.config, "web_socket_send_timeout", 1.0)
+    monkeypatch.setattr(module.config, "web_stream_max_clients", 2)
+    monkeypatch.setattr(module.config, "web_transcription_max_concurrency", 1)
+    monkeypatch.setattr(module.config, "web_transcription_timeout", 1.0)
     return module
 
 
@@ -171,6 +180,88 @@ def test_session_logout_revokes_cookie(main_module: object) -> None:
     assert protected.status_code == 401
 
 
+def test_cookie_authenticated_mutation_requires_origin(main_module: object) -> None:
+    with TestClient(main_module.app) as client:
+        authenticate(client)
+        response = client.delete("/api/session")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Origin required"
+
+
+def test_invalid_authorization_header_does_not_fall_back_to_cookie(main_module: object) -> None:
+    with TestClient(main_module.app) as client:
+        authenticate(client)
+        response = client.get(
+            "/api/session",
+            headers={"Authorization": "Bearer an-invalid-replacement-token"},
+        )
+
+    assert response.status_code == 401
+
+
+def test_logout_closes_websocket_bound_to_revoked_session(main_module: object) -> None:
+    with TestClient(main_module.app) as client:
+        authenticate(client)
+        with client.websocket_connect("/ws", headers={"Origin": "http://testserver"}) as websocket:
+            websocket.receive_json()
+            response = client.delete("/api/session", headers={"Origin": "http://testserver"})
+            with pytest.raises(WebSocketDisconnect) as disconnected:
+                websocket.receive_json()
+
+    assert response.status_code == 204
+    assert disconnected.value.code == 4401
+
+
+def test_websocket_connection_limit_is_enforced(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module.config, "web_max_connections", 1)
+
+    with TestClient(main_module.app) as client:
+        authenticate(client)
+        with client.websocket_connect("/ws", headers={"Origin": "http://testserver"}) as first:
+            first.receive_json()
+            with (
+                pytest.raises(WebSocketDisconnect) as rejected,
+                client.websocket_connect("/ws", headers={"Origin": "http://testserver"}),
+            ):
+                pass
+
+    assert rejected.value.code == 4429
+
+
+@pytest.mark.asyncio
+async def test_expired_websocket_does_not_consume_connection_capacity(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module.config, "web_max_connections", 1)
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.accepted = False
+            self.closed: tuple[int, str] | None = None
+
+        async def accept(self) -> None:
+            self.accepted = True
+
+        async def close(self, *, code: int, reason: str) -> None:
+            self.closed = (code, reason)
+
+    expired_socket = FakeWebSocket()
+    replacement_socket = FakeWebSocket()
+    expired_session = main_module.web_security.create_session()
+    replacement_session = main_module.web_security.create_session()
+    assert await main_module.manager.connect(expired_socket, expired_session) is True
+
+    main_module.web_security.revoke_session(expired_session)
+    assert await main_module.manager.connect(replacement_socket, replacement_session) is True
+
+    assert expired_socket.closed == (4401, "Session expired")
+    assert replacement_socket.accepted is True
+    assert list(main_module.manager.active_connections) == [replacement_socket]
+
+
 def test_stream_requires_authentication(main_module: object) -> None:
     with TestClient(main_module.app) as client:
         response = client.get("/stream")
@@ -299,6 +390,48 @@ def test_transcribe_rejects_unauthenticated_unsupported_and_large_uploads(
     assert too_large.status_code == 413
 
 
+def test_transcribe_has_preparse_body_limit_and_bounded_workers(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module.config, "enable_local_transcription", True)
+    monkeypatch.setattr(main_module.config, "web_upload_max_bytes", 64)
+    monkeypatch.setattr(main_module.config, "web_transcription_timeout", 0.01)
+    worker_release = threading.Event()
+
+    def blocked_transcription(_audio_bytes: bytes) -> str:
+        worker_release.wait(timeout=2)
+        return "eventually complete"
+
+    monkeypatch.setattr(main_module, "transcribe_wav_bytes", blocked_transcription)
+
+    with TestClient(main_module.app) as client:
+        oversized = client.post(
+            "/api/transcribe",
+            headers={"Content-Length": "70000", "Origin": "http://testserver"},
+        )
+        authenticate(client)
+        timed_out = client.post(
+            "/api/transcribe",
+            headers={"Origin": "http://testserver"},
+            files={"file": ("clip.wav", b"RIFFdata", "audio/wav")},
+        )
+        busy = client.post(
+            "/api/transcribe",
+            headers={"Origin": "http://testserver"},
+            files={"file": ("clip.wav", b"RIFFdata", "audio/wav")},
+        )
+
+        worker_release.set()
+        deadline = time.monotonic() + 2
+        while main_module.runtime.active_transcriptions and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert oversized.status_code == 413
+    assert timed_out.status_code == 504
+    assert busy.status_code == 429
+    assert main_module.runtime.active_transcriptions == 0
+
+
 @pytest.mark.asyncio
 async def test_screen_generator_and_video_stream(
     main_module: object, monkeypatch: pytest.MonkeyPatch
@@ -318,3 +451,64 @@ async def test_screen_generator_and_video_stream(
 
     assert frame.startswith(b"--frame\r\nContent-Type: image/jpeg")
     assert response.media_type == "multipart/x-mixed-replace; boundary=frame"
+
+
+@pytest.mark.asyncio
+async def test_video_stream_rejects_unsupported_runtime_and_releases_capacity(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module.web_security, "require_request", lambda request, action: None)
+    monkeypatch.setattr(main_module.config, "supports_native_desktop", lambda: False)
+
+    with pytest.raises(main_module.HTTPException) as unavailable:
+        await main_module.video_stream(object())
+    assert unavailable.value.status_code == 503
+
+    monkeypatch.setattr(main_module.config, "supports_native_desktop", lambda: True)
+    monkeypatch.setattr(main_module.config, "web_stream_max_clients", 1)
+
+    async def one_frame():
+        yield b"frame"
+
+    monkeypatch.setattr(main_module, "screen_generator", one_frame)
+    response = await main_module.video_stream(object())
+    iterator = response.body_iterator
+    assert await iterator.__anext__() == b"frame"
+    with pytest.raises(StopAsyncIteration):
+        await iterator.__anext__()
+
+    assert main_module.runtime.active_streams == 0
+
+
+@pytest.mark.asyncio
+async def test_web_runtime_cancels_workers_when_server_stops(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker_stopped = asyncio.Event()
+
+    class FakeServer:
+        should_exit = False
+
+        async def serve(self) -> None:
+            await asyncio.sleep(0)
+
+    fake_server = FakeServer()
+
+    async def worker(*_args: object) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            worker_stopped.set()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(main_module.config, "validate_web", lambda: True)
+    monkeypatch.setattr(main_module.uvicorn, "Config", lambda *args, **kwargs: object())
+    monkeypatch.setattr(main_module.uvicorn, "Server", lambda _config: fake_server)
+    monkeypatch.setattr(main_module, "agent_loop", worker)
+    monkeypatch.setattr(main_module, "status_broadcaster", worker)
+
+    await main_module.run_web_mode_async("127.0.0.1", 8000)
+
+    assert fake_server.should_exit is True
+    assert main_module.runtime.task_cancel_event.is_set() is True
+    assert worker_stopped.is_set() is True

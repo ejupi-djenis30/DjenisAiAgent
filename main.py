@@ -10,7 +10,8 @@ import logging
 import os
 import sys
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -38,7 +39,7 @@ from pydantic import BaseModel, field_validator
 from src.config import VERSION, config
 from src.orchestration.agent_loop import agent_loop, run_agent_loop
 from src.perception.audio_transcription import TranscriptionError, transcribe_wav_bytes
-from src.redaction import safe_preview
+from src.redaction import RedactingFormatter, safe_preview
 from src.runtime_state import AgentState, create_runtime_state
 from src.web_security import SESSION_COOKIE, web_security
 
@@ -136,51 +137,46 @@ async def status_broadcaster():
     try:
         while True:
             status_message = await runtime.status_queue.get()
+            try:
+                logger.debug("Broadcasting status: %s", safe_preview(status_message))
 
-            logger.debug("Broadcasting status: %s", safe_preview(status_message))
+                new_state: AgentState | None = None
+                if "Ready for next command" in status_message:
+                    new_state = "idle"
+                    logger.info("Agent state changing to 'idle' - ready for next command")
+                elif (
+                    "SUCCESS:" in status_message or "Task completed successfully" in status_message
+                ):
+                    new_state = "idle"
+                    logger.info("Agent state changing to 'idle' - task completed successfully")
+                elif "FAILED:" in status_message:
+                    new_state = "idle"
+                    logger.info("Agent state changing to 'idle' - task failed")
+                elif "CANCELLED:" in status_message:
+                    new_state = "idle"
+                    logger.info("Agent state changing to 'idle' - task cancelled")
 
-            is_final_message = False
-            new_state: AgentState | None = None
-
-            if "Ready for next command" in status_message or "🔄" in status_message:
-                is_final_message = True
-                new_state = "idle"
-                logger.info("Agent state changing to 'idle' - ready for next command")
-            elif "SUCCESS:" in status_message or "Task completed successfully" in status_message:
-                is_final_message = True
-                new_state = "idle"
-                logger.info("Agent state changing to 'idle' - task completed successfully")
-            elif "FAILED:" in status_message:
-                is_final_message = True
-                new_state = "idle"
-                logger.info("Agent state changing to 'idle' - task failed (max turns)")
-            elif "🛑" in status_message or "CANCELLED:" in status_message:
-                is_final_message = True
-                new_state = "idle"
-                logger.info("Agent state changing to 'idle' - task cancelled")
-
-            if is_final_message and new_state:
-                await runtime.set_agent_state(new_state)
-                await manager.broadcast_json(
-                    {
-                        "type": "status",
-                        "payload": {
-                            "agent_state": new_state,
-                            "message": status_message,
-                        },
-                    }
-                )
-            else:
-                await manager.broadcast_json({"type": "log", "payload": status_message})
-
-            runtime.status_queue.task_done()
-
+                if new_state:
+                    await runtime.set_agent_state(new_state)
+                    await manager.broadcast_json(
+                        {
+                            "type": "status",
+                            "payload": {
+                                "agent_state": new_state,
+                                "message": status_message,
+                            },
+                        }
+                    )
+                else:
+                    await manager.broadcast_json({"type": "log", "payload": status_message})
+            except Exception as exc:
+                # A failed client broadcast must not silently kill the control-plane worker.
+                logger.error("Status broadcast failed: %s", safe_preview(exc), exc_info=True)
+            finally:
+                runtime.status_queue.task_done()
     except asyncio.CancelledError:
         logger.info("Status broadcaster cancelled, shutting down gracefully")
         raise
-    except Exception as e:
-        logger.error(f"Unexpected error in status broadcaster: {e}", exc_info=True)
-        # Don't re-raise; keep the broadcaster running if possible
 
 
 # Global FastAPI application instance with lifespan
@@ -197,16 +193,51 @@ app.mount("/static", StaticFiles(directory=WEB_STATIC_DIR), name="static")
 async def add_security_headers(request: Request, call_next):
     """Apply conservative browser defaults to the local operator console."""
 
-    response = await call_next(request)
+    if request.method == "POST" and request.url.path == "/api/transcribe":
+        # Multipart parsing happens before the endpoint body executes. Requiring a bounded
+        # Content-Length prevents an oversized/chunked upload from filling the spool first.
+        if request.headers.get("transfer-encoding"):
+            response = JSONResponse(
+                {"detail": "Chunked uploads are not accepted."}, status_code=411
+            )
+        else:
+            raw_length = request.headers.get("content-length")
+            try:
+                content_length = int(raw_length) if raw_length is not None else -1
+            except ValueError:
+                content_length = -1
+            request_limit = config.web_upload_max_bytes + 65_536
+            if content_length < 0:
+                response = JSONResponse(
+                    {"detail": "A valid Content-Length header is required."}, status_code=411
+                )
+            elif content_length > request_limit:
+                response = JSONResponse(
+                    {"detail": "Request body exceeds the configured limit."}, status_code=413
+                )
+            else:
+                response = await call_next(request)
+    else:
+        response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; img-src 'self' data: blob:; "
         "connect-src 'self' ws: wss:; style-src 'self'; script-src 'self'",
     )
     return response
+
+
+@dataclass
+class ManagedConnection:
+    """Bind a WebSocket to the opaque session that authenticated it."""
+
+    session_id: str
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class ConnectionManager:
@@ -221,20 +252,38 @@ class ConnectionManager:
 
     def __init__(self):
         """Initialize the connection manager with an empty list of active connections."""
-        self.active_connections: list[WebSocket] = []
+        self.active_connections: dict[WebSocket, ManagedConnection] = {}
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def _evict_invalid_connections(self) -> None:
+        """Close sockets whose backing sessions have expired or been evicted."""
+
+        expired = [
+            connection
+            for connection, managed in self.active_connections.items()
+            if not web_security.session_is_valid(managed.session_id)
+        ]
+        for connection in expired:
+            self.disconnect(connection)
+            with suppress(Exception):
+                await connection.close(code=4401, reason="Session expired")
+
+    async def connect(self, websocket: WebSocket, session_id: str) -> bool:
         """
         Accept a new WebSocket connection and add it to the active connections list.
 
         Args:
             websocket: The WebSocket connection to accept and manage
         """
+        await self._evict_invalid_connections()
+        if len(self.active_connections) >= config.web_max_connections:
+            await websocket.close(code=4429, reason="Connection limit reached")
+            return False
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[websocket] = ManagedConnection(session_id=session_id)
         logging.getLogger(__name__).info(
             f"New WebSocket connection. Total active: {len(self.active_connections)}"
         )
+        return True
 
     def disconnect(self, websocket: WebSocket) -> None:
         """
@@ -244,7 +293,7 @@ class ConnectionManager:
             websocket: The WebSocket connection to remove
         """
         if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+            self.active_connections.pop(websocket, None)
             logging.getLogger(__name__).info(
                 f"WebSocket disconnected. Total active: {len(self.active_connections)}"
             )
@@ -256,16 +305,32 @@ class ConnectionManager:
         Args:
             message: The message string to broadcast
         """
-        disconnected = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Failed to send to client: {e}")
-                disconnected.append(connection)
+        await self.broadcast_json({"type": "log", "payload": message})
 
-        for conn in disconnected:
-            self.disconnect(conn)
+    async def send_json(self, websocket: WebSocket, data: dict[str, object]) -> bool:
+        """Serialize writes per connection and evict expired or stalled clients."""
+
+        managed = self.active_connections.get(websocket)
+        if managed is None:
+            return False
+        if not web_security.session_is_valid(managed.session_id):
+            self.disconnect(websocket)
+            with suppress(Exception):
+                await websocket.close(code=4401, reason="Session expired")
+            return False
+        try:
+            async with managed.send_lock:
+                await asyncio.wait_for(
+                    websocket.send_json(data),
+                    timeout=config.web_socket_send_timeout,
+                )
+            return True
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Failed to send to WebSocket client: %s", safe_preview(exc)
+            )
+            self.disconnect(websocket)
+            return False
 
     async def broadcast_json(self, data: dict[str, object]) -> None:
         """
@@ -274,16 +339,26 @@ class ConnectionManager:
         Args:
             data: The dictionary to broadcast as JSON
         """
-        disconnected = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(data)
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Failed to send JSON to client: {e}")
-                disconnected.append(connection)
+        await self._evict_invalid_connections()
+        await asyncio.gather(
+            *(self.send_json(connection, data) for connection in list(self.active_connections)),
+            return_exceptions=True,
+        )
 
-        for conn in disconnected:
-            self.disconnect(conn)
+    async def disconnect_session(self, session_id: str | None) -> None:
+        """Close every live socket owned by a revoked browser session."""
+
+        if not session_id:
+            return
+        matches = [
+            connection
+            for connection, managed in self.active_connections.items()
+            if managed.session_id == session_id
+        ]
+        for connection in matches:
+            self.disconnect(connection)
+            with suppress(Exception):
+                await connection.close(code=4401, reason="Session revoked")
 
 
 # Global ConnectionManager instance
@@ -314,7 +389,7 @@ class WebSocketMessage(BaseModel):
     @classmethod
     def validate_payload(cls, v: str) -> str:
         # Reject payloads that exceed a safe size to prevent memory abuse
-        max_len = 4096
+        max_len = config.command_max_chars
         if len(v) > max_len:
             raise ValueError(f"Payload too large: {len(v)} chars (max {max_len})")
         return v.strip()
@@ -377,8 +452,10 @@ async def inspect_web_session(request: Request) -> JSONResponse:
 async def delete_web_session(request: Request) -> Response:
     """Revoke the current browser session."""
 
-    web_security.require_request(request, "logout")
-    web_security.revoke_session(request.cookies.get(SESSION_COOKIE))
+    web_security.require_request(request, "logout", require_origin_for_session=True)
+    session_id = request.cookies.get(SESSION_COOKIE)
+    web_security.revoke_session(session_id)
+    await manager.disconnect_session(session_id)
     response = Response(status_code=204)
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.headers["Cache-Control"] = "no-store"
@@ -400,30 +477,36 @@ async def websocket_endpoint(websocket: WebSocket):
     Args:
         websocket: The WebSocket connection
     """
-    if not await web_security.require_websocket(websocket):
+    session_id = await web_security.require_websocket(websocket)
+    if not session_id:
         return
 
-    await manager.connect(websocket)
+    if not await manager.connect(websocket, session_id):
+        return
     logger = logging.getLogger(__name__)
 
     current_state = await runtime.get_agent_state()
-    await websocket.send_json(
+    await manager.send_json(
+        websocket,
         {
             "type": "status",
             "payload": {
                 "agent_state": current_state,
                 "message": f"Connected. Agent is {current_state}.",
             },
-        }
+        },
     )
 
     try:
         while True:
             data = await websocket.receive_text()
             logger.info("Received WebSocket payload (%d characters)", len(data))
+            if not web_security.session_is_valid(session_id):
+                await websocket.close(code=4401, reason="Session expired")
+                break
             if not web_security.allow_websocket_message(websocket):
-                await websocket.send_json(
-                    {"type": "log", "payload": "Rate limit exceeded. Try again later."}
+                await manager.send_json(
+                    websocket, {"type": "log", "payload": "Rate limit exceeded. Try again later."}
                 )
                 await websocket.close(code=4429, reason="Rate limit exceeded")
                 break
@@ -438,8 +521,8 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 msg = WebSocketMessage.model_validate(payload)
             except Exception as validation_err:
-                await websocket.send_json(
-                    {"type": "log", "payload": f"⚠️ Invalid message: {validation_err}"}
+                await manager.send_json(
+                    websocket, {"type": "log", "payload": f"⚠️ Invalid message: {validation_err}"}
                 )
                 continue
 
@@ -448,15 +531,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if message_type == "command":
                 if not command_text:
-                    await websocket.send_json(
-                        {"type": "log", "payload": "⚠️ Empty command ignored."}
+                    await manager.send_json(
+                        websocket, {"type": "log", "payload": "⚠️ Empty command ignored."}
                     )
                 elif not await runtime.reserve_command_slot():
-                    await websocket.send_json(
+                    await manager.send_json(
+                        websocket,
                         {
                             "type": "log",
                             "payload": "⚠️ Agent is currently processing a task. Please wait or cancel.",
-                        }
+                        },
                     )
                 else:
                     queued = await enqueue_command(command_text)
@@ -470,7 +554,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 },
                             }
                         )
-                        await websocket.send_json({"type": "log", "payload": "Command queued."})
+                        await manager.send_json(
+                            websocket, {"type": "log", "payload": "Command queued."}
+                        )
                     else:
                         await runtime.set_agent_state("idle")
 
@@ -486,11 +572,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         },
                     }
                 )
-                await websocket.send_json(
+                await manager.send_json(
+                    websocket,
                     {
                         "type": "log",
                         "payload": f"🛑 Cancellation requested. Cleared {cleared} queued command(s).",
-                    }
+                    },
                 )
 
     except WebSocketDisconnect:
@@ -498,6 +585,7 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
+    finally:
         manager.disconnect(websocket)
 
 
@@ -505,7 +593,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def transcribe_audio_endpoint(request: Request, file: UploadFile = File(...)):
     """Receive an audio clip (WAV) and return its local transcription."""
 
-    web_security.require_request(request, "transcribe")
+    web_security.require_request(request, "transcribe", require_origin_for_session=True)
 
     if not config.enable_local_transcription:
         raise HTTPException(
@@ -525,15 +613,36 @@ async def transcribe_audio_endpoint(request: Request, file: UploadFile = File(..
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="The audio payload is empty.")
 
-    try:
-        text = await asyncio.get_event_loop().run_in_executor(
-            None, transcribe_wav_bytes, audio_bytes
+    if not runtime.reserve_transcription_slot(config.web_transcription_max_concurrency):
+        raise HTTPException(
+            status_code=429,
+            detail="The transcription worker is busy. Try again after the current clip finishes.",
         )
+
+    task = asyncio.create_task(asyncio.to_thread(transcribe_wav_bytes, audio_bytes))
+    release_in_finally = True
+    try:
+        text = await asyncio.wait_for(
+            asyncio.shield(task), timeout=config.web_transcription_timeout
+        )
+    except TimeoutError as exc:
+        # Python worker threads cannot be killed safely. Keep the slot reserved until
+        # the worker really exits so repeated timeouts cannot bypass the concurrency cap.
+        release_in_finally = False
+        task.add_done_callback(lambda _task: runtime.release_transcription_slot())
+        raise HTTPException(status_code=504, detail="Audio transcription timed out.") from exc
+    except asyncio.CancelledError:
+        release_in_finally = False
+        task.add_done_callback(lambda _task: runtime.release_transcription_slot())
+        raise
     except TranscriptionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - unexpected failures
         logging.getLogger(__name__).error("Unexpected audio transcription error", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal audio transcription error.") from exc
+    finally:
+        if release_in_finally:
+            runtime.release_transcription_slot()
 
     return {"transcript": text}
 
@@ -663,19 +772,38 @@ async def video_stream(request: Request):
     """
     logger = logging.getLogger(__name__)
     web_security.require_request(request, "stream")
+    if not config.supports_native_desktop():
+        raise HTTPException(
+            status_code=503,
+            detail="Desktop capture is unavailable in this runtime.",
+        )
+    if not runtime.reserve_stream_slot(config.web_stream_max_clients):
+        raise HTTPException(status_code=429, detail="Desktop stream capacity has been reached.")
     logger.info("Screen streaming endpoint accessed")
 
+    async def guarded_screen_generator():
+        try:
+            async for frame in screen_generator():
+                yield frame
+        finally:
+            runtime.release_stream_slot()
+
     return StreamingResponse(
-        screen_generator(), media_type="multipart/x-mixed-replace; boundary=frame"
+        guarded_screen_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
     )
 
 
 def setup_logging():
     """Configure logging for the application."""
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(RedactingFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logging.basicConfig(
         level=getattr(logging, config.log_level),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
+        handlers=[handler],
+        force=True,
     )
 
 
@@ -847,23 +975,48 @@ async def run_web_mode_async(host: str, port: int):
     logger.info(f"Starting unified concurrent system on http://{host}:{port}")
     logger.info("Components: FastAPI server + agent_loop + status_broadcaster")
 
+    server_task = asyncio.create_task(server.serve(), name="uvicorn-server")
+    agent_task = asyncio.create_task(
+        agent_loop(runtime.command_queue, runtime.status_queue, runtime.task_cancel_event),
+        name="agent-loop",
+    )
+    broadcaster_task = asyncio.create_task(status_broadcaster(), name="status-broadcaster")
+    background_tasks = {agent_task, broadcaster_task}
+
     try:
-        # Run all three components concurrently
-        # This is the key to Step 10: everything runs together without blocking
-        await asyncio.gather(
-            server.serve(),  # FastAPI/Uvicorn server
-            agent_loop(
-                runtime.command_queue, runtime.status_queue, runtime.task_cancel_event
-            ),  # Agent ReAct loop
-            status_broadcaster(),  # Status message broadcaster
-            return_exceptions=False,  # Propagate exceptions
+        done, _pending = await asyncio.wait(
+            {server_task, *background_tasks}, return_when=asyncio.FIRST_COMPLETED
         )
+        if server_task not in done:
+            failed_task = next(iter(done))
+            failure = failed_task.exception()
+            server.should_exit = True
+            if failure is not None:
+                raise failure
+            raise RuntimeError(f"Critical worker '{failed_task.get_name()}' exited unexpectedly")
+
+        server_failure = server_task.exception()
+        if server_failure is not None:
+            raise server_failure
     except KeyboardInterrupt:
         logger.info("Web mode interrupted by user (Ctrl+C)")
         raise
     except Exception as e:
-        logger.error(f"Error in concurrent execution: {e}", exc_info=True)
+        logger.error("Error in concurrent execution: %s", safe_preview(e), exc_info=True)
         raise
+    finally:
+        runtime.task_cancel_event.set()
+        server.should_exit = True
+        for task in {server_task, *background_tasks}:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(server_task, *background_tasks, return_exceptions=True)
+        try:
+            from src.action.browser_tools import browser_close_connection
+
+            await asyncio.to_thread(browser_close_connection)
+        except Exception as exc:  # pragma: no cover - optional Selenium shutdown
+            logger.warning("Browser cleanup failed: %s", safe_preview(exc))
 
 
 def run_web_mode(args):
@@ -968,7 +1121,7 @@ def main():
 
     except KeyboardInterrupt:
         logger.info("Application interrupted by user")
-        print("\n\n⚠️  Applicazione interrotta dall'utente.\n")
+        print("\n\nApplication interrupted by the user.\n")
         sys.exit(0)
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}", exc_info=True)

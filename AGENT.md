@@ -36,11 +36,12 @@ The repository is designed to support two primary runtime modes:
 
 ## Runtime Safety
 
-- `run_shell_command` is intentionally restricted to read-oriented diagnostics. Mutating or destructive PowerShell commands are blocked.
+- `run_shell_command` invokes one explicitly allowlisted native executable without a command shell. Chaining and substitution are denied, but the operator must still choose executables whose own flags fit the intended boundary.
 - Desktop and browser state reuse is protected with lightweight locking where shared mutable state exists.
 - The task loop now enforces a global wall-clock timeout in addition to the per-turn limit.
 - Perception can be downscaled before sending screenshots to Gemini to control latency and token cost.
 - Structured audit events are appended to a JSONL log so task execution and tool calls can be reconstructed after failures.
+- Web sessions, live sockets, stream clients, transcription workers, prompt history, observations, and audit-log growth all have explicit resource bounds.
 - Docker/browser-remote mode should be treated as browser-only: do not assume access to host display capture, Windows UI automation, or real browser window/tab sharing.
 
 ## Configuration Notes

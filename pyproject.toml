@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=82.0.1", "wheel"]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "djenis-ai-agent"
 version = "0.2.0"
 description = "Permission-gated Windows and browser automation with Gemini function calling"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "Djenis Ejupi" }]
 keywords = ["ai", "automation", "windows", "gemini", "agent", "react"]

@@ -1,0 +1,69 @@
+name: Feature request
+description: Propose a focused improvement to DjenisAiAgent
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem first, then the feature.
+
+        **Do not include tokens, cookies, raw logs, private prompts, account data, or screenshots containing personal information.** Use synthetic examples.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe who is affected and what is difficult today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful change and how a user would interact with it.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Relevant runtime
+      options:
+        - Windows desktop
+        - Docker web mode
+        - Both
+        - Not runtime-specific
+    validations:
+      required: true
+
+  - type: dropdown
+    id: permissions
+    attributes:
+      label: Permission impact
+      description: Select the highest capability this feature would need.
+      options:
+        - Observe only
+        - Interact with an application or browser
+        - System access or file changes
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Share any simpler workflow or existing tool you tried.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission check
+      options:
+        - label: My examples contain no credentials, private data, or raw logs.
+          required: true
+        - label: I searched existing issues for the same request.
+          required: true

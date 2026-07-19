@@ -26,58 +26,66 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_DEFAULT }}
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements.txt
-            requirements-docker.txt
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
 
       - name: Install lint dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+        run: uv sync --frozen --extra dev
 
       - name: Run ruff checks
         run: |
-          ruff check src tests main.py
-          ruff format --check src tests main.py
+          uv run --frozen --no-sync ruff check src tests scripts main.py
+          uv run --frozen --no-sync ruff format --check src tests scripts main.py
 
   security:
     name: Security Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_DEFAULT }}
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements.txt
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
 
       - name: Install security dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+        run: uv sync --frozen --extra dev
 
       - name: Run Bandit
-        run: bandit -r src -f json -o bandit-report.json
+        run: uv run --frozen --no-sync bandit -r src scripts main.py -f json -o bandit-report.json
 
       - name: Run dependency audit
-        run: pip-audit --progress-spinner off
+        run: |
+          uv lock --check
+          uv pip compile requirements-docker.txt \
+            --output-file requirements-docker.lock \
+            --generate-hashes \
+            --python-version 3.12 \
+            --python-platform linux
+          git diff --exit-code -- requirements-docker.lock
+          uv run --frozen --no-sync pip-audit --progress-spinner off
+          uv run --frozen --no-sync pip-audit --progress-spinner off --disable-pip -r requirements-docker.lock
 
       - name: Upload security report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: security-reports
           path: bandit-report.json
@@ -88,24 +96,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_DEFAULT }}
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements.txt
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
 
       - name: Install type-check dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,web,browser,transcription]"
+        run: uv sync --frozen --extra dev --extra web --extra browser --extra transcription
 
       - name: Run mypy
-        run: mypy src/
+        run: uv run --frozen --no-sync mypy src/ scripts/
 
   portable-tests:
     name: Portable Unit Tests (Python ${{ matrix.python-version }})
@@ -117,35 +125,39 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements.txt
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
 
       - name: Install portable test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,web,browser,transcription]"
+        run: uv sync --frozen --extra dev --extra web --extra browser --extra transcription
 
       - name: Run portable unit suite
         run: |
-          pytest \
+          uv run --frozen --no-sync pytest \
             tests/unit/test_config.py \
             tests/unit/test_exceptions.py \
             tests/unit/test_gemini_core.py \
             tests/unit/test_audio_transcription.py \
             tests/unit/test_browser_tools.py \
+            tests/unit/test_permissions.py \
+            tests/unit/test_project_site.py \
+            tests/unit/test_redaction.py \
+            tests/unit/test_web_security.py \
             --junitxml=pytest-portable.xml
 
       - name: Upload portable test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: portable-test-results-${{ matrix.python-version }}
           path: pytest-portable.xml
@@ -158,36 +170,36 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_DEFAULT }}
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements.txt
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
 
       - name: Install full test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,windows,web,browser,transcription]"
+        run: uv sync --frozen --extra dev --extra windows --extra web --extra browser --extra transcription
 
       - name: Run full unit suite with coverage
         shell: bash
         run: |
-          pytest tests/unit \
+          uv run --frozen --no-sync pytest tests/unit \
             --cov=src \
             --cov-report=term-missing \
             --cov-report=xml \
             --cov-report=html \
             --junitxml=pytest-windows.xml
-          python -m coverage report > coverage-summary.txt
+          uv run --frozen --no-sync coverage report > coverage-summary.txt
 
       - name: Upload coverage artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-coverage-report
           path: |
@@ -198,7 +210,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: coverage.xml
           flags: windows-unit
@@ -211,13 +223,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile
@@ -256,7 +268,7 @@ jobs:
           exit 1
 
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: djenis-ai-agent:ci-${{ github.sha }}
           format: table

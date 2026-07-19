@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ejupi-djenis30/DjenisAiAgent/security/advisories/new
+    about: Share vulnerabilities and exposed credentials privately. Never post them in an issue.

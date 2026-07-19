@@ -79,6 +79,13 @@ class WebSecurity:
     def create_session(self) -> str:
         session_id = secrets.token_urlsafe(32)
         with self._lock:
+            now = time.monotonic()
+            expired = [key for key, expires_at in self._sessions.items() if expires_at <= now]
+            for key in expired:
+                self._sessions.pop(key, None)
+            while len(self._sessions) >= config.web_max_sessions:
+                oldest = min(self._sessions, key=self._sessions.__getitem__)
+                self._sessions.pop(oldest, None)
             self._sessions[session_id] = time.monotonic() + config.web_session_ttl
         return session_id
 
@@ -126,14 +133,37 @@ class WebSecurity:
                 detail="Rate limit exceeded",
             )
 
-    def require_request(self, request: Request, action: str) -> None:
-        self.require_origin(request.headers.get("origin"), request.headers.get("host"))
+    def require_request(
+        self,
+        request: Request,
+        action: str,
+        *,
+        require_origin_for_session: bool = False,
+    ) -> None:
         self.require_rate_limit(request.client.host if request.client else None, action)
+        origin = request.headers.get("origin")
+        host = request.headers.get("host")
         bearer = self._extract_bearer(request.headers.get("authorization"))
-        if self.verify_operator_token(bearer):
+        if request.headers.get("authorization"):
+            if not self.verify_operator_token(bearer):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid operator token",
+                )
+            if origin:
+                self.require_origin(origin, host)
             return
+
         if self.session_is_valid(request.cookies.get(SESSION_COOKIE)):
+            if require_origin_for_session and not origin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Origin required",
+                )
+            if origin:
+                self.require_origin(origin, host)
             return
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
         )
@@ -141,7 +171,9 @@ class WebSecurity:
     def login(self, request: Request) -> str:
         """Validate an operator bearer token and return a new opaque session id."""
 
-        self.require_origin(request.headers.get("origin"), request.headers.get("host"))
+        origin = request.headers.get("origin")
+        if origin:
+            self.require_origin(origin, request.headers.get("host"))
         self.require_rate_limit(
             request.client.host if request.client else None,
             "login",
@@ -162,11 +194,11 @@ class WebSecurity:
             config.web_rate_limit_per_minute,
         )
 
-    async def require_websocket(self, websocket: WebSocket) -> bool:
+    async def require_websocket(self, websocket: WebSocket) -> str | None:
         origin = websocket.headers.get("origin")
         if not origin or not self.origin_allowed(origin, websocket.headers.get("host")):
             await websocket.close(code=4403, reason="Origin denied")
-            return False
+            return None
 
         client_host = websocket.client.host if websocket.client else None
         if not self.rate_limiter.allow(
@@ -174,12 +206,14 @@ class WebSecurity:
             config.web_rate_limit_per_minute,
         ):
             await websocket.close(code=4429, reason="Rate limit exceeded")
-            return False
+            return None
 
-        if not self.session_is_valid(websocket.cookies.get(SESSION_COOKIE)):
+        raw_session_id = websocket.cookies.get(SESSION_COOKIE)
+        session_id = raw_session_id if isinstance(raw_session_id, str) else None
+        if not self.session_is_valid(session_id):
             await websocket.close(code=4401, reason="Authentication required")
-            return False
-        return True
+            return None
+        return session_id
 
 
 web_security = WebSecurity()

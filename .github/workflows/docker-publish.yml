@@ -15,16 +15,65 @@ env:
   IMAGE_NAME: djenis-ai-agent
 
 jobs:
+  verify:
+    name: Release Quality Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
+
+      - name: Install release verification dependencies
+        run: uv sync --frozen --extra dev --extra web --extra browser --extra transcription
+
+      - name: Verify source and locked runtime
+        run: |
+          uv lock --check
+          uv pip compile requirements-docker.txt \
+            --output-file requirements-docker.lock \
+            --generate-hashes \
+            --python-version 3.12 \
+            --python-platform linux
+          git diff --exit-code -- requirements-docker.lock
+          uv run --frozen --no-sync ruff check src tests scripts main.py
+          uv run --frozen --no-sync ruff format --check src tests scripts main.py
+          uv run --frozen --no-sync mypy src scripts
+          uv run --frozen --no-sync pytest \
+            tests/unit/test_config.py \
+            tests/unit/test_exceptions.py \
+            tests/unit/test_gemini_core.py \
+            tests/unit/test_audio_transcription.py \
+            tests/unit/test_browser_tools.py \
+            tests/unit/test_permissions.py \
+            tests/unit/test_project_site.py \
+            tests/unit/test_redaction.py \
+            tests/unit/test_web_security.py
+          uv run --frozen --no-sync pip-audit --progress-spinner off --disable-pip -r requirements-docker.lock
+
   publish:
     name: Build and Push GHCR Image
     runs-on: ubuntu-latest
+    needs: verify
     permissions:
       contents: read
       packages: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Normalize owner name
         id: owner
@@ -32,10 +81,10 @@ jobs:
         run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -43,7 +92,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -58,7 +107,7 @@ jobs:
 
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile
@@ -67,9 +116,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
 
       - name: Scan published image
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: table
@@ -101,7 +152,7 @@ jobs:
         run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Create release notes
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           generate_release_notes: true
           body: |

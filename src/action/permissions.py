@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import re
+import shlex
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -46,7 +46,9 @@ def require_allowed_application(app_name: str) -> None:
     for entry in config.allowed_applications:
         configured = entry.strip()
         if Path(configured).name == configured:
-            permitted = requested_name == configured.casefold()
+            permitted = (
+                Path(requested).name == requested and requested_name == configured.casefold()
+            )
         else:
             permitted = Path(requested).resolve() == Path(configured).resolve()
         if permitted:
@@ -57,21 +59,41 @@ def require_allowed_application(app_name: str) -> None:
         )
 
 
+def split_command_arguments(command: str) -> list[str]:
+    """Parse one native command line without invoking a shell interpreter."""
+
+    try:
+        parts = shlex.split(command.strip(), posix=False)
+    except ValueError as exc:
+        raise ToolPermissionError(f"Invalid command quoting: {exc}") from exc
+
+    normalized: list[str] = []
+    for part in parts:
+        if len(part) >= 2 and part[0] == part[-1] and part[0] in {"'", '"'}:
+            part = part[1:-1]
+        if not part:
+            raise ToolPermissionError("Empty command arguments are denied.")
+        normalized.append(part)
+    return normalized
+
+
 def require_allowed_shell_command(command: str) -> None:
-    """Allow a single PowerShell command whose executable/cmdlet is allowlisted."""
+    """Allow one native executable invocation from the configured allowlist."""
 
     stripped = command.strip()
     if any(marker in stripped for marker in (";", "|", "&", "`", "$(", "\n", "\r")):
         raise ToolPermissionError("Shell pipelines, chaining, and command substitution are denied.")
 
-    match = re.match(r"(?:\"([^\"]+)\"|'([^']+)'|([^\s]+))", stripped)
-    executable = next((group for group in match.groups() if group), "") if match else ""
+    parts = split_command_arguments(stripped)
+    executable = parts[0] if parts else ""
     requested_name = Path(executable).name.casefold()
     permitted = False
     for entry in config.allowed_shell_commands:
         configured = entry.strip()
         if Path(configured).name == configured:
-            permitted = requested_name == configured.casefold()
+            permitted = (
+                Path(executable).name == executable and requested_name == configured.casefold()
+            )
         else:
             permitted = Path(executable).resolve() == Path(configured).resolve()
         if permitted:
