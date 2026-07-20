@@ -2,6 +2,8 @@
 
 Thanks for taking the time to improve DjenisAiAgent. Keep changes small enough to review and be direct about what you tested.
 
+By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Set up the project
 
 Use Python 3.11 or 3.12 and the locked environment:
