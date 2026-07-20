@@ -86,7 +86,7 @@ class ReleaseContract:
     """Validated release values shared by CI jobs."""
 
     version: str
-    image_tags: tuple[str, str, str]
+    image_tags: tuple[str, str, str, str]
     tag_commit: str | None = None
 
 
@@ -98,13 +98,21 @@ class ReleaseTagOrigin:
     master_commit: str
 
 
-def image_tags_for_version(version: str) -> tuple[str, str, str]:
-    """Return the immutable release alias and its minor and major aliases."""
+def image_tags_for_version(version: str) -> tuple[str, str, str, str]:
+    """Return the immutable, minor, major, and latest release aliases."""
 
     if SEMVER_PATTERN.fullmatch(version) is None:
         raise ReleaseContractError(f"project version must be stable SemVer, got {version!r}")
     major, minor, _patch = version.split(".")
-    return version, f"{major}.{minor}", major
+    return version, f"{major}.{minor}", major, "latest"
+
+
+def master_image_tags_for_commit(commit: str) -> tuple[str, str]:
+    """Return the moving edge alias and exact short-SHA alias for master."""
+
+    if GIT_COMMIT_PATTERN.fullmatch(commit) is None:
+        raise ReleaseContractError("master commit must be an exact Git object id")
+    return "edge", f"sha-{commit[:7].lower()}"
 
 
 def _project_version(project_root: Path) -> str:
@@ -277,6 +285,35 @@ def _validate_retry_schedule(
             f"{label} retry delays must be nondecreasing and total "
             f"{MINIMUM_REGISTRY_BACKOFF_SECONDS}-{MAXIMUM_REGISTRY_BACKOFF_SECONDS} seconds"
         )
+
+
+def _validate_signed_tag_step(
+    step: YamlMapping,
+    *,
+    expected_commit: str,
+    expected_gate: str | None,
+    label: str,
+    errors: list[str],
+) -> None:
+    """Require a fail-closed GitHub API check for an annotated SSH-signed tag."""
+
+    command = _normalized_shell(step)
+    environment = _mapping(step.get("env"))
+    required = (
+        "scripts/verify_github_tag.py",
+        '--repository "${GITHUB_REPOSITORY}"',
+        '--api-url "${GITHUB_API_URL}"',
+        '--tag "${GITHUB_REF_NAME}"',
+        f'--expected-commit "{expected_commit}"',
+    )
+    if (
+        any(token not in command for token in required)
+        or environment != {"GITHUB_TOKEN": "${{ github.token }}"}  # nosec B105
+        or step.get("if") != expected_gate
+        or step.get("shell") != "bash"
+        or step.get("continue-on-error") not in (None, False)
+    ):
+        errors.append(f"{label} must require an annotated GitHub-verified SSH release tag")
 
 
 def _validate_attestation_job(
@@ -452,6 +489,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         steps = _workflow_steps(release_preflight, "release-preflight", errors)
         _validate_checkout(steps, "release-preflight", errors)
         resolve = _workflow_step(steps, "resolve-remote-tag", "release-preflight", errors)
+        verify_signed = _workflow_step(steps, "verify-signed-tag", "release-preflight", errors)
         inspect_authorization = _workflow_step(
             steps, "inspect-release-authorization", "release-preflight", errors
         )
@@ -467,6 +505,14 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 )
             ):
                 errors.append("release preflight must resolve the exact isolated remote tag")
+        if verify_signed is not None:
+            _validate_signed_tag_step(
+                verify_signed,
+                expected_commit="${{ steps.resolve-remote-tag.outputs.tag_commit }}",
+                expected_gate=TAG_REF_GATE,
+                label="release preflight",
+                errors=errors,
+            )
         if inspect_authorization is not None:
             command = _normalized_shell(inspect_authorization)
             inspect_required = (
@@ -480,10 +526,15 @@ def validate_workflow_text(workflow: str) -> list[str]:
             ):
                 errors.append("release preflight must inspect exact durable authorization state")
         resolve_index = _step_index(steps, "resolve-remote-tag")
+        verify_signed_index = _step_index(steps, "verify-signed-tag")
         inspect_index = _step_index(steps, "inspect-release-authorization")
-        if resolve_index is None or inspect_index != resolve_index + 1:
+        if (
+            resolve_index is None
+            or verify_signed_index != resolve_index + 1
+            or inspect_index != verify_signed_index + 1
+        ):
             errors.append(
-                "durable Release inspection must immediately follow remote tag resolution"
+                "signed tag verification must separate remote resolution from Release inspection"
             )
         if authorize_new is not None:
             command = _normalized_shell(authorize_new)
@@ -526,6 +577,10 @@ def validate_workflow_text(workflow: str) -> list[str]:
         steps = _workflow_steps(candidate, "candidate", errors)
         _validate_checkout(steps, "candidate", errors)
         metadata = _workflow_step(steps, "meta", "candidate", errors)
+        validate_master_tags = _workflow_step(
+            steps, "validate-master-image-tags", "candidate", errors
+        )
+        validate_release_tags = _workflow_step(steps, "validate-image-tags", "candidate", errors)
         inspect = _workflow_step(steps, "release-state", "candidate", errors)
         build = _workflow_step(steps, "build", "candidate", errors)
         select = _workflow_step(steps, "select", "candidate", errors)
@@ -538,8 +593,9 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 "type=semver,pattern={{version}}",
                 "type=semver,pattern={{major}}.{{minor}}",
                 "type=semver,pattern={{major}}",
-                "type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}",
-                "type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/master' }}",
+                "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}",
+                "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}",
+                "type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/master' }}",
             ]
             actual_rules: list[str] = []
             if metadata_with is not None and isinstance(metadata_with.get("tags"), str):
@@ -554,8 +610,63 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 errors.append("candidate metadata step must use docker/metadata-action")
             if actual_rules != expected_rules:
                 errors.append(
-                    "metadata-action tags must be exact SemVer aliases plus master-only latest and sha"
+                    "metadata-action tags must be release-only latest and SemVer aliases plus master-only edge and sha"
                 )
+
+        expected_validation_environment = {
+            "PUBLISHED_IMAGE": "${{ steps.image.outputs.name }}",
+            "PUBLISHED_TAGS": "${{ steps.meta.outputs.tags }}",
+        }
+        if validate_master_tags is not None:
+            command = _normalized_shell(validate_master_tags)
+            if (
+                validate_master_tags.get("if") != "github.ref == 'refs/heads/master'"
+                or _mapping(validate_master_tags.get("env")) != expected_validation_environment
+                or validate_master_tags.get("shell") != "bash"
+                or validate_master_tags.get("continue-on-error") not in (None, False)
+                or any(
+                    token not in command
+                    for token in (
+                        "scripts/validate_release.py",
+                        '--master-commit "${GITHUB_SHA}"',
+                        '--image-name "${PUBLISHED_IMAGE}"',
+                        '--image-tags "${PUBLISHED_TAGS}"',
+                    )
+                )
+            ):
+                errors.append(
+                    "master image metadata must be runtime-validated as edge and sha only"
+                )
+        if validate_release_tags is not None:
+            command = _normalized_shell(validate_release_tags)
+            if (
+                validate_release_tags.get("if") != TAG_REF_GATE
+                or _mapping(validate_release_tags.get("env")) != expected_validation_environment
+                or validate_release_tags.get("shell") != "bash"
+                or validate_release_tags.get("continue-on-error") not in (None, False)
+                or any(
+                    token not in command
+                    for token in (
+                        "scripts/validate_release.py",
+                        '--tag "${GITHUB_REF_NAME}"',
+                        '--image-name "${PUBLISHED_IMAGE}"',
+                        '--image-tags "${PUBLISHED_TAGS}"',
+                    )
+                )
+            ):
+                errors.append(
+                    "release image metadata must be runtime-validated as latest and SemVer only"
+                )
+
+        metadata_index = _step_index(steps, "meta")
+        master_validation_index = _step_index(steps, "validate-master-image-tags")
+        release_validation_index = _step_index(steps, "validate-image-tags")
+        if (
+            metadata_index is None
+            or master_validation_index != metadata_index + 1
+            or release_validation_index != master_validation_index + 1
+        ):
+            errors.append("image metadata must be validated immediately after extraction")
 
         if inspect is not None:
             command = _normalized_shell(inspect)
@@ -665,6 +776,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         steps = _workflow_steps(authorize_release, "authorize-release", errors)
         _validate_checkout(steps, "authorize-release", errors)
         rebind = _workflow_step(steps, "verify-authorized-tag", "authorize-release", errors)
+        verify_signed = _workflow_step(steps, "verify-signed-tag", "authorize-release", errors)
         prepare = _workflow_step(steps, "prepare-release", "authorize-release", errors)
         if rebind is not None:
             command = _normalized_shell(rebind)
@@ -676,6 +788,14 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 )
             ):
                 errors.append("draft authorization must freshly fetch the exact remote tag")
+        if verify_signed is not None:
+            _validate_signed_tag_step(
+                verify_signed,
+                expected_commit="${{ needs.release-preflight.outputs.tag_commit }}",
+                expected_gate=None,
+                label="draft authorization",
+                errors=errors,
+            )
         if prepare is not None:
             command = _normalized_shell(prepare)
             prepare_required = (
@@ -685,12 +805,21 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 '--digest "${{ needs.candidate.outputs.digest }}"',
                 '--github-output "${GITHUB_OUTPUT}"',
             )
-            if any(token not in command for token in prepare_required):
+            if prepare.get("if") is not None or any(
+                token not in command for token in prepare_required
+            ):
                 errors.append("draft authorization must be prepared only after verified provenance")
         rebind_index = _step_index(steps, "verify-authorized-tag")
+        verify_signed_index = _step_index(steps, "verify-signed-tag")
         prepare_index = _step_index(steps, "prepare-release")
-        if rebind_index is None or prepare_index != rebind_index + 1:
-            errors.append("exact remote tag must be rebound immediately before draft authorization")
+        if (
+            rebind_index is None
+            or verify_signed_index != rebind_index + 1
+            or prepare_index != verify_signed_index + 1
+        ):
+            errors.append(
+                "exact signed remote tag must be verified immediately before draft authorization"
+            )
         if _mapping(authorize_release.get("outputs")) != {
             "digest": "${{ steps.prepare-release.outputs.digest }}",
             "release_id": "${{ steps.prepare-release.outputs.release_id }}",
@@ -736,6 +865,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
             steps, "require-release-authorization", "promote-release", errors
         )
         authorize = _workflow_step(steps, "authorize-alias-mutation", "promote-release", errors)
+        verify_signed = _workflow_step(steps, "verify-signed-tag", "promote-release", errors)
         promote = _workflow_step(steps, "promote", "promote-release", errors)
         verify_published = _workflow_step(
             steps, "verify-published-alias", "promote-release", errors
@@ -782,10 +912,25 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 errors.append(
                     "alias mutation authorization must rebind the exact remote tag to the draft commit"
                 )
+        if verify_signed is not None:
+            _validate_signed_tag_step(
+                verify_signed,
+                expected_commit="${{ needs.authorize-release.outputs.tag_commit }}",
+                expected_gate=None,
+                label="release alias promotion",
+                errors=errors,
+            )
         authorize_index = _step_index(steps, "authorize-alias-mutation")
+        verify_signed_index = _step_index(steps, "verify-signed-tag")
         promote_index = _step_index(steps, "promote")
-        if authorize_index is None or promote_index != authorize_index + 1:
-            errors.append("tag origin must be rechecked immediately before first alias mutation")
+        if (
+            authorize_index is None
+            or verify_signed_index != authorize_index + 1
+            or promote_index != verify_signed_index + 1
+        ):
+            errors.append(
+                "tag origin and SSH signature must be rechecked immediately before first alias mutation"
+            )
         if promote is not None:
             command = _normalized_shell(promote)
             if promote.get("if") != "steps.recheck-release-authorization.outputs.state == 'draft'":
@@ -838,6 +983,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         steps = _workflow_steps(release, "release", errors)
         _validate_checkout(steps, "release", errors)
         authorize = _workflow_step(steps, "verify-authorized-tag", "release", errors)
+        verify_signed = _workflow_step(steps, "verify-signed-tag", "release", errors)
         publish = _workflow_step(steps, "finalize-release", "release", errors)
         if authorize is not None:
             command = _normalized_shell(authorize)
@@ -848,10 +994,25 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 not in command
             ):
                 errors.append("Release finalization must rebind the exact authorized remote tag")
+        if verify_signed is not None:
+            _validate_signed_tag_step(
+                verify_signed,
+                expected_commit="${{ needs.authorize-release.outputs.tag_commit }}",
+                expected_gate=None,
+                label="Release finalization",
+                errors=errors,
+            )
         authorize_index = _step_index(steps, "verify-authorized-tag")
+        verify_signed_index = _step_index(steps, "verify-signed-tag")
         publish_index = _step_index(steps, "finalize-release")
-        if authorize_index is None or publish_index != authorize_index + 1:
-            errors.append("authorized remote tag must be rechecked immediately before finalization")
+        if (
+            authorize_index is None
+            or verify_signed_index != authorize_index + 1
+            or publish_index != verify_signed_index + 1
+        ):
+            errors.append(
+                "authorized signed remote tag must be rechecked immediately before finalization"
+            )
         if publish is not None:
             command = _normalized_shell(publish)
             finalize_required = (
@@ -862,7 +1023,9 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 '--digest "${{ needs.candidate.outputs.digest }}"',
                 '--retry-delays "${RELEASE_RETRY_DELAYS}"',
             )
-            if any(token not in command for token in finalize_required):
+            if publish.get("if") is not None or any(
+                token not in command for token in finalize_required
+            ):
                 errors.append(
                     "Release must finalize the exact immutable, retrying, asset-free draft"
                 )
@@ -1026,9 +1189,9 @@ def validate_release_documentation(project_root: Path, version: str) -> list[str
 
 
 def validate_image_metadata(
-    *, image_name: str, metadata_tags: str, expected_tags: tuple[str, str, str]
+    *, image_name: str, metadata_tags: str, expected_tags: tuple[str, ...]
 ) -> None:
-    """Require exactly the three documented GHCR aliases from metadata-action."""
+    """Require exactly the expected aliases from metadata-action."""
 
     image_name = image_name.rstrip("/")
     actual = tuple(line.strip() for line in metadata_tags.splitlines() if line.strip())
@@ -1138,6 +1301,7 @@ def validate_release_contract(
     tag: str | None = None,
     image_name: str | None = None,
     image_tags: str | None = None,
+    master_commit: str | None = None,
     verify_tag_origin: bool = False,
     verify_remote_tag: bool = False,
     expected_tag_commit: str | None = None,
@@ -1205,13 +1369,22 @@ def validate_release_contract(
     if (image_name is None) != (image_tags is None):
         raise ReleaseContractError("--image-name and --image-tags must be provided together")
     if image_name is not None and image_tags is not None:
-        if tag is None:
-            raise ReleaseContractError("published image metadata requires an explicit Git tag")
+        if (tag is None) == (master_commit is None):
+            raise ReleaseContractError(
+                "published image metadata requires exactly one release tag or master commit"
+            )
+        expected_tags = (
+            expected_image_tags
+            if tag is not None
+            else master_image_tags_for_commit(cast(str, master_commit))
+        )
         validate_image_metadata(
             image_name=image_name,
             metadata_tags=image_tags,
-            expected_tags=expected_image_tags,
+            expected_tags=expected_tags,
         )
+    elif master_commit is not None:
+        raise ReleaseContractError("--master-commit requires image name and tag metadata")
 
     return ReleaseContract(
         version=version,
@@ -1226,6 +1399,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--tag", help="Git release tag, including its leading v")
     parser.add_argument("--image-name", help="Fully qualified GHCR image name")
     parser.add_argument("--image-tags", help="Newline-delimited docker/metadata-action output")
+    parser.add_argument("--master-commit", help="Exact master commit used for edge and sha aliases")
     parser.add_argument(
         "--verify-tag-origin",
         action="store_true",
@@ -1252,6 +1426,7 @@ def main() -> int:
             tag=args.tag,
             image_name=args.image_name,
             image_tags=args.image_tags,
+            master_commit=args.master_commit,
             verify_tag_origin=args.verify_tag_origin,
             verify_remote_tag=args.verify_remote_tag,
             expected_tag_commit=args.expected_tag_commit,
@@ -1265,8 +1440,13 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    aliases = ", ".join(contract.image_tags)
-    print(f"Release contract valid: v{contract.version} -> GHCR aliases {aliases}")
+    aliases = (
+        master_image_tags_for_commit(args.master_commit)
+        if args.master_commit is not None
+        else contract.image_tags
+    )
+    context = "Master" if args.master_commit is not None else f"Release v{contract.version}"
+    print(f"{context} contract valid: GHCR aliases {', '.join(aliases)}")
     return 0
 
 

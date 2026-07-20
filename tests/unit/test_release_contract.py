@@ -9,6 +9,7 @@ import pytest
 from scripts.validate_release import (
     ReleaseContractError,
     image_tags_for_version,
+    master_image_tags_for_commit,
     validate_ci_workflow_text,
     validate_image_metadata,
     validate_release_contract,
@@ -19,6 +20,7 @@ from scripts.validate_release import (
     verify_release_tag_origin,
     verify_remote_release_tag,
 )
+from scripts.verify_github_tag import GitHubTagVerificationError, verify_github_release_tag
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOCKER_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "docker-publish.yml"
@@ -37,23 +39,37 @@ def _copy_workflows(destination: Path) -> Path:
     return workflow_root
 
 
-def test_repository_contract_matches_v0_2_1_and_unprefixed_image_aliases() -> None:
-    expected_tags = ("0.2.1", "0.2", "0")
+def test_repository_contract_matches_v0_2_2_and_release_image_aliases() -> None:
+    expected_tags = ("0.2.2", "0.2", "0", "latest")
     metadata_tags = "\n".join(f"{IMAGE_NAME}:{tag}" for tag in expected_tags)
 
     contract = validate_release_contract(
         PROJECT_ROOT,
-        tag="v0.2.1",
+        tag="v0.2.2",
         image_name=IMAGE_NAME,
         image_tags=metadata_tags,
     )
 
-    assert contract.version == "0.2.1"
+    assert contract.version == "0.2.2"
     assert contract.image_tags == expected_tags
 
 
+def test_repository_contract_accepts_only_the_exact_master_aliases() -> None:
+    commit = "a" * 40
+    metadata_tags = f"{IMAGE_NAME}:edge\n{IMAGE_NAME}:sha-aaaaaaa"
+
+    contract = validate_release_contract(
+        PROJECT_ROOT,
+        master_commit=commit,
+        image_name=IMAGE_NAME,
+        image_tags=metadata_tags,
+    )
+
+    assert contract.version == "0.2.2"
+
+
 def test_git_tag_must_match_the_project_version_exactly() -> None:
-    with pytest.raises(ReleaseContractError, match=r"Git tag must be v0\.2\.1"):
+    with pytest.raises(ReleaseContractError, match=r"Git tag must be v0\.2\.2"):
         validate_release_contract(PROJECT_ROOT, tag="v0.2.0")
 
 
@@ -65,6 +81,14 @@ def test_git_tag_must_match_the_project_version_exactly() -> None:
                 f"{IMAGE_NAME}:v0.2.1",
                 f"{IMAGE_NAME}:0.2",
                 f"{IMAGE_NAME}:0",
+                f"{IMAGE_NAME}:latest",
+            ]
+        ),
+        "\n".join(
+            [
+                f"{IMAGE_NAME}:0.2.1",
+                f"{IMAGE_NAME}:0.2",
+                f"{IMAGE_NAME}:0",
             ]
         ),
         "\n".join(
@@ -73,6 +97,7 @@ def test_git_tag_must_match_the_project_version_exactly() -> None:
                 f"{IMAGE_NAME}:0.2",
                 f"{IMAGE_NAME}:0",
                 f"{IMAGE_NAME}:latest",
+                f"{IMAGE_NAME}:edge",
             ]
         ),
     ],
@@ -88,6 +113,23 @@ def test_image_metadata_requires_exact_aliases(invalid: str) -> None:
         )
 
 
+def test_master_image_metadata_accepts_only_edge_and_the_exact_short_sha() -> None:
+    commit = "ABCDEF1234567890ABCDEF1234567890ABCDEF12"
+    expected_tags = master_image_tags_for_commit(commit)
+
+    validate_image_metadata(
+        image_name=IMAGE_NAME,
+        metadata_tags=f"{IMAGE_NAME}:edge\n{IMAGE_NAME}:sha-abcdef1",
+        expected_tags=expected_tags,
+    )
+    with pytest.raises(ReleaseContractError, match="does not match"):
+        validate_image_metadata(
+            image_name=IMAGE_NAME,
+            metadata_tags=f"{IMAGE_NAME}:latest\n{IMAGE_NAME}:sha-abcdef1",
+            expected_tags=expected_tags,
+        )
+
+
 def test_workflow_comments_cannot_satisfy_semver_flavor_contract() -> None:
     workflow = _docker_workflow()
     broken = workflow.replace(
@@ -99,6 +141,47 @@ def test_workflow_comments_cannot_satisfy_semver_flavor_contract() -> None:
     errors = validate_workflow_text(broken)
 
     assert "metadata-action must disable automatic latest for SemVer tags" in errors
+
+
+def test_master_and_release_image_aliases_are_strictly_separated() -> None:
+    workflow = _docker_workflow()
+
+    assert "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}" in workflow
+    assert "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}" in workflow
+    assert (
+        "type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/master' }}"
+        in workflow
+    )
+    assert "id: validate-master-image-tags" in workflow
+    assert '--master-commit "${GITHUB_SHA}"' in workflow
+
+    broken = workflow.replace(
+        "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}",
+        "type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}",
+        1,
+    )
+    assert (
+        "metadata-action tags must be release-only latest and SemVer aliases plus master-only edge and sha"
+        in validate_workflow_text(broken)
+    )
+
+    broken_runtime_gate = workflow.replace(
+        '--master-commit "${GITHUB_SHA}"',
+        '--master-commit "deadbeef"',
+        1,
+    )
+    assert "master image metadata must be runtime-validated as edge and sha only" in (
+        validate_workflow_text(broken_runtime_gate)
+    )
+
+    soft_runtime_gate = workflow.replace(
+        "        id: validate-master-image-tags\n",
+        "        id: validate-master-image-tags\n        continue-on-error: ${{ true }}\n",
+        1,
+    )
+    assert "master image metadata must be runtime-validated as edge and sha only" in (
+        validate_workflow_text(soft_runtime_gate)
+    )
 
 
 def test_manual_dispatch_on_an_arbitrary_branch_is_structurally_verify_only() -> None:
@@ -199,14 +282,54 @@ def test_remote_tag_recheck_is_immediately_before_each_external_mutation() -> No
         1,
     )
 
-    assert "exact remote tag must be rebound immediately before draft authorization" in (
+    assert "exact signed remote tag must be verified immediately before draft authorization" in (
         validate_workflow_text(broken_draft)
     )
-    assert "tag origin must be rechecked immediately before first alias mutation" in (
-        validate_workflow_text(broken_alias)
+    assert (
+        "tag origin and SSH signature must be rechecked immediately before first alias mutation"
+        in (validate_workflow_text(broken_alias))
     )
-    assert "authorized remote tag must be rechecked immediately before finalization" in (
+    assert "authorized signed remote tag must be rechecked immediately before finalization" in (
         validate_workflow_text(broken_release)
+    )
+
+
+def test_every_release_mutation_requires_the_github_verified_ssh_tag_gate() -> None:
+    workflow = _docker_workflow()
+    broken_token = workflow.replace(
+        "          GITHUB_TOKEN: ${{ github.token }}\n",
+        "          GITHUB_TOKEN: untrusted\n",
+        1,
+    )
+    soft_failure = workflow.replace(
+        "        id: verify-signed-tag\n",
+        "        id: verify-signed-tag\n        continue-on-error: ${{ true }}\n",
+        1,
+    )
+
+    expected = "release preflight must require an annotated GitHub-verified SSH release tag"
+    assert expected in validate_workflow_text(broken_token)
+    assert expected in validate_workflow_text(soft_failure)
+
+
+def test_release_mutations_cannot_bypass_failed_dependencies_with_an_if_override() -> None:
+    workflow = _docker_workflow()
+    draft_bypass = workflow.replace(
+        "        id: prepare-release\n        shell: bash\n",
+        "        id: prepare-release\n        if: always()\n        shell: bash\n",
+        1,
+    )
+    final_bypass = workflow.replace(
+        "        id: finalize-release\n        shell: bash\n",
+        "        id: finalize-release\n        if: always()\n        shell: bash\n",
+        1,
+    )
+
+    assert "draft authorization must be prepared only after verified provenance" in (
+        validate_workflow_text(draft_bypass)
+    )
+    assert "Release must finalize the exact immutable, retrying, asset-free draft" in (
+        validate_workflow_text(final_bypass)
     )
 
 
@@ -629,6 +752,89 @@ def test_remote_tag_rebind_rejects_stale_local_or_changed_remote_state() -> None
         verify_remote_release_tag(PROJECT_ROOT, "v0.2.1", git_runner=missing_remote)
 
 
+def test_github_tag_gate_accepts_only_the_exact_annotated_verified_ssh_tag() -> None:
+    commit = "a" * 40
+    tag_object_sha = "b" * 40
+    paths: list[str] = []
+
+    def get_json(path: str) -> object:
+        paths.append(path)
+        if path.endswith("/git/ref/tags/v0.2.2"):
+            return {
+                "ref": "refs/tags/v0.2.2",
+                "object": {"type": "tag", "sha": tag_object_sha},
+            }
+        return {
+            "sha": tag_object_sha,
+            "tag": "v0.2.2",
+            "object": {"type": "commit", "sha": commit},
+            "verification": {
+                "verified": True,
+                "reason": "valid",
+                "signature": "-----BEGIN SSH SIGNATURE-----\nverified\n-----END SSH SIGNATURE-----",
+            },
+        }
+
+    assert (
+        verify_github_release_tag(
+            repository="example/project",
+            tag="v0.2.2",
+            expected_commit=commit,
+            get_json=get_json,
+        )
+        == tag_object_sha
+    )
+    assert paths == [
+        "/repos/example/project/git/ref/tags/v0.2.2",
+        f"/repos/example/project/git/tags/{tag_object_sha}",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ref_type", "verified", "reason", "signature", "target", "message"),
+    [
+        ("commit", True, "valid", "-----BEGIN SSH SIGNATURE-----", "a" * 40, "annotated"),
+        ("tag", False, "unsigned", None, "a" * 40, "report.*valid"),
+        ("tag", True, "valid", "-----BEGIN PGP SIGNATURE-----", "a" * 40, "SSH signature"),
+        ("tag", True, "valid", "-----BEGIN SSH SIGNATURE-----", "c" * 40, "authorized"),
+    ],
+)
+def test_github_tag_gate_rejects_untrusted_tag_state(
+    ref_type: str,
+    verified: bool,
+    reason: str,
+    signature: str | None,
+    target: str,
+    message: str,
+) -> None:
+    tag_object_sha = "b" * 40
+
+    def get_json(path: str) -> object:
+        if "/git/ref/" in path:
+            return {
+                "ref": "refs/tags/v0.2.2",
+                "object": {"type": ref_type, "sha": tag_object_sha},
+            }
+        return {
+            "sha": tag_object_sha,
+            "tag": "v0.2.2",
+            "object": {"type": "commit", "sha": target},
+            "verification": {
+                "verified": verified,
+                "reason": reason,
+                "signature": signature,
+            },
+        }
+
+    with pytest.raises(GitHubTagVerificationError, match=message):
+        verify_github_release_tag(
+            repository="example/project",
+            tag="v0.2.2",
+            expected_commit="a" * 40,
+            get_json=get_json,
+        )
+
+
 def test_release_documentation_rejects_a_v_prefixed_image_tag(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text(
         "docker pull ghcr.io/example/djenis-ai-agent:v0.2.1\nSee .github/rulesets/README.md",
@@ -659,14 +865,14 @@ def test_release_validator_detects_a_stale_runtime_version(tmp_path: Path) -> No
     config_path = tmp_path / "src" / "config.py"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            'VERSION: str = "0.2.1"',
+            'VERSION: str = "0.2.2"',
             'VERSION: str = "0.2.0"',
         ),
         encoding="utf-8",
     )
 
     with pytest.raises(ReleaseContractError, match="version sources disagree"):
-        validate_release_contract(tmp_path, tag="v0.2.1")
+        validate_release_contract(tmp_path, tag="v0.2.2")
 
 
 def test_pull_request_template_requires_concrete_review_context() -> None:

@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 __all__ = ["VERSION", "AgentConfig", "config", "load_config"]
 
 #: Human-readable application version — keep in sync with pyproject.toml
-VERSION: str = "0.2.1"
+VERSION: str = "0.2.2"
 
 
 def _load_dotenv(dotenv_path: Path | None) -> None:
