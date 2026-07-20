@@ -75,3 +75,10 @@ def test_walkthrough_tabs_support_standard_keyboard_navigation() -> None:
     for key in ("ArrowLeft", "ArrowRight", "Home", "End"):
         assert f"{key}:" in app
     assert 'panel.setAttribute("aria-labelledby", tabs[index].id)' in app
+
+
+def test_project_site_uses_the_interactive_walkthrough_without_a_video_reel() -> None:
+    site_html = (SITE_ROOT / "index.html").read_text(encoding="utf-8")
+
+    assert "<video" not in site_html.lower()
+    assert list(SITE_ROOT.rglob("*.mp4")) == []

@@ -24,7 +24,7 @@ This file records user-visible and release-engineering changes to DjenisAiAgent.
 
 - Authenticated HTTP and WebSocket boundaries for the local web console.
 - Reproducible dependency locks, container scanning, SBOM, provenance, and release automation.
-- A public project page with a deterministic walkthrough and video demo.
+- A public project page with an interactive, deterministic walkthrough.
 
 ### Changed
 

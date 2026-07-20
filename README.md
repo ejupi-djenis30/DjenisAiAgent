@@ -2,7 +2,7 @@
 
 **Observable computer automation with explicit permission boundaries.**
 
-[Project site](https://ejupi-djenis30.github.io/DjenisAiAgent/) · [Watch the 9-second demo](site/media/djenis-ai-agent-demo.mp4) · [Changelog](CHANGELOG.md) · [Support](SUPPORT.md) · [Security policy](SECURITY.md) · [Report an issue](https://github.com/ejupi-djenis30/DjenisAiAgent/issues)
+[Project site](https://ejupi-djenis30.github.io/DjenisAiAgent/) · [Changelog](CHANGELOG.md) · [Support](SUPPORT.md) · [Security policy](SECURITY.md) · [Report an issue](https://github.com/ejupi-djenis30/DjenisAiAgent/issues)
 
 DjenisAiAgent is an experimental agent that operates Windows applications and browser sessions through structured tool calls. It captures the current interface, asks Gemini for one action, executes that action through a permission-gated tool layer, and observes the result before continuing.
 

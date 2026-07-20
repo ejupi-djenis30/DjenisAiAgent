@@ -12,7 +12,6 @@ SITE_PREFIX = "/DjenisAiAgent/"
 SITE_URL = f"{SITE_ORIGIN}{SITE_PREFIX}"
 SOCIAL_IMAGE_URL = f"{SITE_ORIGIN}{SITE_PREFIX}media/djenis-ai-agent-social-preview.png"
 EXPECTED_SOCIAL_IMAGE_SIZE = (1200, 675)
-EXPECTED_VIDEO_SIZE = (1280, 720)
 REQUIRED_CSP_DIRECTIVES = {
     "default-src 'self'",
     "base-uri 'none'",
@@ -21,7 +20,7 @@ REQUIRED_CSP_DIRECTIVES = {
     "script-src 'self'",
     "style-src 'self'",
     "img-src 'self'",
-    "media-src 'self'",
+    "media-src 'none'",
     "font-src 'self'",
     "connect-src 'none'",
     "frame-src 'none'",
@@ -38,7 +37,6 @@ class SiteDocument(HTMLParser):
         self.meta: dict[str, str] = {}
         self.canonical_url = ""
         self.local_assets: set[str] = set()
-        self.video: dict[str, str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {key: value or "" for key, value in attrs}
@@ -54,10 +52,7 @@ class SiteDocument(HTMLParser):
                 self.meta[http_equiv.lower()] = attributes.get("content", "")
         elif tag == "link" and "canonical" in attributes.get("rel", "").split():
             self.canonical_url = attributes.get("href", "")
-        elif tag == "video":
-            self.video = attributes
-
-        for attribute in ("href", "src", "poster"):
+        for attribute in ("href", "src"):
             value = attributes.get(attribute, "")
             if value.startswith("./"):
                 self.local_assets.add(value)
@@ -106,6 +101,9 @@ def validate_site(site_root: Path) -> list[str]:
     ):
         if token not in html_source:
             errors.append(f"the walkthrough is missing accessible tab markup: {token}")
+
+    if "<video" in html_source.lower():
+        errors.append("the project page must not embed a landing-page video")
 
     csp = {
         directive.strip()
@@ -173,24 +171,6 @@ def validate_site(site_root: Path) -> list[str]:
                 f"expected {EXPECTED_SOCIAL_IMAGE_SIZE[0]}x{EXPECTED_SOCIAL_IMAGE_SIZE[1]}"
             )
 
-    expected_poster = "./media/djenis-ai-agent-demo-poster.jpg"
-    if not document.video:
-        errors.append("the walkthrough video is missing")
-    else:
-        video_size = (document.video.get("width"), document.video.get("height"))
-        if video_size != tuple(map(str, EXPECTED_VIDEO_SIZE)):
-            errors.append("the walkthrough video must declare 1280x720 dimensions")
-        if document.video.get("poster") != expected_poster:
-            errors.append(f"the walkthrough video poster must be {expected_poster}")
-
-    video_path = site_root / "media" / "djenis-ai-agent-demo.mp4"
-    try:
-        video_header = video_path.read_bytes()[:32]
-        if video_path.stat().st_size < 100_000 or b"ftyp" not in video_header:
-            errors.append("the walkthrough MP4 is missing or invalid")
-    except OSError:
-        errors.append("the walkthrough MP4 is missing or unreadable")
-
     return errors
 
 
@@ -201,7 +181,7 @@ def main() -> int:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    print("Site validation passed: metadata, policy, social preview, and demo assets are valid.")
+    print("Site validation passed: metadata, policy, social preview, and walkthrough are valid.")
     return 0
 
 
