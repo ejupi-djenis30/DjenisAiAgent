@@ -2,6 +2,18 @@
 
 This file records user-visible and release-engineering changes to DjenisAiAgent.
 
+## 0.2.2 - 2026-07-20
+
+### Fixed
+
+- Publish `edge` and `sha-*` from `master` without moving the stable `latest` alias.
+- Publish `latest`, full, minor, and major aliases only from a verified version tag.
+
+### Changed
+
+- Require each new release tag to be annotated and SSH-signed, with a valid signature reported by GitHub before authorization, alias promotion, or Release publication.
+- Keep the existing `v0.2.1` release unchanged; the stricter contract begins with `v0.2.2`.
+
 ## 0.2.1 - 2026-07-20
 
 ### Fixed

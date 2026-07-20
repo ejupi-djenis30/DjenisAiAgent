@@ -131,6 +131,19 @@ jobs:
           --expected-tag-commit "${GITHUB_SHA}"
           --github-output "${GITHUB_OUTPUT}"
 
+      - name: Verify annotated GitHub SSH signature
+        id: verify-signed-tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen --no-sync python scripts/verify_github_tag.py
+          --repository "${GITHUB_REPOSITORY}"
+          --api-url "${GITHUB_API_URL}"
+          --tag "${GITHUB_REF_NAME}"
+          --expected-commit "${{ steps.resolve-remote-tag.outputs.tag_commit }}"
+
       - name: Inspect durable Release authorization
         id: inspect-release-authorization
         if: startsWith(github.ref, 'refs/tags/v')
@@ -221,11 +234,25 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-            type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}
+            type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/master' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Validate master image tags
+        id: validate-master-image-tags
+        if: github.ref == 'refs/heads/master'
+        shell: bash
+        env:
+          PUBLISHED_IMAGE: ${{ steps.image.outputs.name }}
+          PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          uv run --frozen --no-sync python scripts/validate_release.py \
+            --master-commit "${GITHUB_SHA}" \
+            --image-name "${PUBLISHED_IMAGE}" \
+            --image-tags "${PUBLISHED_TAGS}"
 
       - name: Validate release image tags
         id: validate-image-tags
@@ -382,6 +409,18 @@ jobs:
           uv run --frozen --no-sync python scripts/validate_release.py
           --tag "${GITHUB_REF_NAME}" --verify-remote-tag
           --expected-tag-commit "${{ needs.release-preflight.outputs.tag_commit }}"
+
+      - name: Reverify annotated GitHub SSH signature
+        id: verify-signed-tag
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen --no-sync python scripts/verify_github_tag.py
+          --repository "${GITHUB_REPOSITORY}"
+          --api-url "${GITHUB_API_URL}"
+          --tag "${GITHUB_REF_NAME}"
+          --expected-commit "${{ needs.release-preflight.outputs.tag_commit }}"
 
       - name: Create or verify exact draft Release authorization
         id: prepare-release
@@ -669,6 +708,18 @@ jobs:
           --tag "${GITHUB_REF_NAME}" --verify-remote-tag
           --expected-tag-commit "${{ needs.authorize-release.outputs.tag_commit }}"
 
+      - name: Reverify annotated GitHub SSH signature
+        id: verify-signed-tag
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen --no-sync python scripts/verify_github_tag.py
+          --repository "${GITHUB_REPOSITORY}"
+          --api-url "${GITHUB_API_URL}"
+          --tag "${GITHUB_REF_NAME}"
+          --expected-commit "${{ needs.authorize-release.outputs.tag_commit }}"
+
       - name: Promote aliases with immutable version preflight
         id: promote
         if: steps.recheck-release-authorization.outputs.state == 'draft'
@@ -777,6 +828,18 @@ jobs:
           uv run --frozen --no-sync python scripts/validate_release.py
           --tag "${GITHUB_REF_NAME}" --verify-remote-tag
           --expected-tag-commit "${{ needs.authorize-release.outputs.tag_commit }}"
+
+      - name: Reverify annotated GitHub SSH signature
+        id: verify-signed-tag
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen --no-sync python scripts/verify_github_tag.py
+          --repository "${GITHUB_REPOSITORY}"
+          --api-url "${GITHUB_API_URL}"
+          --tag "${GITHUB_REF_NAME}"
+          --expected-commit "${{ needs.authorize-release.outputs.tag_commit }}"
 
       - name: Finalize or verify exact asset-free Release
         id: finalize-release

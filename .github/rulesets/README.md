@@ -41,6 +41,18 @@ out-of-order SemVer state, and rereads the exact authorization immediately befor
 promotion. The remote tag is fetched again before draft creation, GHCR alias
 promotion, and draft finalization.
 
+Release tags must be annotated and SSH-signed with a signing key registered on
+GitHub. The workflow reads the exact tag object through GitHub's API and requires
+`verification.verified: true`, `reason: valid`, an SSH signature, and the expected
+commit before every release mutation. For the current release, create and check
+the tag locally before pushing it:
+
+```bash
+git tag -s v0.2.2 -m "Djenis AI Agent v0.2.2"
+git verify-tag v0.2.2
+git push origin refs/tags/v0.2.2
+```
+
 Repository release immutability is a separate required administrator setting.
 Check it outside the workflow with a token that has repository Administration
 read permission:
