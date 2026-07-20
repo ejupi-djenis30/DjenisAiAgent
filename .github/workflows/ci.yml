@@ -158,6 +158,7 @@ jobs:
             tests/unit/test_audio_transcription.py \
             tests/unit/test_browser_tools.py \
             tests/unit/test_permissions.py \
+            tests/unit/test_privileged_tools.py \
             tests/unit/test_project_site.py \
             tests/unit/test_redaction.py \
             tests/unit/test_web_security.py \

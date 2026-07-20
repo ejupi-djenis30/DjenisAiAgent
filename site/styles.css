@@ -17,6 +17,16 @@ html { scroll-behavior: smooth; }
 body { margin: 0; overflow-x: clip; color: var(--ink); background: var(--bg); }
 a { color: inherit; }
 button { font: inherit; }
+.brand:focus-visible,
+.site-header nav a:focus-visible,
+.button:focus-visible,
+.demo-steps button:focus-visible,
+.demo-control:focus-visible,
+.demo-stage:focus-visible,
+.skip-link:focus-visible {
+  outline: 3px solid var(--acid);
+  outline-offset: 4px;
+}
 .skip-link { position: fixed; z-index: 20; top: 8px; left: 8px; padding: 10px 14px; color: var(--acid-dark); background: var(--acid); transform: translateY(-150%); }
 .skip-link:focus { transform: none; }
 

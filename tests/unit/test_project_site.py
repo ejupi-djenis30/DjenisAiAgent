@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from pathlib import Path
 
 from scripts.validate_site import EXPECTED_SOCIAL_IMAGE_SIZE, _png_dimensions, validate_site
@@ -12,6 +14,32 @@ SITE_ROOT = PROJECT_ROOT / "site"
 
 def test_project_site_passes_release_validator() -> None:
     assert validate_site(SITE_ROOT) == []
+
+
+def test_release_validator_requires_canonical_url_and_visible_keyboard_focus() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        site_copy = Path(folder) / "site"
+        shutil.copytree(SITE_ROOT, site_copy)
+        index_path = site_copy / "index.html"
+        index_path.write_text(
+            index_path.read_text(encoding="utf-8").replace(
+                '<link rel="canonical" href="https://ejupi-djenis30.github.io/DjenisAiAgent/">',
+                "",
+            ),
+            encoding="utf-8",
+        )
+        styles_path = site_copy / "styles.css"
+        styles_path.write_text(
+            styles_path.read_text(encoding="utf-8").replace(
+                ".demo-steps button:focus-visible,", ".demo-steps button:focus-within,"
+            ),
+            encoding="utf-8",
+        )
+
+        errors = validate_site(site_copy)
+
+    assert "canonical URL must be 'https://ejupi-djenis30.github.io/DjenisAiAgent/'" in errors
+    assert "keyboard focus style is missing: .demo-steps button:focus-visible" in errors
 
 
 def test_social_preview_has_declared_dimensions() -> None:

@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 
 SITE_ORIGIN = "https://ejupi-djenis30.github.io"
 SITE_PREFIX = "/DjenisAiAgent/"
+SITE_URL = f"{SITE_ORIGIN}{SITE_PREFIX}"
 SOCIAL_IMAGE_URL = f"{SITE_ORIGIN}{SITE_PREFIX}media/djenis-ai-agent-social-preview.png"
 EXPECTED_SOCIAL_IMAGE_SIZE = (1200, 675)
 EXPECTED_VIDEO_SIZE = (1280, 720)
@@ -35,6 +36,7 @@ class SiteDocument(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.html_lang = ""
         self.meta: dict[str, str] = {}
+        self.canonical_url = ""
         self.local_assets: set[str] = set()
         self.video: dict[str, str] | None = None
 
@@ -50,6 +52,8 @@ class SiteDocument(HTMLParser):
             http_equiv = attributes.get("http-equiv")
             if http_equiv:
                 self.meta[http_equiv.lower()] = attributes.get("content", "")
+        elif tag == "link" and "canonical" in attributes.get("rel", "").split():
+            self.canonical_url = attributes.get("href", "")
         elif tag == "video":
             self.video = attributes
 
@@ -91,6 +95,8 @@ def validate_site(site_root: Path) -> list[str]:
         errors.append('the document language must be "en"')
     if document.meta.get("referrer") != "no-referrer":
         errors.append('the referrer policy must be "no-referrer"')
+    if document.canonical_url != SITE_URL:
+        errors.append(f"canonical URL must be {SITE_URL!r}")
 
     for token in (
         'role="tablist"',
@@ -134,6 +140,26 @@ def validate_site(site_root: Path) -> list[str]:
             continue
         if not asset_path.is_file():
             errors.append(f"referenced asset is missing: {reference}")
+
+    styles_path = site_root / "styles.css"
+    try:
+        styles = styles_path.read_text(encoding="utf-8")
+    except OSError:
+        errors.append("site/styles.css is missing or unreadable")
+    else:
+        required_focus_controls = (
+            ".brand:focus-visible",
+            ".site-header nav a:focus-visible",
+            ".button:focus-visible",
+            ".demo-steps button:focus-visible",
+            ".demo-control:focus-visible",
+            ".demo-stage:focus-visible",
+        )
+        for selector in required_focus_controls:
+            if selector not in styles:
+                errors.append(f"keyboard focus style is missing: {selector}")
+        if "outline:" not in styles or "outline-offset:" not in styles:
+            errors.append("keyboard focus styles must draw an explicit outline")
 
     social_image_path = site_root / "media" / "djenis-ai-agent-social-preview.png"
     try:
