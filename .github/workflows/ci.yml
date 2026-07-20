@@ -1,14 +1,11 @@
 name: CI
 
-on:
+"on":
   push:
     branches: [master]
   pull_request:
     branches: [master]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,6 +21,8 @@ jobs:
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -44,14 +43,39 @@ jobs:
       - name: Install lint dependencies
         run: uv sync --frozen --extra dev
 
+      - name: Install actionlint
+        id: install-actionlint
+        shell: bash
+        env:
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check
+          tar --extract --gzip --file "${archive}" actionlint
+          install -m 0755 actionlint "${RUNNER_TEMP}/actionlint"
+
+      - name: Validate GitHub Actions workflows
+        id: actionlint
+        shell: bash
+        run: '"${RUNNER_TEMP}/actionlint"'
+
       - name: Run ruff checks
         run: |
           uv run --frozen --no-sync ruff check src tests scripts main.py
           uv run --frozen --no-sync ruff format --check src tests scripts main.py
 
+      - name: Validate release contract
+        run: uv run --frozen --no-sync python scripts/validate_release.py
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -98,6 +122,8 @@ jobs:
   type-check:
     name: Type Check (mypy)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -124,6 +150,8 @@ jobs:
   portable-tests:
     name: Portable Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -160,6 +188,9 @@ jobs:
             tests/unit/test_permissions.py \
             tests/unit/test_privileged_tools.py \
             tests/unit/test_project_site.py \
+            tests/unit/test_release_contract.py \
+            tests/unit/test_release_registry.py \
+            tests/unit/test_github_release.py \
             tests/unit/test_redaction.py \
             tests/unit/test_web_security.py \
             --junitxml=pytest-portable.xml
@@ -175,6 +206,8 @@ jobs:
   windows-coverage:
     name: Windows Coverage Gate
     runs-on: windows-latest
+    permissions:
+      contents: read
     needs: [lint, type-check, security]
 
     steps:
@@ -230,6 +263,8 @@ jobs:
   docker-build:
     name: Docker Build + Smoke Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: [portable-tests, windows-coverage]
 
     steps:

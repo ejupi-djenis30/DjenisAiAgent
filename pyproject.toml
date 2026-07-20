@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "djenis-ai-agent"
-version = "0.2.0"
+version = "0.2.1"
 description = "Permission-gated Windows and browser automation with Gemini function calling"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -77,6 +77,7 @@ dev = [
     "bandit>=1.7.9",
     "pip-audit>=2.7.3",
     "pre-commit>=3.7.0",
+    "PyYAML>=6.0.3",
     "types-Pillow",
 ]
 

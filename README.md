@@ -2,7 +2,7 @@
 
 **Observable computer automation with explicit permission boundaries.**
 
-[Project site](https://ejupi-djenis30.github.io/DjenisAiAgent/) · [Watch the 9-second demo](site/media/djenis-ai-agent-demo.mp4) · [Security policy](SECURITY.md) · [Report an issue](https://github.com/ejupi-djenis30/DjenisAiAgent/issues)
+[Project site](https://ejupi-djenis30.github.io/DjenisAiAgent/) · [Watch the 9-second demo](site/media/djenis-ai-agent-demo.mp4) · [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Report an issue](https://github.com/ejupi-djenis30/DjenisAiAgent/issues)
 
 DjenisAiAgent is an experimental agent that operates Windows applications and browser sessions through structured tool calls. It captures the current interface, asks Gemini for one action, executes that action through a permission-gated tool layer, and observes the result before continuing.
 
@@ -141,6 +141,22 @@ docker compose up --build
 
 The console is available at `http://127.0.0.1:8008`. The published port is loopback-only. Compose defaults to the `interact` tier so remote browser tools are available; system tools remain locked.
 
+The versioned container uses SemVer tags without the Git tag's leading `v`:
+
+```powershell
+docker pull ghcr.io/ejupi-djenis30/djenis-ai-agent:0.2.1
+```
+
+The first authorization for a release fetches the exact remote tag and `origin/master` into isolated Git refs and requires their dereferenced commits to match. A new version is built and pushed by digest, never by alias. If a run already prepared a draft Release, a retry recovers its recorded digest even when no image alias exists yet. If the immutable full-version alias exists, it must agree with that authorization. This avoids pretending that two container builds of one commit must be byte-for-byte identical.
+
+Trivy scans the selected digest and the workflow checks its SPDX SBOM and BuildKit SLSA provenance. Before reusing any remote digest, the workflow first verifies pre-existing GitHub OIDC provenance bound to this repository, workflow, source commit, and source ref; it never signs an untrusted reused digest into legitimacy. New digests are signed and every path is verified again. Only after those gates pass can the full (`0.2.1`), minor (`0.2`), and major (`0`) aliases change.
+
+GitHub Release publication is a recoverable state machine: absent, exact draft authorization, then exact immutable publication. The repository's immutable-release setting is an external administrator gate because the workflow token cannot read that administrator endpoint. After provenance succeeds, the workflow creates or verifies the asset-free draft before changing aliases and records the authorized commit and Docker digest in its canonical body. Draft recovery uses the authenticated, fully paginated Release inventory because GitHub's tag lookup exposes published Releases only. The publisher permits one canonical SemVer draft at a time and rejects an older unfinished release after a newer version has published, preventing moving aliases from rolling backward.
+
+Every mutation-time check freshly fetches the exact remote tag into an isolated ref and requires it to match both the event source and the durable authorization. Alias promotion also rereads the draft and its digest immediately before it writes. The final step publishes the same draft, fails closed unless GitHub reports `immutable: true`, and confirms a newly published Release is explicitly latest. A retry can therefore finish after `master` advances without weakening the original authorization. A completed Release rerun verifies only its immutable version alias and never rewrites the moving minor or major aliases; it does not demand that an older completed release remain latest forever.
+
+Keep both repository release immutability and the checked-in [immutable release-tag ruleset](.github/rulesets/README.md) enabled. The settings make published Releases and their tags immutable, while the workflow's isolated remote-ref checks remain an independent fail-closed control before publication.
+
 ## Configuration
 
 `.env.example` is the canonical reference. Important settings include:
@@ -182,6 +198,8 @@ uv run --frozen --no-sync pytest tests/unit
 uv run --frozen --no-sync bandit -r src scripts main.py
 uv run --frozen --no-sync pip-audit
 uv run --frozen --no-sync python scripts/validate_site.py
+uv run --frozen --no-sync python scripts/validate_release.py
+actionlint
 ```
 
 `uv.lock` freezes development and native-runtime dependencies across supported platforms. The CI workflow targets the repository's actual default branch, `master`. Portable tests run on Linux and Python 3.11/3.12; the full desktop-aware coverage suite runs on Windows. A separate workflow builds and smoke-tests the Docker image.
@@ -201,7 +219,7 @@ src/perception/      screenshots, UI snapshots, audio preprocessing
 src/reasoning/       Gemini schemas, prompt, retries, response validation
 web/static/          authenticated runtime dashboard
 site/                public GitHub Pages presentation
-scripts/             dependency-free release validators
+scripts/             release state, workflow-contract, and project-site validators
 tests/unit/          deterministic unit tests with mocked external services
 ```
 

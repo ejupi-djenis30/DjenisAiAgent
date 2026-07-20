@@ -21,7 +21,13 @@ repos:
         args: [--maxkb=500]
       - id: detect-private-key
       - id: no-commit-to-branch
-        args: [--branch=main]
+        args: [--branch=master]
+
+  # GitHub Actions syntax and expression validation
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
 
   # Mypy type checking
   - repo: https://github.com/pre-commit/mirrors-mypy

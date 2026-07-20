@@ -26,6 +26,8 @@ uv run --frozen --no-sync pytest tests/unit
 uv run --frozen --no-sync bandit -r src scripts main.py
 uv run --frozen --no-sync pip-audit
 uv run --frozen --no-sync python scripts/validate_site.py
+uv run --frozen --no-sync python scripts/validate_release.py
+actionlint
 ```
 
 Add or update tests when behavior changes. Explain any check you could not run.

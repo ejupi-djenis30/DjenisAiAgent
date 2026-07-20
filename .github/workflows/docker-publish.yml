@@ -1,18 +1,19 @@
 name: Docker Publish
 
-on:
+"on":
   push:
     branches: [master]
     tags: ["v*"]
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: djenis-ai-agent
+  RELEASE_RETRY_DELAYS: "2 4 8 10 10 10 10 10 10 10 10"
 
 jobs:
   verify:
@@ -20,12 +21,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.release-contract.outputs.version }}
 
     steps:
       - name: Checkout repository
+        id: checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -40,6 +45,13 @@ jobs:
 
       - name: Install release verification dependencies
         run: uv sync --frozen --extra dev --extra web --extra browser --extra transcription
+
+      - name: Validate release contract
+        id: release-contract
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/validate_release.py
+          --github-output "${GITHUB_OUTPUT}"
 
       - name: Verify source and locked runtime
         run: |
@@ -60,29 +72,134 @@ jobs:
             tests/unit/test_audio_transcription.py \
             tests/unit/test_browser_tools.py \
             tests/unit/test_permissions.py \
+            tests/unit/test_privileged_tools.py \
             tests/unit/test_project_site.py \
+            tests/unit/test_release_contract.py \
+            tests/unit/test_release_registry.py \
+            tests/unit/test_github_release.py \
             tests/unit/test_redaction.py \
             tests/unit/test_web_security.py
           uv run --frozen --no-sync pip-audit --progress-spinner off --disable-pip -r requirements-docker.lock
 
-  publish:
-    name: Build and Push GHCR Image
+  release-preflight:
+    name: Inspect Durable Release State
     runs-on: ubuntu-latest
     needs: verify
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
     permissions:
-      contents: read
-      packages: write
+      contents: write
+    outputs:
+      digest: ${{ steps.inspect-release-authorization.outputs.digest }}
+      image: ${{ steps.image.outputs.name }}
+      state: ${{ steps.inspect-release-authorization.outputs.state || 'none' }}
+      tag_commit: ${{ steps.resolve-remote-tag.outputs.tag_commit }}
 
     steps:
       - name: Checkout repository
+        id: checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          fetch-depth: 0
 
-      - name: Normalize owner name
-        id: owner
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
+
+      - name: Install release verification dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Normalize image name
+        id: image
         shell: bash
-        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+        run: echo "name=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve exact remote release tag
+        id: resolve-remote-tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/validate_release.py
+          --tag "${GITHUB_REF_NAME}" --verify-remote-tag
+          --expected-tag-commit "${GITHUB_SHA}"
+          --github-output "${GITHUB_OUTPUT}"
+
+      - name: Inspect durable Release authorization
+        id: inspect-release-authorization
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen --no-sync python scripts/publish_github_release.py
+          --phase inspect
+          --repository "${GITHUB_REPOSITORY}"
+          --api-url "${GITHUB_API_URL}"
+          --tag "${GITHUB_REF_NAME}"
+          --target-commit "${{ steps.resolve-remote-tag.outputs.tag_commit }}"
+          --image "${{ steps.image.outputs.name }}"
+          --version "${{ needs.verify.outputs.version }}"
+          --retry-delays "${RELEASE_RETRY_DELAYS}"
+          --github-output "${GITHUB_OUTPUT}"
+
+      - name: Authorize a new release source against current master
+        id: authorize-new-source
+        if: >-
+          startsWith(github.ref, 'refs/tags/v') &&
+          steps.inspect-release-authorization.outputs.state == 'absent'
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/validate_release.py
+          --tag "${GITHUB_REF_NAME}" --verify-tag-origin
+          --expected-tag-commit "${{ steps.resolve-remote-tag.outputs.tag_commit }}"
+
+  candidate:
+    name: Build or Reuse and Scan Candidate
+    runs-on: ubuntu-latest
+    needs: [verify, release-preflight]
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.select.outputs.digest }}
+      image: ${{ steps.image.outputs.name }}
+      tags: ${{ steps.meta.outputs.tags }}
+      reused: ${{ steps.select.outputs.reused }}
+
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
+
+      - name: Install release verification dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: echo "name=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -98,7 +215,8 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.name }}
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -109,74 +227,570 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build and push Docker image
+      - name: Validate release image tags
+        id: validate-image-tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          PUBLISHED_IMAGE: ${{ steps.image.outputs.name }}
+          PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          uv run --frozen --no-sync python scripts/validate_release.py \
+            --tag "${GITHUB_REF_NAME}" \
+            --image-name "${PUBLISHED_IMAGE}" \
+            --image-tags "${PUBLISHED_TAGS}"
+
+      - name: Inspect immutable release alias
+        id: release-state
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/release_registry.py inspect
+          --alias "${{ steps.image.outputs.name }}:${{ needs.verify.outputs.version }}"
+          --github-output "${GITHUB_OUTPUT}"
+          --retry-delays "${RELEASE_RETRY_DELAYS}"
+
+      - name: Build and push unaliased candidate digest
         id: build
+        if: >-
+          needs.release-preflight.outputs.state == 'none' ||
+          (needs.release-preflight.outputs.state == 'absent' &&
+          steps.release-state.outputs.exists != 'true')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
 
-      - name: Scan published image
+      - name: Select remote or newly built digest
+        id: select
+        shell: bash
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          AUTHORIZED_DIGEST: ${{ needs.release-preflight.outputs.digest }}
+          AUTHORIZATION_STATE: ${{ needs.release-preflight.outputs.state }}
+          REMOTE_DIGEST: ${{ steps.release-state.outputs.digest }}
+          REUSE_RELEASE: ${{ steps.release-state.outputs.exists }}
+        run: |
+          reused="false"
+          if [[ "${AUTHORIZATION_STATE}" == "draft" || "${AUTHORIZATION_STATE}" == "published" ]]; then
+            selected_digest="${AUTHORIZED_DIGEST}"
+            reused="true"
+            if [[ "${REUSE_RELEASE}" == "true" && "${REMOTE_DIGEST}" != "${AUTHORIZED_DIGEST}" ]]; then
+              echo "Immutable alias disagrees with the durable Release authorization"
+              exit 1
+            fi
+          elif [[ "${REUSE_RELEASE}" == "true" ]]; then
+            selected_digest="${REMOTE_DIGEST}"
+            reused="true"
+          else
+            selected_digest="${BUILT_DIGEST}"
+          fi
+          if [[ ! "${selected_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Candidate selection did not produce a canonical SHA-256 digest"
+            exit 1
+          fi
+          echo "digest=${selected_digest}" >> "${GITHUB_OUTPUT}"
+          echo "reused=${reused}" >> "${GITHUB_OUTPUT}"
+
+      - name: Scan exact candidate digest
+        id: scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.image.outputs.name }}@${{ steps.select.outputs.digest }}
           format: table
-          exit-code: '1'
+          exit-code: "1"
           ignore-unfixed: true
           vuln-type: os,library
           severity: CRITICAL,HIGH
 
-      - name: Print published image metadata
+      - name: Verify candidate BuildKit attestations
+        id: verify-buildkit
         shell: bash
+        env:
+          PUBLISHED_DIGEST: ${{ steps.select.outputs.digest }}
+          PUBLISHED_IMAGE: ${{ steps.image.outputs.name }}
         run: |
-          echo "Image: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ env.IMAGE_NAME }}"
-          echo "Digest: ${{ steps.build.outputs.digest }}"
-          echo "Tags:"
-          echo "${{ steps.meta.outputs.tags }}"
+          attestation_digest="$(
+            docker buildx imagetools inspect \
+              "${PUBLISHED_IMAGE}@${PUBLISHED_DIGEST}" \
+              --format '{{json .Manifest}}' \
+              | jq -r 'first(.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest") | .digest) // empty'
+          )"
+          if [[ -z "${attestation_digest}" ]]; then
+            echo "Candidate image is missing an OCI attestation manifest"
+            exit 1
+          fi
+          attestation_manifest="$(
+            docker buildx imagetools inspect \
+              "${PUBLISHED_IMAGE}@${attestation_digest}" \
+              --raw
+          )"
+          for predicate in "https://spdx.dev/Document" "https://slsa.dev/provenance/v1"; do
+            if ! jq -e --arg predicate "${predicate}" \
+              'any(.layers[]; .annotations["in-toto.io/predicate-type"] == $predicate)' \
+              <<<"${attestation_manifest}" >/dev/null; then
+              echo "Candidate image is missing ${predicate} attestation"
+              exit 1
+            fi
+          done
+
+  authorize-release:
+    name: Prepare Durable Release Authorization
+    runs-on: ubuntu-latest
+    needs: [verify, release-preflight, candidate, attest]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    outputs:
+      digest: ${{ steps.prepare-release.outputs.digest }}
+      release_id: ${{ steps.prepare-release.outputs.release_id }}
+      state: ${{ steps.prepare-release.outputs.state }}
+      tag_commit: ${{ needs.release-preflight.outputs.tag_commit }}
+
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
+
+      - name: Install release verification dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Rebind exact remote tag before draft authorization
+        id: verify-authorized-tag
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/validate_release.py
+          --tag "${GITHUB_REF_NAME}" --verify-remote-tag
+          --expected-tag-commit "${{ needs.release-preflight.outputs.tag_commit }}"
+
+      - name: Create or verify exact draft Release authorization
+        id: prepare-release
+        shell: bash
+        env:
+          AUTHORIZED_COMMIT: ${{ needs.release-preflight.outputs.tag_commit }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_AUTHORIZATION_STATE: ${{ needs.release-preflight.outputs.state }}
+        run: |
+          if [[ "${RELEASE_AUTHORIZATION_STATE}" != "absent" && "${RELEASE_AUTHORIZATION_STATE}" != "draft" && "${RELEASE_AUTHORIZATION_STATE}" != "published" ]]; then
+            echo "Unexpected Release authorization state: ${RELEASE_AUTHORIZATION_STATE}"
+            exit 1
+          fi
+          uv run --frozen --no-sync python scripts/publish_github_release.py \
+            --phase prepare \
+            --repository "${GITHUB_REPOSITORY}" \
+            --api-url "${GITHUB_API_URL}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --target-commit "${AUTHORIZED_COMMIT}" \
+            --image "${{ needs.candidate.outputs.image }}" \
+            --version "${{ needs.verify.outputs.version }}" \
+            --digest "${{ needs.candidate.outputs.digest }}" \
+            --retry-delays "${RELEASE_RETRY_DELAYS}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+  attest:
+    name: Sign and Verify Release OIDC Provenance
+    runs-on: ubuntu-latest
+    needs: [candidate, release-preflight]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify trusted provenance before reusing a release digest
+        id: verify-reused-attestation
+        if: needs.candidate.outputs.reused == 'true'
+        shell: bash
+        env:
+          ATTESTATION_RETRY_DELAYS: "2 4 8 10 10 10 10 10 10 10 10"
+          GH_TOKEN: ${{ github.token }}
+          AUTHORIZED_COMMIT: ${{ needs.release-preflight.outputs.tag_commit }}
+          PUBLISHED_DIGEST: ${{ needs.candidate.outputs.digest }}
+          PUBLISHED_IMAGE: ${{ needs.candidate.outputs.image }}
+        run: |
+          minimum_gh_version="2.92.0"
+          installed_gh_version="$(gh --version | head -n 1 | awk '{print $3}')"
+          if [[ "$(printf '%s\n' "${minimum_gh_version}" "${installed_gh_version}" | sort -V | head -n 1)" != "${minimum_gh_version}" ]]; then
+            echo "GitHub CLI ${installed_gh_version} is older than required ${minimum_gh_version}"
+            exit 1
+          fi
+          read -r -a retry_delays <<< "${ATTESTATION_RETRY_DELAYS}"
+          max_attempts=$(( ${#retry_delays[@]} + 1 ))
+          image_uri="oci://${PUBLISHED_IMAGE}@${PUBLISHED_DIGEST}"
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if gh attestation verify "${image_uri}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/docker-publish.yml" \
+              --source-digest "${AUTHORIZED_COMMIT}" \
+              --source-ref "${GITHUB_REF}" \
+              --predicate-type "https://slsa.dev/provenance/v1" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --bundle-from-oci \
+              --deny-self-hosted-runners; then
+              exit 0
+            fi
+            if [[ "${attempt}" -lt "${max_attempts}" ]]; then
+              sleep "${retry_delays[$((attempt - 1))]}"
+            fi
+          done
+          echo "Pre-existing trusted provenance could not be verified for ${image_uri}"
+          exit 1
+
+      - name: Sign exact release candidate with GitHub OIDC
+        id: github-attestation
+        if: needs.candidate.outputs.reused != 'true'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ${{ needs.candidate.outputs.image }}
+          subject-digest: ${{ needs.candidate.outputs.digest }}
+          push-to-registry: true
+
+      - name: Cryptographically verify release Sigstore provenance
+        id: verify-github-attestation
+        shell: bash
+        env:
+          ATTESTATION_RETRY_DELAYS: "2 4 8 10 10 10 10 10 10 10 10"
+          GH_TOKEN: ${{ github.token }}
+          AUTHORIZED_COMMIT: ${{ needs.release-preflight.outputs.tag_commit }}
+          PUBLISHED_DIGEST: ${{ needs.candidate.outputs.digest }}
+          PUBLISHED_IMAGE: ${{ needs.candidate.outputs.image }}
+        run: |
+          minimum_gh_version="2.92.0"
+          installed_gh_version="$(gh --version | head -n 1 | awk '{print $3}')"
+          if [[ "$(printf '%s\n' "${minimum_gh_version}" "${installed_gh_version}" | sort -V | head -n 1)" != "${minimum_gh_version}" ]]; then
+            echo "GitHub CLI ${installed_gh_version} is older than required ${minimum_gh_version}"
+            exit 1
+          fi
+          read -r -a retry_delays <<< "${ATTESTATION_RETRY_DELAYS}"
+          max_attempts=$(( ${#retry_delays[@]} + 1 ))
+          image_uri="oci://${PUBLISHED_IMAGE}@${PUBLISHED_DIGEST}"
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if gh attestation verify "${image_uri}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/docker-publish.yml" \
+              --source-digest "${AUTHORIZED_COMMIT}" \
+              --source-ref "${GITHUB_REF}" \
+              --predicate-type "https://slsa.dev/provenance/v1" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --bundle-from-oci \
+              --deny-self-hosted-runners; then
+              exit 0
+            fi
+            if [[ "${attempt}" -lt "${max_attempts}" ]]; then
+              sleep "${retry_delays[$((attempt - 1))]}"
+            fi
+          done
+          echo "GitHub OIDC provenance could not be verified for ${image_uri}"
+          exit 1
+
+  attest-master:
+    name: Sign and Verify Master OIDC Provenance
+    runs-on: ubuntu-latest
+    needs: [verify, candidate]
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign exact master candidate with GitHub OIDC
+        id: github-attestation
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ${{ needs.candidate.outputs.image }}
+          subject-digest: ${{ needs.candidate.outputs.digest }}
+          push-to-registry: true
+
+      - name: Cryptographically verify master Sigstore provenance
+        id: verify-github-attestation
+        shell: bash
+        env:
+          ATTESTATION_RETRY_DELAYS: "2 4 8 10 10 10 10 10 10 10 10"
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHED_DIGEST: ${{ needs.candidate.outputs.digest }}
+          PUBLISHED_IMAGE: ${{ needs.candidate.outputs.image }}
+        run: |
+          minimum_gh_version="2.92.0"
+          installed_gh_version="$(gh --version | head -n 1 | awk '{print $3}')"
+          if [[ "$(printf '%s\n' "${minimum_gh_version}" "${installed_gh_version}" | sort -V | head -n 1)" != "${minimum_gh_version}" ]]; then
+            echo "GitHub CLI ${installed_gh_version} is older than required ${minimum_gh_version}"
+            exit 1
+          fi
+          read -r -a retry_delays <<< "${ATTESTATION_RETRY_DELAYS}"
+          max_attempts=$(( ${#retry_delays[@]} + 1 ))
+          image_uri="oci://${PUBLISHED_IMAGE}@${PUBLISHED_DIGEST}"
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if gh attestation verify "${image_uri}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/docker-publish.yml" \
+              --source-digest "${GITHUB_SHA}" \
+              --source-ref "${GITHUB_REF}" \
+              --predicate-type "https://slsa.dev/provenance/v1" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --bundle-from-oci \
+              --deny-self-hosted-runners; then
+              exit 0
+            fi
+            if [[ "${attempt}" -lt "${max_attempts}" ]]; then
+              sleep "${retry_delays[$((attempt - 1))]}"
+            fi
+          done
+          echo "GitHub OIDC provenance could not be verified for ${image_uri}"
+          exit 1
+
+  promote-release:
+    name: Promote Verified Release Aliases
+    runs-on: ubuntu-latest
+    needs: [verify, release-preflight, candidate, authorize-release, attest]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
+
+      - name: Install release verification dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Recheck durable Release authorization immediately before promotion
+        id: recheck-release-authorization
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen --no-sync python scripts/publish_github_release.py
+          --phase inspect
+          --repository "${GITHUB_REPOSITORY}"
+          --api-url "${GITHUB_API_URL}"
+          --tag "${GITHUB_REF_NAME}"
+          --target-commit "${{ needs.authorize-release.outputs.tag_commit }}"
+          --image "${{ needs.candidate.outputs.image }}"
+          --version "${{ needs.verify.outputs.version }}"
+          --retry-delays "${RELEASE_RETRY_DELAYS}"
+          --github-output "${GITHUB_OUTPUT}"
+
+      - name: Require the exact authorized digest and recoverable state
+        id: require-release-authorization
+        shell: bash
+        env:
+          AUTHORIZED_DIGEST: ${{ needs.authorize-release.outputs.digest }}
+          AUTHORIZED_STATE: ${{ needs.authorize-release.outputs.state }}
+          CANDIDATE_DIGEST: ${{ needs.candidate.outputs.digest }}
+          CURRENT_DIGEST: ${{ steps.recheck-release-authorization.outputs.digest }}
+          CURRENT_STATE: ${{ steps.recheck-release-authorization.outputs.state }}
+        run: |
+          if [[ "${AUTHORIZED_DIGEST}" != "${CANDIDATE_DIGEST}" || "${CURRENT_DIGEST}" != "${CANDIDATE_DIGEST}" ]]; then
+            echo "Durable Release authorization no longer names the selected digest"
+            exit 1
+          fi
+          if [[ "${AUTHORIZED_STATE}" != "draft" && "${AUTHORIZED_STATE}" != "published" ]]; then
+            echo "Unexpected prepared Release state: ${AUTHORIZED_STATE}"
+            exit 1
+          fi
+          if [[ "${CURRENT_STATE}" != "draft" && "${CURRENT_STATE}" != "published" ]]; then
+            echo "Release authorization is no longer recoverable: ${CURRENT_STATE}"
+            exit 1
+          fi
+          if [[ "${AUTHORIZED_STATE}" == "published" && "${CURRENT_STATE}" != "published" ]]; then
+            echo "A published authorization cannot transition back to draft"
+            exit 1
+          fi
+
+      - name: Rebind exact remote tag to durable authorization
+        id: authorize-alias-mutation
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/validate_release.py
+          --tag "${GITHUB_REF_NAME}" --verify-remote-tag
+          --expected-tag-commit "${{ needs.authorize-release.outputs.tag_commit }}"
+
+      - name: Promote aliases with immutable version preflight
+        id: promote
+        if: steps.recheck-release-authorization.outputs.state == 'draft'
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/release_registry.py promote
+          --image "${{ needs.candidate.outputs.image }}"
+          --digest "${{ needs.candidate.outputs.digest }}"
+          --aliases "${{ needs.candidate.outputs.tags }}"
+          --immutable-alias "${{ needs.candidate.outputs.image }}:${{ needs.verify.outputs.version }}"
+          --retry-delays "${RELEASE_RETRY_DELAYS}"
+
+      - name: Verify immutable alias without rewriting published release aliases
+        id: verify-published-alias
+        if: steps.recheck-release-authorization.outputs.state == 'published'
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/release_registry.py verify
+          --alias "${{ needs.candidate.outputs.image }}:${{ needs.verify.outputs.version }}"
+          --digest "${{ needs.candidate.outputs.digest }}"
+          --retry-delays "${RELEASE_RETRY_DELAYS}"
+
+  promote-master:
+    name: Promote Verified Master Aliases
+    runs-on: ubuntu-latest
+    needs: [verify, candidate, attest-master]
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
+
+      - name: Install release verification dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote attested master aliases
+        id: promote
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/release_registry.py promote
+          --image "${{ needs.candidate.outputs.image }}"
+          --digest "${{ needs.candidate.outputs.digest }}"
+          --aliases "${{ needs.candidate.outputs.tags }}"
+          --retry-delays "${RELEASE_RETRY_DELAYS}"
 
   release:
-    name: Create GitHub Release
+    name: Finalize Exact GitHub Release
     runs-on: ubuntu-latest
-    needs: publish
+    needs: [verify, candidate, authorize-release, attest, promote-release]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
 
     steps:
-      - name: Normalize owner name
-        id: owner
-        shell: bash
-        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Create release notes
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          generate_release_notes: true
-          body: |
-            ## Docker Image
+          persist-credentials: false
+          fetch-depth: 0
 
-            Pull the tagged image from GitHub Container Registry:
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
 
-            ```bash
-            docker pull ghcr.io/${{ steps.owner.outputs.value }}/djenis-ai-agent:${{ github.ref_name }}
-            ```
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
 
-            Run the published image:
+      - name: Install release verification dependencies
+        run: uv sync --frozen --extra dev
 
-            ```bash
-            export GEMINI_API_KEY="your-key"
-            export DJENIS_WEB_AUTH_TOKEN="$(openssl rand -hex 24)"
-            docker run --rm -p 8000:8000 \
-              -e GEMINI_API_KEY \
-              -e DJENIS_WEB_AUTH_TOKEN \
-              ghcr.io/${{ steps.owner.outputs.value }}/djenis-ai-agent:${{ github.ref_name }}
-            ```
+      - name: Rebind exact remote tag before Release finalization
+        id: verify-authorized-tag
+        shell: bash
+        run: >-
+          uv run --frozen --no-sync python scripts/validate_release.py
+          --tag "${GITHUB_REF_NAME}" --verify-remote-tag
+          --expected-tag-commit "${{ needs.authorize-release.outputs.tag_commit }}"
 
-            For Docker Compose, native Windows mode, and CI details, see the repository README.
+      - name: Finalize or verify exact asset-free Release
+        id: finalize-release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen --no-sync python scripts/publish_github_release.py
+          --phase finalize
+          --repository "${GITHUB_REPOSITORY}"
+          --api-url "${GITHUB_API_URL}"
+          --tag "${GITHUB_REF_NAME}"
+          --target-commit "${{ needs.authorize-release.outputs.tag_commit }}"
+          --image "${{ needs.candidate.outputs.image }}"
+          --version "${{ needs.verify.outputs.version }}"
+          --digest "${{ needs.candidate.outputs.digest }}"
+          --retry-delays "${RELEASE_RETRY_DELAYS}"
