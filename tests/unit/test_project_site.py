@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
 from scripts.publish_github_release import release_body
 from scripts.validate_site import EXPECTED_SOCIAL_IMAGE_SIZE, _png_dimensions, validate_site
 
@@ -124,3 +125,51 @@ def test_project_site_keeps_small_controls_readable_and_touch_accessible() -> No
     assert "color: var(--muted)" in console_rule.group("body")
     assert control_rule is not None
     assert "min-height: 44px" in control_rule.group("body")
+
+
+def test_hero_title_type_scale_is_continuous_across_the_mobile_breakpoint() -> None:
+    styles = (SITE_ROOT / "styles.css").read_text(encoding="utf-8")
+    bridge_match = re.search(r"--hero-title-bridge:\s*(?P<value>[\d.]+)rem", styles)
+    desktop_match = re.search(
+        r"^h1\s*\{[^}]*font-size:\s*clamp\(var\(--hero-title-bridge\),\s*"
+        r"(?P<fluid>[\d.]+)vw,\s*(?P<ceiling>[\d.]+)rem\)",
+        styles,
+        re.MULTILINE,
+    )
+    mobile_match = re.search(
+        r"@media\s*\(max-width:\s*680px\)\s*\{(?P<body>.*?)^\}",
+        styles,
+        re.MULTILINE | re.DOTALL,
+    )
+
+    assert bridge_match is not None
+    assert desktop_match is not None
+    assert mobile_match is not None
+
+    mobile_title_match = re.search(
+        r"^\s*h1\s*\{[^}]*font-size:\s*clamp\((?P<floor>[\d.]+)rem,\s*"
+        r"(?P<fluid>[\d.]+)vw,\s*var\(--hero-title-bridge\)\)",
+        mobile_match.group("body"),
+        re.MULTILINE,
+    )
+    assert mobile_title_match is not None
+
+    root_font_size = 16.0
+    bridge = float(bridge_match.group("value")) * root_font_size
+    desktop_fluid = float(desktop_match.group("fluid")) / 100
+    desktop_ceiling = float(desktop_match.group("ceiling")) * root_font_size
+    mobile_floor = float(mobile_title_match.group("floor")) * root_font_size
+    mobile_fluid = float(mobile_title_match.group("fluid")) / 100
+
+    def title_size(viewport: int) -> float:
+        if viewport <= 680:
+            return min(max(mobile_floor, viewport * mobile_fluid), bridge)
+        return min(max(bridge, viewport * desktop_fluid), desktop_ceiling)
+
+    sizes = {viewport: title_size(viewport) for viewport in (320, 375, 680, 681, 900)}
+
+    assert sizes[320] == pytest.approx(59.2)
+    assert sizes[375] == pytest.approx(67.5)
+    assert sizes[900] == pytest.approx(77.4)
+    assert abs(sizes[681] - sizes[680]) <= 0.1
+    assert list(sizes.values()) == sorted(sizes.values())
