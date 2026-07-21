@@ -173,3 +173,74 @@ def test_hero_title_type_scale_is_continuous_across_the_mobile_breakpoint() -> N
     assert sizes[900] == pytest.approx(77.4)
     assert abs(sizes[681] - sizes[680]) <= 0.1
     assert list(sizes.values()) == sorted(sizes.values())
+
+
+def test_hero_title_wrap_space_is_continuous_across_the_mobile_breakpoint() -> None:
+    styles = (SITE_ROOT / "styles.css").read_text(encoding="utf-8")
+    container_match = re.search(
+        r"^\.site-header,\s*main > section,\s*footer\s*\{(?P<body>[^}]*)\}",
+        styles,
+        re.MULTILINE,
+    )
+    mobile_match = re.search(
+        r"@media\s*\(max-width:\s*680px\)\s*\{(?P<body>.*?)^\}",
+        styles,
+        re.MULTILINE | re.DOTALL,
+    )
+    page_inset_match = re.search(
+        r"--page-inset:\s*clamp\((?P<floor>[\d.]+)px,\s*"
+        r"(?P<fluid>[\d.]+)vw,\s*(?P<ceiling>[\d.]+)px\)",
+        styles,
+    )
+
+    assert container_match is not None
+    assert mobile_match is not None
+
+    width_pattern = re.compile(
+        r"width:\s*min\(1500px,\s*calc\(100%\s*-\s*"
+        r"(?P<inset>var\(--page-inset\)|[\d.]+px)\)\)"
+    )
+    compact_width_pattern = re.compile(r"width:\s*min\(100%\s*-\s*(?P<inset>[\d.]+px),\s*1500px\)")
+    base_width_match = width_pattern.search(container_match.group("body"))
+    mobile_container_match = re.search(
+        r"\.site-header,\s*main > section,\s*footer\s*\{(?P<body>[^}]*)\}",
+        mobile_match.group("body"),
+    )
+    mobile_width_match = (
+        (
+            width_pattern.search(mobile_container_match.group("body"))
+            or compact_width_pattern.search(mobile_container_match.group("body"))
+        )
+        if mobile_container_match is not None
+        else None
+    )
+
+    assert base_width_match is not None
+
+    def inset_for(token: str, viewport: int) -> float:
+        if token != "var(--page-inset)":
+            return float(token.removesuffix("px"))
+        assert page_inset_match is not None
+        floor = float(page_inset_match.group("floor"))
+        fluid = viewport * float(page_inset_match.group("fluid")) / 100
+        ceiling = float(page_inset_match.group("ceiling"))
+        return min(max(floor, fluid), ceiling)
+
+    def title_width(viewport: int) -> float:
+        inset_token = base_width_match.group("inset")
+        if viewport <= 680 and mobile_width_match is not None:
+            inset_token = mobile_width_match.group("inset")
+        content_width = viewport - inset_for(inset_token, viewport)
+        return min(content_width, 800.0)
+
+    widths = {viewport: title_width(viewport) for viewport in (320, 375, 680, 681, 900)}
+
+    assert abs(widths[681] - widths[680]) <= 1.0, (
+        "The title's available width must not jump across the 680/681px breakpoint."
+    )
+    assert page_inset_match is not None
+    assert widths[320] == pytest.approx(292.0)
+    assert widths[375] == pytest.approx(347.0)
+    assert widths[680] >= 630.0
+    assert widths[900] == pytest.approx(800.0)
+    assert list(widths.values()) == sorted(widths.values())
