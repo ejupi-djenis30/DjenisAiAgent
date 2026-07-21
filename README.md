@@ -237,4 +237,4 @@ The public project site and the runtime dashboard are deliberately separate. Git
 
 ## License
 
-[MIT](LICENSE) © Djenis Ejupi
+[MIT](LICENSE) © Ejupi Labs and DjenisAiAgent contributors
