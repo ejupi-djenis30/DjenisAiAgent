@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: djenis-ai-agent:latest
+    image: ${DJENIS_AGENT_IMAGE:-djenis-ai-agent:latest}
     container_name: djenis-agent
     init: true
     restart: unless-stopped
