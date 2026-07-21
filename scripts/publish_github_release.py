@@ -66,22 +66,42 @@ Pull the immutable release alias:
 docker pull {image}:{version}
 ```
 
-Verified OCI digest: `{digest}`
-
 Authorized source commit: `{target_commit}`
 
-Run the published image:
+## Browser-enabled stack (recommended)
+
+Browser automation requires the repository's pinned Selenium service. Download the Compose definition from the exact authorized commit, then run it with the verified application digest:
+
+```bash
+mkdir -p djenis-ai-agent-release && cd djenis-ai-agent-release
+curl --fail --silent --show-error --location \\
+  https://raw.githubusercontent.com/ejupi-djenis30/DjenisAiAgent/{target_commit}/docker-compose.yml \\
+  --output compose.yaml
+export GEMINI_API_KEY="your-key"
+export DJENIS_WEB_AUTH_TOKEN="$(openssl rand -hex 24)"
+export DJENIS_AGENT_IMAGE="{image}@{digest}"
+docker compose -f compose.yaml pull
+docker compose -f compose.yaml up --no-build
+```
+
+Open `http://127.0.0.1:8008`. Compose publishes the console on loopback only and provides the pinned Chromium Selenium service used by the browser tools.
+
+## Image-only control plane
+
+Use this only when you need the authenticated web console without browser automation, Windows UI Automation, or host display capture:
 
 ```bash
 export GEMINI_API_KEY="your-key"
 export DJENIS_WEB_AUTH_TOKEN="$(openssl rand -hex 24)"
-docker run --rm -p 8000:8000 \\
+docker run --rm \\
+  -p 127.0.0.1:8000:8000 \\
   -e GEMINI_API_KEY \\
   -e DJENIS_WEB_AUTH_TOKEN \\
-  {image}:{version}
+  -e DJENIS_PERMISSION_TIER=observe \\
+  {image}@{digest}
 ```
 
-For a permanent deployment pin `{image}@{digest}`. Trivy scanned this exact digest before alias promotion. Its SPDX SBOM and BuildKit SLSA provenance were checked, then GitHub OIDC provenance was signed and cryptographically verified before any public alias changed.
+Trivy scanned the digest used above before alias promotion. Its SPDX SBOM and BuildKit SLSA provenance were checked, then GitHub OIDC provenance was signed and cryptographically verified before any public alias changed.
 """
 
 

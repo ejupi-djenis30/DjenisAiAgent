@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -57,7 +58,7 @@ def test_setup_cta_targets_the_existing_readme_section() -> None:
     assert "DjenisAiAgent#quick-start-windows" in site_html
 
 
-def test_release_run_command_includes_web_authentication() -> None:
+def test_release_body_uses_the_pinned_browser_enabled_compose_stack() -> None:
     body = release_body(
         image="ghcr.io/example/djenis-ai-agent",
         version="0.2.1",
@@ -65,8 +66,37 @@ def test_release_run_command_includes_web_authentication() -> None:
         target_commit="b" * 40,
     )
 
+    assert "## Browser-enabled stack (recommended)" in body
+    assert (
+        "https://raw.githubusercontent.com/ejupi-djenis30/DjenisAiAgent/"
+        f"{'b' * 40}/docker-compose.yml"
+    ) in body
+    assert "curl --fail --silent --show-error --location \\\n" in body
     assert 'DJENIS_WEB_AUTH_TOKEN="$(openssl rand -hex 24)"' in body
+    assert f'DJENIS_AGENT_IMAGE="ghcr.io/example/djenis-ai-agent@sha256:{"a" * 64}"' in body
+    assert "docker compose -f compose.yaml pull" in body
+    assert "docker compose -f compose.yaml up --no-build" in body
+    assert "http://127.0.0.1:8008" in body
+
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "image: ${DJENIS_AGENT_IMAGE:-djenis-ai-agent:latest}" in compose
+    assert "SELENIUM_REMOTE_URL: http://chrome:4444/wd/hub" in compose
+
+
+def test_release_body_keeps_the_image_only_control_plane_on_loopback() -> None:
+    body = release_body(
+        image="ghcr.io/example/djenis-ai-agent",
+        version="0.2.1",
+        digest=f"sha256:{'a' * 64}",
+        target_commit="b" * 40,
+    )
+
+    assert "## Image-only control plane" in body
+    assert "without browser automation" in body
+    assert "-p 127.0.0.1:8000:8000" in body
+    assert "-p 8000:8000" not in body
     assert "-e DJENIS_WEB_AUTH_TOKEN" in body
+    assert "-e DJENIS_PERMISSION_TIER=observe" in body
 
 
 def test_walkthrough_tabs_support_standard_keyboard_navigation() -> None:
@@ -82,3 +112,15 @@ def test_project_site_uses_the_interactive_walkthrough_without_a_video_reel() ->
 
     assert "<video" not in site_html.lower()
     assert list(SITE_ROOT.rglob("*.mp4")) == []
+
+
+def test_project_site_keeps_small_controls_readable_and_touch_accessible() -> None:
+    styles = (SITE_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    console_rule = re.search(r"\.console-bar\s*\{(?P<body>[^}]*)\}", styles)
+    control_rule = re.search(r"\.demo-control\s*\{(?P<body>[^}]*)\}", styles)
+
+    assert console_rule is not None
+    assert "color: var(--muted)" in console_rule.group("body")
+    assert control_rule is not None
+    assert "min-height: 44px" in control_rule.group("body")
