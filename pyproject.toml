@@ -9,7 +9,10 @@ description = "Permission-gated Windows and browser automation with Gemini funct
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "MIT" }
-authors = [{ name = "Djenis Ejupi" }]
+authors = [
+    { name = "Ejupi Labs" },
+    { name = "DjenisAiAgent contributors" },
+]
 keywords = ["ai", "automation", "windows", "gemini", "agent", "react"]
 classifiers = [
     "Development Status :: 3 - Alpha",

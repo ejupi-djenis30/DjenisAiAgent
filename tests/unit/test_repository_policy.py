@@ -11,6 +11,12 @@ CHECKOUT_ACTION = "uses: actions/checkout@"
 HARDENED_CHECKOUT_PATTERN = re.compile(
     r"uses: actions/checkout@[^\n]+\n\s+with:\n\s+persist-credentials: false"
 )
+PUBLIC_ATTRIBUTION_FILES = (
+    Path("pyproject.toml"),
+    Path("LICENSE"),
+    Path("README.md"),
+    Path("site/index.html"),
+)
 
 
 def test_dependabot_updates_the_canonical_uv_lockfile() -> None:
@@ -18,6 +24,26 @@ def test_dependabot_updates_the_canonical_uv_lockfile() -> None:
 
     assert 'package-ecosystem: "uv"' in configuration
     assert 'package-ecosystem: "pip"' not in configuration
+
+
+def test_public_metadata_uses_collective_attribution() -> None:
+    with (PROJECT_ROOT / "pyproject.toml").open("rb") as project_file:
+        project = tomllib.load(project_file)
+
+    assert project["project"]["authors"] == [
+        {"name": "Ejupi Labs"},
+        {"name": "DjenisAiAgent contributors"},
+    ]
+
+    for relative_path in PUBLIC_ATTRIBUTION_FILES:
+        content = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+
+        assert "djenis ejupi" not in content.casefold(), relative_path
+        assert "Ejupi Labs" in content, relative_path
+        assert "DjenisAiAgent contributors" in content, relative_path
+
+    site = (PROJECT_ROOT / "site/index.html").read_text(encoding="utf-8")
+    assert 'href="https://github.com/ejupi-djenis30">' not in site
 
 
 def test_every_checkout_drops_persisted_credentials() -> None:
