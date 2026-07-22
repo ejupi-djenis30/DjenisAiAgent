@@ -581,6 +581,53 @@ def test_actionlint_is_pinned_checksummed_and_executed_by_ci() -> None:
     assert "CI lint job must execute actionlint over all workflows" in errors
 
 
+@pytest.mark.parametrize(
+    ("trusted", "untrusted"),
+    [
+        ("          use_oidc: true\n", "          use_oidc: false\n"),
+        ("          fail_ci_if_error: true\n", "          fail_ci_if_error: false\n"),
+        ("          disable_search: true\n", "          disable_search: false\n"),
+    ],
+)
+def test_codecov_upload_cannot_silently_lose_trust_controls(trusted: str, untrusted: str) -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    broken = workflow.replace(trusted, untrusted, 1)
+    assert broken != workflow
+
+    errors = validate_ci_workflow_text(broken)
+
+    assert (
+        "CI Codecov upload must use OIDC, one explicit report, and fail on upload errors" in errors
+    )
+
+
+def test_codecov_upload_rejects_secret_tokens_and_missing_oidc_permission() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    secret_backed = workflow.replace(
+        "          use_oidc: true\n",
+        "          token: ${{ secrets.CODECOV_TOKEN }}\n          use_oidc: true\n",
+        1,
+    )
+    underprivileged = workflow.replace("      id-token: write\n", "", 1)
+
+    assert "must use OIDC, one explicit report, and fail on upload errors" in " ".join(
+        validate_ci_workflow_text(secret_backed)
+    )
+    assert "exact least-privilege Codecov OIDC permissions" in " ".join(
+        validate_ci_workflow_text(underprivileged)
+    )
+
+
+def test_codecov_checkout_retains_the_required_history() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    shallow = workflow.replace("          fetch-depth: 2\n", "          fetch-depth: 1\n", 1)
+    assert shallow != workflow
+
+    assert "retain enough history without persisted credentials" in " ".join(
+        validate_ci_workflow_text(shallow)
+    )
+
+
 def test_all_repository_actions_are_full_sha_pinned() -> None:
     assert validate_repository_workflows(PROJECT_ROOT) == []
 
