@@ -581,6 +581,78 @@ def test_actionlint_is_pinned_checksummed_and_executed_by_ci() -> None:
     assert "CI lint job must execute actionlint over all workflows" in errors
 
 
+@pytest.mark.parametrize(
+    ("trusted", "untrusted"),
+    [
+        ("            --cov=src \\\n", "            --cov=tests \\\n"),
+        (
+            "          uv run --frozen --no-sync coverage report > coverage-summary.txt\n",
+            "          echo coverage-skipped > coverage-summary.txt\n",
+        ),
+    ],
+)
+def test_local_coverage_gate_cannot_silently_lose_controls(trusted: str, untrusted: str) -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    broken = workflow.replace(trusted, untrusted, 1)
+    assert broken != workflow
+
+    errors = validate_ci_workflow_text(broken)
+
+    assert "CI must retain its authoritative fail-closed local coverage gate" in errors
+
+
+def test_ci_rejects_unconfigured_external_coverage_publication() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    external_upload = workflow.replace(
+        "\n  docker-build:\n",
+        "\n      - name: Unconfigured external upload\n"
+        "        uses: codecov/codecov-action@"
+        "fb8b3582c8e4def4969c97caa2f19720cb33a72f\n\n"
+        "  docker-build:\n",
+        1,
+    )
+    secret_backed = workflow.replace(
+        "\n  docker-build:\n",
+        "\n      - name: Secret-backed external upload\n"
+        "        run: echo external-upload-disabled\n"
+        "        env:\n"
+        "          CODECOV_TOKEN: placeholder\n\n"
+        "  docker-build:\n",
+        1,
+    )
+    unneeded_oidc = workflow.replace(
+        "  windows-coverage:\n"
+        "    name: Windows Coverage Gate\n"
+        "    runs-on: windows-latest\n"
+        "    permissions:\n"
+        "      contents: read\n",
+        "  windows-coverage:\n"
+        "    name: Windows Coverage Gate\n"
+        "    runs-on: windows-latest\n"
+        "    permissions:\n"
+        "      contents: read\n"
+        "      id-token: write\n",
+        1,
+    )
+
+    expected = "must not claim external coverage publication before the repository is configured"
+    assert expected in " ".join(validate_ci_workflow_text(external_upload))
+    assert expected in " ".join(validate_ci_workflow_text(secret_backed))
+    assert "exact least-privilege local gate permissions" in " ".join(
+        validate_ci_workflow_text(unneeded_oidc)
+    )
+
+
+def test_coverage_artifact_must_remain_complete_and_inspectable() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    incomplete = workflow.replace("            coverage.xml\n", "", 1)
+    assert incomplete != workflow
+
+    assert "complete inspectable local coverage artifacts" in " ".join(
+        validate_ci_workflow_text(incomplete)
+    )
+
+
 def test_all_repository_actions_are_full_sha_pinned() -> None:
     assert validate_repository_workflows(PROJECT_ROOT) == []
 

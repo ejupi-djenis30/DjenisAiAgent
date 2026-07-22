@@ -1095,7 +1095,7 @@ def validate_repository_workflows(project_root: Path) -> list[str]:
 
 
 def validate_ci_workflow_text(workflow: str) -> list[str]:
-    """Structurally require pinned actionlint execution in the CI lint job."""
+    """Structurally require fail-closed lint and coverage publication controls."""
 
     document, errors = _parse_workflow(workflow, "CI workflow")
     if document is None:
@@ -1128,6 +1128,62 @@ def validate_ci_workflow_text(workflow: str) -> list[str]:
     actionlint_index = _step_index(steps, "actionlint")
     if install_index is None or actionlint_index is None or install_index >= actionlint_index:
         errors.append("CI must install actionlint before executing it")
+
+    coverage_job = _workflow_job(document, "windows-coverage", "CI workflow", errors)
+    if coverage_job is None:
+        return errors
+    expected_permissions = {"contents": "read"}
+    if _mapping(coverage_job.get("permissions")) != expected_permissions:
+        errors.append("CI coverage job must use exact least-privilege local gate permissions")
+
+    coverage_steps = _workflow_steps(coverage_job, "CI coverage", errors)
+    coverage_gate = _workflow_step(coverage_steps, "coverage-gate", "CI coverage", errors)
+    coverage_artifact = _workflow_step(coverage_steps, "coverage-artifact", "CI coverage", errors)
+    if coverage_gate is not None:
+        coverage_run = _normalized_shell(coverage_gate)
+        if (
+            "pytest tests/unit" not in coverage_run
+            or "--cov=src" not in coverage_run
+            or "--cov-report=xml" not in coverage_run
+            or "coverage report > coverage-summary.txt" not in coverage_run
+            or coverage_gate.get("continue-on-error") is not None
+        ):
+            errors.append("CI must retain its authoritative fail-closed local coverage gate")
+    if coverage_artifact is not None:
+        artifact_uses = coverage_artifact.get("uses")
+        artifact_settings = _mapping(coverage_artifact.get("with"))
+        paths = artifact_settings.get("path") if artifact_settings is not None else None
+        artifact_paths = (
+            {line.strip() for line in paths.splitlines() if line.strip()}
+            if isinstance(paths, str)
+            else set()
+        )
+        expected_paths = {
+            "coverage.xml",
+            "coverage-summary.txt",
+            "pytest-windows.xml",
+            "htmlcov/",
+        }
+        if (
+            not isinstance(artifact_uses, str)
+            or not artifact_uses.startswith("actions/upload-artifact@")
+            or artifact_settings is None
+            or artifact_settings.get("name") != "windows-coverage-report"
+            or artifact_settings.get("if-no-files-found") != "error"
+            or artifact_paths != expected_paths
+            or coverage_artifact.get("if") != "always()"
+        ):
+            errors.append("CI must retain complete inspectable local coverage artifacts")
+
+    if "codecov/codecov-action@" in workflow.casefold() or "CODECOV_TOKEN" in workflow:
+        errors.append(
+            "CI must not claim external coverage publication before the repository is configured"
+        )
+
+    coverage_index = _step_index(coverage_steps, "coverage-gate")
+    artifact_index = _step_index(coverage_steps, "coverage-artifact")
+    if coverage_index is None or artifact_index is None or coverage_index >= artifact_index:
+        errors.append("CI must run the local coverage gate before retaining its report")
     return errors
 
 
