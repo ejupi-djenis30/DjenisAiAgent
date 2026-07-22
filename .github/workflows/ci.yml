@@ -208,16 +208,13 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
-      id-token: write
     needs: [lint, type-check, security]
 
     steps:
       - name: Checkout repository
-        id: coverage-checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          fetch-depth: 2
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -246,6 +243,7 @@ jobs:
           uv run --frozen --no-sync coverage report > coverage-summary.txt
 
       - name: Upload coverage artifacts
+        id: coverage-artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -256,16 +254,6 @@ jobs:
             pytest-windows.xml
             htmlcov/
           if-no-files-found: error
-
-      - name: Upload coverage to Codecov
-        id: codecov-upload
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        with:
-          disable_search: true
-          fail_ci_if_error: true
-          files: coverage.xml
-          flags: windows-unit
-          use_oidc: true
 
   docker-build:
     name: Docker Build + Smoke Test

@@ -206,7 +206,7 @@ actionlint
 
 `uv.lock` freezes development and native-runtime dependencies across supported platforms. The CI workflow targets the repository's actual default branch, `master`. Portable tests run on Linux and Python 3.11/3.12; the full desktop-aware coverage suite runs on Windows. A separate workflow builds and smoke-tests the Docker image.
 
-The Windows job enforces the repository's 70% coverage floor locally before publishing the exact XML report. Codecov authentication uses GitHub's short-lived OIDC identity, not a repository secret, and an upload error fails the job instead of being reported as a false success. The local coverage threshold remains the authoritative quality gate; Codecov provides the external report and history.
+The Windows job enforces the repository's 70% coverage floor locally, then retains the XML report, human-readable summary, JUnit results, and HTML report as one GitHub Actions artifact. The repository does not claim third-party coverage publication: no external uploader is configured until that service can recognize the repository. The local coverage threshold is the authoritative quality gate.
 
 Docker installs from `requirements-docker.lock` with package hashes. Regenerate it only after reviewing dependency updates:
 

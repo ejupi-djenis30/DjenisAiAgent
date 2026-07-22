@@ -44,7 +44,7 @@ EXPECTED_JOB_PERMISSIONS: dict[str, dict[str, dict[str, str]]] = {
         "security": {"contents": "read"},
         "type-check": {"contents": "read"},
         "portable-tests": {"contents": "read"},
-        "windows-coverage": {"contents": "read", "id-token": "write"},
+        "windows-coverage": {"contents": "read"},
         "docker-build": {"contents": "read"},
     },
     "docker-publish.yml": {
@@ -1132,25 +1132,13 @@ def validate_ci_workflow_text(workflow: str) -> list[str]:
     coverage_job = _workflow_job(document, "windows-coverage", "CI workflow", errors)
     if coverage_job is None:
         return errors
-    expected_permissions = {"contents": "read", "id-token": "write"}
+    expected_permissions = {"contents": "read"}
     if _mapping(coverage_job.get("permissions")) != expected_permissions:
-        errors.append("CI coverage job must use exact least-privilege Codecov OIDC permissions")
+        errors.append("CI coverage job must use exact least-privilege local gate permissions")
 
     coverage_steps = _workflow_steps(coverage_job, "CI coverage", errors)
-    coverage_checkout = _workflow_step(coverage_steps, "coverage-checkout", "CI coverage", errors)
     coverage_gate = _workflow_step(coverage_steps, "coverage-gate", "CI coverage", errors)
-    codecov_upload = _workflow_step(coverage_steps, "codecov-upload", "CI coverage", errors)
-    if coverage_checkout is not None:
-        checkout_uses = coverage_checkout.get("uses")
-        checkout_settings = _mapping(coverage_checkout.get("with"))
-        if (
-            not isinstance(checkout_uses, str)
-            or not checkout_uses.startswith("actions/checkout@")
-            or checkout_settings != {"fetch-depth": 2, "persist-credentials": False}
-        ):
-            errors.append(
-                "CI coverage checkout must retain enough history without persisted credentials"
-            )
+    coverage_artifact = _workflow_step(coverage_steps, "coverage-artifact", "CI coverage", errors)
     if coverage_gate is not None:
         coverage_run = _normalized_shell(coverage_gate)
         if (
@@ -1161,36 +1149,41 @@ def validate_ci_workflow_text(workflow: str) -> list[str]:
             or coverage_gate.get("continue-on-error") is not None
         ):
             errors.append("CI must retain its authoritative fail-closed local coverage gate")
-    if codecov_upload is not None:
-        uses = codecov_upload.get("uses")
-        settings = _mapping(codecov_upload.get("with"))
-        expected_settings = {
-            "disable_search": True,
-            "fail_ci_if_error": True,
-            "files": "coverage.xml",
-            "flags": "windows-unit",
-            "use_oidc": True,
+    if coverage_artifact is not None:
+        artifact_uses = coverage_artifact.get("uses")
+        artifact_settings = _mapping(coverage_artifact.get("with"))
+        paths = artifact_settings.get("path") if artifact_settings is not None else None
+        artifact_paths = (
+            {line.strip() for line in paths.splitlines() if line.strip()}
+            if isinstance(paths, str)
+            else set()
+        )
+        expected_paths = {
+            "coverage.xml",
+            "coverage-summary.txt",
+            "pytest-windows.xml",
+            "htmlcov/",
         }
-        if not isinstance(uses, str) or not uses.startswith("codecov/codecov-action@"):
-            errors.append("CI coverage publication must use the official Codecov action")
-        if settings != expected_settings:
-            errors.append(
-                "CI Codecov upload must use OIDC, one explicit report, and fail on upload errors"
-            )
-        if codecov_upload.get("continue-on-error") is not None or "env" in codecov_upload:
-            errors.append("CI Codecov upload must not bypass errors or accept secret-token state")
+        if (
+            not isinstance(artifact_uses, str)
+            or not artifact_uses.startswith("actions/upload-artifact@")
+            or artifact_settings is None
+            or artifact_settings.get("name") != "windows-coverage-report"
+            or artifact_settings.get("if-no-files-found") != "error"
+            or artifact_paths != expected_paths
+            or coverage_artifact.get("if") != "always()"
+        ):
+            errors.append("CI must retain complete inspectable local coverage artifacts")
 
-    checkout_index = _step_index(coverage_steps, "coverage-checkout")
+    if "codecov/codecov-action@" in workflow.casefold() or "CODECOV_TOKEN" in workflow:
+        errors.append(
+            "CI must not claim external coverage publication before the repository is configured"
+        )
+
     coverage_index = _step_index(coverage_steps, "coverage-gate")
-    codecov_index = _step_index(coverage_steps, "codecov-upload")
-    if (
-        checkout_index is None
-        or coverage_index is None
-        or codecov_index is None
-        or checkout_index >= coverage_index
-        or coverage_index >= codecov_index
-    ):
-        errors.append("CI must pass the local coverage gate before publishing its report")
+    artifact_index = _step_index(coverage_steps, "coverage-artifact")
+    if coverage_index is None or artifact_index is None or coverage_index >= artifact_index:
+        errors.append("CI must run the local coverage gate before retaining its report")
     return errors
 
 
