@@ -139,9 +139,7 @@ def _get_or_create_driver() -> Any | None:
 
             # Try Edge first (common on Windows 11)
             try:
-                from selenium.webdriver.edge.options import Options as EdgeOptions
-
-                edge_options = EdgeOptions()
+                edge_options = webdriver.EdgeOptions()
                 edge_options.add_experimental_option("debuggerAddress", debugger_address)
                 _driver = webdriver.Edge(options=edge_options)
                 logger.info("Connected to Edge through remote debugging at %s", debugger_address)

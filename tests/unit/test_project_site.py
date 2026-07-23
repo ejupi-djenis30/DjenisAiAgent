@@ -127,6 +127,30 @@ def test_project_site_keeps_small_controls_readable_and_touch_accessible() -> No
     assert "min-height: 44px" in control_rule.group("body")
 
 
+def test_project_site_keeps_secondary_labels_above_wcag_aa_contrast() -> None:
+    styles = (SITE_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    def luminance(hex_color: str) -> float:
+        channels = [int(hex_color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [
+            channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    foreground = "#8b958f"
+    background = "#090e0b"
+    ratio = (luminance(foreground) + 0.05) / (luminance(background) + 0.05)
+
+    assert ratio >= 4.5
+    assert ".hero-meta span" in styles
+    assert styles.count(f"color: {foreground}") >= 3
+
+
+def test_project_site_publishes_a_valid_robots_policy() -> None:
+    assert (SITE_ROOT / "robots.txt").read_text(encoding="utf-8") == ("User-agent: *\nDisallow:\n")
+
+
 def test_hero_title_type_scale_is_continuous_across_the_mobile_breakpoint() -> None:
     styles = (SITE_ROOT / "styles.css").read_text(encoding="utf-8")
     bridge_match = re.search(r"--hero-title-bridge:\s*(?P<value>[\d.]+)rem", styles)
