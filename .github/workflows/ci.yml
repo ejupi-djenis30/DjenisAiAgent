@@ -185,6 +185,7 @@ jobs:
             tests/unit/test_gemini_core.py \
             tests/unit/test_audio_transcription.py \
             tests/unit/test_browser_tools.py \
+            tests/unit/test_agent_e2e_contract.py \
             tests/unit/test_permissions.py \
             tests/unit/test_privileged_tools.py \
             tests/unit/test_project_site.py \
