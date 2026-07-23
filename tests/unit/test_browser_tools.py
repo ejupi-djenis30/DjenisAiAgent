@@ -61,6 +61,7 @@ class TestDriverLifecycle:
         edge_driver = MagicMock()
         webdriver_ns = SimpleNamespace(
             ChromeOptions=_FakeChromeOptions,
+            EdgeOptions=_FakeChromeOptions,
             Edge=MagicMock(return_value=edge_driver),
             Chrome=MagicMock(),
         )
@@ -79,6 +80,7 @@ class TestDriverLifecycle:
         chrome_driver = MagicMock()
         webdriver_ns = SimpleNamespace(
             ChromeOptions=_FakeChromeOptions,
+            EdgeOptions=_FakeChromeOptions,
             Edge=MagicMock(side_effect=RuntimeError("edge unavailable")),
             Chrome=MagicMock(return_value=chrome_driver),
         )
@@ -95,6 +97,7 @@ class TestDriverLifecycle:
     ) -> None:
         webdriver_ns = SimpleNamespace(
             ChromeOptions=_FakeChromeOptions,
+            EdgeOptions=_FakeChromeOptions,
             Edge=MagicMock(side_effect=RuntimeError("edge unavailable")),
             Chrome=MagicMock(side_effect=RuntimeError("cannot connect")),
         )

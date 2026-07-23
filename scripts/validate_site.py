@@ -139,6 +139,15 @@ def validate_site(site_root: Path) -> list[str]:
         if not asset_path.is_file():
             errors.append(f"referenced asset is missing: {reference}")
 
+    robots_path = site_root / "robots.txt"
+    try:
+        robots = robots_path.read_text(encoding="utf-8")
+    except OSError:
+        errors.append("site/robots.txt is missing or unreadable")
+    else:
+        if robots != "User-agent: *\nDisallow:\n":
+            errors.append("site/robots.txt must explicitly allow the public project site")
+
     styles_path = site_root / "styles.css"
     try:
         styles = styles_path.read_text(encoding="utf-8")
