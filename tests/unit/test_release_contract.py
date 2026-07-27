@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -667,11 +668,13 @@ def test_repository_workflow_validator_rejects_symbolic_action_refs(
     workflow_root = _copy_workflows(tmp_path)
     workflow_path = workflow_root / "ci.yml"
     workflow = workflow_path.read_text(encoding="utf-8")
-    broken = workflow.replace(
-        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    broken, replacements = re.subn(
+        r"actions/checkout@[0-9a-f]{40}",
         unpinned_action,
-        1,
+        workflow,
+        count=1,
     )
+    assert replacements == 1
     workflow_path.write_text(broken, encoding="utf-8")
 
     errors = validate_repository_workflows(tmp_path)
