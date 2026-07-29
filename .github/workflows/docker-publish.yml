@@ -5,6 +5,12 @@ name: Docker Publish
     branches: [master]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      expected_tag:
+        description: Exact unreleased tag expected from the checked-out project version
+        required: true
+        default: v0.3.0
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ startsWith(github.ref, 'refs/tags/v') && 'release' || github.ref }}
@@ -103,11 +109,136 @@ jobs:
         id: windows-tests
         run: uv run --frozen --no-sync pytest tests/unit
 
+  rehearsal:
+    name: Non-mutating Release Rehearsal
+    runs-on: ubuntu-latest
+    needs: [verify, verify-windows]
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout exact dispatch source
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.29"
+          cache-dependency-glob: uv.lock
+
+      - name: Install rehearsal dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Bind rehearsal to the exact current default-branch head
+        id: bind-rehearsal-source
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_TAG: ${{ inputs.expected_tag }}
+        run: >-
+          uv run --frozen --no-sync python scripts/validate_release.py
+          --tag "${EXPECTED_TAG}"
+          --verify-rehearsal-source
+          --expected-rehearsal-commit "${GITHUB_SHA}"
+          --rehearsal-ref "${GITHUB_REF}"
+          --rehearsal-default-branch "${DEFAULT_BRANCH}"
+          --github-output "${GITHUB_OUTPUT}"
+
+      - name: Normalize rehearsal image name
+        id: rehearsal-image
+        shell: bash
+        run: echo "name=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build local OCI rehearsal with SBOM and provenance
+        id: rehearsal-build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          outputs: type=oci,dest=${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar
+          tags: ${{ steps.rehearsal-image.outputs.name }}:${{ needs.verify.outputs.version }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+
+      - name: Scan local rehearsal archive
+        id: rehearsal-scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Verify local OCI digest, SBOM, and provenance
+        id: verify-rehearsal-oci
+        shell: bash
+        env:
+          EXPECTED_TAG: ${{ inputs.expected_tag }}
+          REHEARSAL_DIGEST: ${{ steps.rehearsal-build.outputs.digest }}
+        run: >-
+          uv run --frozen --no-sync python scripts/validate_release.py
+          --tag "${EXPECTED_TAG}"
+          --rehearsal-oci-archive "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci.tar"
+          --expected-oci-digest "${REHEARSAL_DIGEST}"
+
+      - name: Render source-bound release evidence without GitHub mutations
+        id: render-rehearsal-evidence
+        shell: bash
+        env:
+          EXPECTED_TAG: ${{ inputs.expected_tag }}
+        run: >-
+          uv run --frozen --no-sync python scripts/publish_github_release.py
+          --phase rehearse
+          --repository "${GITHUB_REPOSITORY}"
+          --tag "${EXPECTED_TAG}"
+          --target-commit "${{ steps.bind-rehearsal-source.outputs.source_commit }}"
+          --image "${{ steps.rehearsal-image.outputs.name }}"
+          --version "${{ needs.verify.outputs.version }}"
+          --digest "${{ steps.rehearsal-build.outputs.digest }}"
+          --evidence-output "${RUNNER_TEMP}/release-rehearsal-evidence.json"
+
+      - name: Record non-mutating rehearsal evidence
+        id: summarize-rehearsal
+        shell: bash
+        env:
+          EVIDENCE_PATH: ${{ runner.temp }}/release-rehearsal-evidence.json
+          OCI_ARCHIVE: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar
+        run: |
+          archive_sha256="$(sha256sum "${OCI_ARCHIVE}" | cut -d' ' -f1)"
+          {
+            echo "## Non-mutating release rehearsal"
+            echo
+            jq -r '"- Expected tag: `\(.tag)`"' "${EVIDENCE_PATH}"
+            jq -r '"- Source commit: `\(.source_commit)`"' "${EVIDENCE_PATH}"
+            jq -r '"- OCI digest: `\(.oci_digest)`"' "${EVIDENCE_PATH}"
+            jq -r '"- Source-bound notes SHA-256: `\(.release_notes_sha256)`"' "${EVIDENCE_PATH}"
+            jq -r '"- Deterministic release body SHA-256: `\(.release_body_sha256)`"' "${EVIDENCE_PATH}"
+            jq -r '"- Deterministic release payload SHA-256: `\(.release_payload_sha256)`"' "${EVIDENCE_PATH}"
+            echo "- Local OCI archive SHA-256: \`${archive_sha256}\`"
+            jq -r '"- External mutations: `\(.external_mutations)`"' "${EVIDENCE_PATH}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   release-preflight:
     name: Inspect Durable Release State
     runs-on: ubuntu-latest
     needs: verify
-    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     permissions:
       contents: write
     outputs:
@@ -145,7 +276,7 @@ jobs:
 
       - name: Resolve exact remote release tag
         id: resolve-remote-tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: >-
           uv run --frozen --no-sync python scripts/validate_release.py
@@ -155,7 +286,7 @@ jobs:
 
       - name: Verify annotated GitHub SSH signature
         id: verify-signed-tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -168,7 +299,7 @@ jobs:
 
       - name: Inspect durable Release authorization
         id: inspect-release-authorization
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -187,6 +318,7 @@ jobs:
       - name: Authorize a new release source against current master
         id: authorize-new-source
         if: >-
+          github.event_name == 'push' &&
           startsWith(github.ref, 'refs/tags/v') &&
           steps.inspect-release-authorization.outputs.state == 'absent'
         shell: bash
@@ -199,7 +331,7 @@ jobs:
     name: Build or Reuse and Scan Candidate
     runs-on: ubuntu-latest
     needs: [verify, verify-windows, release-preflight]
-    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     permissions:
       contents: read
       packages: write
@@ -256,16 +388,16 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}
-            type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+            type=sha,prefix=sha-,format=short,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Validate master image tags
         id: validate-master-image-tags
-        if: github.ref == 'refs/heads/master'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         shell: bash
         env:
           PUBLISHED_IMAGE: ${{ steps.image.outputs.name }}
@@ -278,7 +410,7 @@ jobs:
 
       - name: Validate release image tags
         id: validate-image-tags
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           PUBLISHED_IMAGE: ${{ steps.image.outputs.name }}
@@ -291,7 +423,7 @@ jobs:
 
       - name: Inspect immutable release alias
         id: release-state
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: >-
           uv run --frozen --no-sync python scripts/release_registry.py inspect
@@ -393,7 +525,7 @@ jobs:
     name: Prepare Durable Release Authorization
     runs-on: ubuntu-latest
     needs: [verify, release-preflight, candidate, attest]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     outputs:
@@ -472,7 +604,7 @@ jobs:
     name: Sign and Verify Release OIDC Provenance
     runs-on: ubuntu-latest
     needs: [candidate, release-preflight]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       attestations: write
       contents: read
@@ -577,7 +709,7 @@ jobs:
     name: Sign and Verify Master OIDC Provenance
     runs-on: ubuntu-latest
     needs: [verify, candidate]
-    if: github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     permissions:
       attestations: write
       contents: read
@@ -641,7 +773,7 @@ jobs:
     name: Promote Verified Release Aliases
     runs-on: ubuntu-latest
     needs: [verify, release-preflight, candidate, authorize-release, attest]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
       packages: write
@@ -768,7 +900,7 @@ jobs:
     name: Promote Verified Master Aliases
     runs-on: ubuntu-latest
     needs: [verify, candidate, attest-master]
-    if: github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     permissions:
       contents: read
       packages: write
@@ -817,7 +949,7 @@ jobs:
     name: Finalize Exact GitHub Release
     runs-on: ubuntu-latest
     needs: [verify, candidate, authorize-release, attest, promote-release]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
 

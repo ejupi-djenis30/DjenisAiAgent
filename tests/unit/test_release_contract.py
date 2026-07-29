@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
+import json
 import re
 import shutil
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -14,11 +18,13 @@ from scripts.validate_release import (
     validate_ci_workflow_text,
     validate_image_metadata,
     validate_local_only_dependency_contract,
+    validate_rehearsal_oci_archive,
     validate_release_contract,
     validate_release_documentation,
     validate_repository_workflows,
     validate_tag_ruleset_text,
     validate_workflow_text,
+    verify_rehearsal_source,
     verify_release_tag_origin,
     verify_remote_release_tag,
 )
@@ -41,18 +47,93 @@ def _copy_workflows(destination: Path) -> Path:
     return workflow_root
 
 
-def test_repository_contract_matches_v0_2_2_and_release_image_aliases() -> None:
-    expected_tags = ("0.2.2", "0.2", "0", "latest")
+def _json_blob(document: object) -> tuple[str, bytes]:
+    raw = json.dumps(document, separators=(",", ":"), sort_keys=True).encode()
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}", raw
+
+
+def _write_rehearsal_oci(
+    destination: Path,
+    *,
+    predicates: tuple[str, ...] = (
+        "https://spdx.dev/Document",
+        "https://slsa.dev/provenance/v1",
+    ),
+) -> tuple[Path, str]:
+    image_digest, image_manifest = _json_blob(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": f"sha256:{'c' * 64}",
+                "size": 2,
+            },
+            "layers": [],
+        }
+    )
+    attestation_digest, attestation_manifest = _json_blob(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [
+                {
+                    "mediaType": "application/vnd.in-toto+json",
+                    "digest": f"sha256:{index:064x}",
+                    "size": 2,
+                    "annotations": {"in-toto.io/predicate-type": predicate},
+                }
+                for index, predicate in enumerate(predicates, start=1)
+            ],
+        }
+    )
+    index_document = {
+        "schemaVersion": 2,
+        "manifests": [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": image_digest,
+                "size": len(image_manifest),
+            },
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": attestation_digest,
+                "size": len(attestation_manifest),
+                "annotations": {
+                    "vnd.docker.reference.type": "attestation-manifest",
+                    "vnd.docker.reference.digest": image_digest,
+                },
+            },
+        ],
+    }
+    index_raw = json.dumps(index_document, separators=(",", ":"), sort_keys=True).encode()
+    archive_path = destination / "rehearsal.oci.tar"
+    members = {
+        "index.json": index_raw,
+        "oci-layout": b'{"imageLayoutVersion":"1.0.0"}',
+        f"blobs/sha256/{image_digest.removeprefix('sha256:')}": image_manifest,
+        f"blobs/sha256/{attestation_digest.removeprefix('sha256:')}": attestation_manifest,
+    }
+    with tarfile.open(archive_path, mode="w") as archive:
+        for name, content in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    return archive_path, image_digest
+
+
+def test_repository_contract_matches_v0_3_0_and_release_image_aliases() -> None:
+    expected_tags = ("0.3.0", "0.3", "0", "latest")
     metadata_tags = "\n".join(f"{IMAGE_NAME}:{tag}" for tag in expected_tags)
 
     contract = validate_release_contract(
         PROJECT_ROOT,
-        tag="v0.2.2",
+        tag="v0.3.0",
         image_name=IMAGE_NAME,
         image_tags=metadata_tags,
     )
 
-    assert contract.version == "0.2.2"
+    assert contract.version == "0.3.0"
     assert contract.image_tags == expected_tags
 
 
@@ -67,12 +148,103 @@ def test_repository_contract_accepts_only_the_exact_master_aliases() -> None:
         image_tags=metadata_tags,
     )
 
-    assert contract.version == "0.2.2"
+    assert contract.version == "0.3.0"
 
 
 def test_git_tag_must_match_the_project_version_exactly() -> None:
-    with pytest.raises(ReleaseContractError, match=r"Git tag must be v0\.2\.2"):
+    with pytest.raises(ReleaseContractError, match=r"Git tag must be v0\.3\.0"):
         validate_release_contract(PROJECT_ROOT, tag="v0.2.0")
+
+
+def test_rehearsal_source_requires_local_event_and_fresh_master_to_match() -> None:
+    commit = "a" * 40
+    calls: list[tuple[str, ...]] = []
+
+    def runner(arguments: tuple[str, ...]) -> str:
+        calls.append(arguments)
+        if arguments[:1] == ("fetch",):
+            return ""
+        if arguments == ("rev-parse", "HEAD^{commit}"):
+            return commit
+        if arguments == (
+            "rev-parse",
+            "refs/djenis-release-verification/rehearsal/master^{commit}",
+        ):
+            return commit
+        raise AssertionError(arguments)
+
+    source = verify_rehearsal_source(
+        PROJECT_ROOT,
+        expected_commit=commit,
+        event_ref="refs/heads/master",
+        default_branch="master",
+        git_runner=runner,
+    )
+
+    assert source == commit
+    assert calls[0] == (
+        "fetch",
+        "--atomic",
+        "--force",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "origin",
+        "+refs/heads/master:refs/djenis-release-verification/rehearsal/master",
+    )
+
+
+@pytest.mark.parametrize(
+    ("event_ref", "default_branch", "message"),
+    [
+        ("refs/heads/feature", "master", "dispatched from refs/heads/master"),
+        ("refs/heads/master", "main", "master to remain the default branch"),
+    ],
+)
+def test_rehearsal_source_rejects_non_default_dispatches(
+    event_ref: str,
+    default_branch: str,
+    message: str,
+) -> None:
+    with pytest.raises(ReleaseContractError, match=message):
+        verify_rehearsal_source(
+            PROJECT_ROOT,
+            expected_commit="a" * 40,
+            event_ref=event_ref,
+            default_branch=default_branch,
+            git_runner=lambda _arguments: pytest.fail("unsafe source must fail before fetch"),
+        )
+
+
+def test_rehearsal_source_rejects_a_stale_dispatch_sha() -> None:
+    commits = iter(("", "a" * 40, "b" * 40))
+
+    with pytest.raises(ReleaseContractError, match="local HEAD, event SHA"):
+        verify_rehearsal_source(
+            PROJECT_ROOT,
+            expected_commit="a" * 40,
+            event_ref="refs/heads/master",
+            default_branch="master",
+            git_runner=lambda _arguments: next(commits),
+        )
+
+
+def test_rehearsal_oci_archive_binds_digest_sbom_and_provenance(tmp_path: Path) -> None:
+    archive, digest = _write_rehearsal_oci(tmp_path)
+
+    validate_rehearsal_oci_archive(archive, expected_digest=digest)
+
+    with pytest.raises(ReleaseContractError, match="Buildx-reported digest"):
+        validate_rehearsal_oci_archive(archive, expected_digest=f"sha256:{'f' * 64}")
+
+
+def test_rehearsal_oci_archive_fails_when_provenance_is_missing(tmp_path: Path) -> None:
+    archive, digest = _write_rehearsal_oci(
+        tmp_path,
+        predicates=("https://spdx.dev/Document",),
+    )
+
+    with pytest.raises(ReleaseContractError, match=r"slsa\.dev/provenance"):
+        validate_rehearsal_oci_archive(archive, expected_digest=digest)
 
 
 @pytest.mark.parametrize(
@@ -171,18 +343,26 @@ def test_release_candidate_requires_the_complete_windows_runtime_gate() -> None:
 def test_master_and_release_image_aliases_are_strictly_separated() -> None:
     workflow = _docker_workflow()
 
-    assert "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}" in workflow
-    assert "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}" in workflow
     assert (
-        "type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/master' }}"
-        in workflow
+        "type=raw,value=latest,enable=${{ github.event_name == 'push' && "
+        "startsWith(github.ref, 'refs/tags/v') }}" in workflow
+    )
+    assert (
+        "type=raw,value=edge,enable=${{ github.event_name == 'push' && "
+        "github.ref == 'refs/heads/master' }}" in workflow
+    )
+    assert (
+        "type=sha,prefix=sha-,format=short,enable=${{ github.event_name == 'push' && "
+        "github.ref == 'refs/heads/master' }}" in workflow
     )
     assert "id: validate-master-image-tags" in workflow
     assert '--master-commit "${GITHUB_SHA}"' in workflow
 
     broken = workflow.replace(
-        "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}",
-        "type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}",
+        "type=raw,value=edge,enable=${{ github.event_name == 'push' && "
+        "github.ref == 'refs/heads/master' }}",
+        "type=raw,value=latest,enable=${{ github.event_name == 'push' && "
+        "github.ref == 'refs/heads/master' }}",
         1,
     )
     assert (
@@ -209,22 +389,85 @@ def test_master_and_release_image_aliases_are_strictly_separated() -> None:
     )
 
 
-def test_manual_dispatch_on_an_arbitrary_branch_is_structurally_verify_only() -> None:
+def test_workflow_dispatch_requires_the_exact_unreleased_tag() -> None:
     workflow = _docker_workflow()
-    gate = "    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')\n"
-    broken = workflow.replace(
-        gate,
-        "    if: startsWith(github.ref, 'refs/tags/v')\n"
-        "    # github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')\n",
+    wrong_default = workflow.replace("        default: v0.3.0\n", "        default: v0.2.2\n", 1)
+    optional = workflow.replace("        required: true\n", "        required: false\n", 1)
+
+    expected = "docker-publish workflow_dispatch must require expected_tag with default v0.3.0"
+    assert expected in validate_workflow_text(wrong_default)
+    assert expected in validate_workflow_text(optional)
+
+
+def test_rehearsal_is_offline_fail_closed_and_source_bound() -> None:
+    workflow = _docker_workflow()
+    publish_build = workflow.replace(
+        "          outputs: type=oci,dest=${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar\n",
+        "          push: true\n          tags: ghcr.io/example/rehearsal:latest\n",
+        1,
     )
-    assert broken != workflow
+    weak_source = workflow.replace(
+        '          --expected-rehearsal-commit "${GITHUB_SHA}"\n',
+        '          --expected-rehearsal-commit "deadbeef"\n',
+        1,
+    )
+    mutating_phase = workflow.replace(
+        "          --phase rehearse\n",
+        "          --phase prepare\n",
+        1,
+    )
+    missing_attestation = workflow.replace("          sbom: true\n", "          sbom: false\n", 1)
 
-    errors = validate_workflow_text(broken)
-
-    assert "release-preflight must depend on verify and use the publish ref gate" in errors
+    assert "rehearsal must build an offline OCI archive with SBOM and provenance" in (
+        validate_workflow_text(publish_build)
+    )
+    assert "rehearsal source must bind expected_tag to local HEAD and current origin/master" in (
+        validate_workflow_text(weak_source)
+    )
+    mutation_errors = validate_workflow_text(mutating_phase)
     assert (
-        "candidate job must be gated to master or v-prefixed tags so manual runs on arbitrary branches remain verify-only"
-        in errors
+        "rehearsal must render source-bound release evidence without a GitHub token"
+        in mutation_errors
+    )
+    assert "rehearsal must not contain any external release mutation command" in mutation_errors
+    assert "rehearsal must build an offline OCI archive with SBOM and provenance" in (
+        validate_workflow_text(missing_attestation)
+    )
+
+
+def test_manual_dispatch_cannot_enter_any_publication_job() -> None:
+    workflow = _docker_workflow()
+    publish_gate = (
+        "    if: github.event_name == 'push' && "
+        "(github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))\n"
+    )
+    dispatch_can_publish = workflow.replace(
+        publish_gate,
+        "    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')\n",
+    )
+    tag_dispatch_can_publish = workflow.replace(
+        "    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')\n",
+        "    if: startsWith(github.ref, 'refs/tags/v')\n",
+        1,
+    )
+    master_dispatch_can_publish = workflow.replace(
+        "    if: github.event_name == 'push' && github.ref == 'refs/heads/master'\n",
+        "    if: github.ref == 'refs/heads/master'\n",
+        1,
+    )
+
+    assert dispatch_can_publish != workflow
+    assert tag_dispatch_can_publish != workflow
+    assert master_dispatch_can_publish != workflow
+    assert "release-preflight must depend on verify and use the publish ref gate" in (
+        validate_workflow_text(dispatch_can_publish)
+    )
+    assert "release preflight must resolve the exact isolated remote tag" in validate_workflow_text(
+        tag_dispatch_can_publish
+    )
+    assert (
+        "master image metadata must be runtime-validated as edge and sha only"
+        in validate_workflow_text(master_dispatch_can_publish)
     )
 
 
@@ -1001,6 +1244,40 @@ def test_release_documentation_rejects_a_v_prefixed_image_tag(tmp_path: Path) ->
 @pytest.mark.parametrize(
     "removed_token",
     [
+        "expected_tag=v0.3.0",
+        "non-mutating rehearsal",
+        "origin/master",
+        "offline OCI archive with SBOM and provenance",
+    ],
+)
+def test_release_documentation_requires_exact_rehearsal_instructions(
+    tmp_path: Path, removed_token: str
+) -> None:
+    for relative_path in (
+        Path("README.md"),
+        Path("CHANGELOG.md"),
+        Path(".github/rulesets/README.md"),
+        Path("docs/releases/v0.3.0.md"),
+        Path("scripts/publish_github_release.py"),
+    ):
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PROJECT_ROOT / relative_path, destination)
+
+    ruleset_readme = tmp_path / ".github" / "rulesets" / "README.md"
+    original = ruleset_readme.read_text(encoding="utf-8")
+    broken = original.replace(removed_token, "removed-rehearsal-token")
+    assert broken != original
+    ruleset_readme.write_text(broken, encoding="utf-8")
+
+    errors = validate_release_documentation(tmp_path, "0.3.0")
+
+    assert "release-tag instructions must require the exact non-mutating rehearsal" in errors
+
+
+@pytest.mark.parametrize(
+    "removed_token",
+    [
         "mkdir -p djenis-ai-agent-release/deploy",
         "{target_commit}/deploy/nginx.conf",
         "--output deploy/nginx.conf",
@@ -1101,14 +1378,14 @@ def test_release_validator_detects_a_stale_runtime_version(tmp_path: Path) -> No
     config_path = tmp_path / "src" / "config.py"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            'VERSION: str = "0.2.2"',
+            'VERSION: str = "0.3.0"',
             'VERSION: str = "0.2.0"',
         ),
         encoding="utf-8",
     )
 
     with pytest.raises(ReleaseContractError, match="version sources disagree"):
-        validate_release_contract(tmp_path, tag="v0.2.2")
+        validate_release_contract(tmp_path, tag="v0.3.0")
 
 
 def test_pull_request_template_requires_concrete_review_context() -> None:

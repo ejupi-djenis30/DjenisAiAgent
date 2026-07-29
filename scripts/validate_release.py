@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 import shutil
 import subprocess  # nosec B404
 import sys
+import tarfile
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -27,9 +29,15 @@ GIT_COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{40,64}")
 PINNED_ACTION_PATTERN = re.compile(r"[^@\s]+@[0-9a-f]{40}")
 REMOTE_TAG_REF_ROOT = "refs/djenis-release-verification/tags"
 REMOTE_MASTER_REF = "refs/djenis-release-verification/heads/master"
+REMOTE_REHEARSAL_MASTER_REF = "refs/djenis-release-verification/rehearsal/master"
 
-PUBLISH_REF_GATE = "github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')"
-TAG_REF_GATE = "startsWith(github.ref, 'refs/tags/v')"
+PUBLISH_REF_GATE = (
+    "github.event_name == 'push' && "
+    "(github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))"
+)
+TAG_REF_GATE = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+MASTER_REF_GATE = "github.event_name == 'push' && github.ref == 'refs/heads/master'"
+REHEARSAL_GATE = "github.event_name == 'workflow_dispatch'"
 RELEASE_VALIDATION_COMMAND = 'uv run --frozen --no-sync python scripts/validate_release.py --github-output "${GITHUB_OUTPUT}"'
 ATTEST_ACTION = "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6"
 ACTIONLINT_VERSION = "1.7.12"
@@ -50,6 +58,7 @@ EXPECTED_JOB_PERMISSIONS: dict[str, dict[str, dict[str, str]]] = {
     "docker-publish.yml": {
         "verify": {"contents": "read"},
         "verify-windows": {"contents": "read"},
+        "rehearsal": {"contents": "read"},
         "release-preflight": {"contents": "write"},
         "candidate": {"contents": "read", "packages": "write"},
         "attest": {
@@ -89,6 +98,7 @@ class ReleaseContract:
     version: str
     image_tags: tuple[str, str, str, str]
     tag_commit: str | None = None
+    source_commit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -445,8 +455,20 @@ def validate_workflow_text(workflow: str) -> list[str]:
     tags = _sequence(push.get("tags")) if push is not None else None
     if branches != ["master"] or tags != ["v*"]:
         errors.append("docker-publish push triggers must be exactly master and v* tags")
-    if triggers is None or "workflow_dispatch" not in triggers:
-        errors.append("docker-publish workflow must retain workflow_dispatch verification")
+    dispatch = _mapping(triggers.get("workflow_dispatch")) if triggers is not None else None
+    dispatch_inputs = _mapping(dispatch.get("inputs")) if dispatch is not None else None
+    expected_tag_input = (
+        _mapping(dispatch_inputs.get("expected_tag")) if dispatch_inputs is not None else None
+    )
+    if (
+        expected_tag_input is None
+        or expected_tag_input.get("required") is not True
+        or expected_tag_input.get("default") != "v0.3.0"
+        or expected_tag_input.get("type") != "string"
+    ):
+        errors.append(
+            "docker-publish workflow_dispatch must require expected_tag with default v0.3.0"
+        )
     concurrency = _mapping(document.get("concurrency"))
     if concurrency != {
         "group": (
@@ -459,6 +481,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
 
     verify = _workflow_job(document, "verify", "docker-publish workflow", errors)
     verify_windows = _workflow_job(document, "verify-windows", "docker-publish workflow", errors)
+    rehearsal = _workflow_job(document, "rehearsal", "docker-publish workflow", errors)
     release_preflight = _workflow_job(
         document, "release-preflight", "docker-publish workflow", errors
     )
@@ -519,6 +542,167 @@ def validate_workflow_text(workflow: str) -> list[str]:
         ):
             errors.append("verify-windows must execute the complete Windows unit suite")
 
+    if rehearsal is not None:
+        if (
+            _needs(rehearsal) != {"verify", "verify-windows"}
+            or rehearsal.get("if") != REHEARSAL_GATE
+            or rehearsal.get("runs-on") != "ubuntu-latest"
+            or rehearsal.get("continue-on-error") not in (None, False)
+        ):
+            errors.append(
+                "rehearsal must run fail-closed only for workflow_dispatch after both quality gates"
+            )
+        steps = _workflow_steps(rehearsal, "rehearsal", errors)
+        _validate_checkout(steps, "rehearsal", errors)
+        bind = _workflow_step(steps, "bind-rehearsal-source", "rehearsal", errors)
+        build = _workflow_step(steps, "rehearsal-build", "rehearsal", errors)
+        scan = _workflow_step(steps, "rehearsal-scan", "rehearsal", errors)
+        verify_oci = _workflow_step(steps, "verify-rehearsal-oci", "rehearsal", errors)
+        render = _workflow_step(steps, "render-rehearsal-evidence", "rehearsal", errors)
+        summary = _workflow_step(steps, "summarize-rehearsal", "rehearsal", errors)
+
+        if bind is not None:
+            command = _normalized_shell(bind)
+            environment = _mapping(bind.get("env"))
+            bind_required = (
+                'scripts/validate_release.py --tag "${EXPECTED_TAG}"',
+                "--verify-rehearsal-source",
+                '--expected-rehearsal-commit "${GITHUB_SHA}"',
+                '--rehearsal-ref "${GITHUB_REF}"',
+                '--rehearsal-default-branch "${DEFAULT_BRANCH}"',
+                '--github-output "${GITHUB_OUTPUT}"',
+            )
+            if (
+                any(token not in command for token in bind_required)
+                or environment
+                != {
+                    "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+                    "EXPECTED_TAG": "${{ inputs.expected_tag }}",
+                }
+                or bind.get("continue-on-error") not in (None, False)
+            ):
+                errors.append(
+                    "rehearsal source must bind expected_tag to local HEAD and current origin/master"
+                )
+
+        if build is not None:
+            settings = _mapping(build.get("with"))
+            if (
+                not str(build.get("uses", "")).startswith("docker/build-push-action@")
+                or settings is None
+                or settings.get("outputs")
+                != "type=oci,dest=${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar"
+                or settings.get("provenance") != "mode=max"
+                or settings.get("sbom") is not True
+                or "push" in settings
+            ):
+                errors.append(
+                    "rehearsal must build an offline OCI archive with SBOM and provenance"
+                )
+
+        if scan is not None:
+            settings = _mapping(scan.get("with"))
+            if (
+                not str(scan.get("uses", "")).startswith("aquasecurity/trivy-action@")
+                or settings is None
+                or settings.get("input") != "${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar"
+                or settings.get("exit-code") != "1"
+            ):
+                errors.append("rehearsal Trivy scan must fail closed over the local OCI archive")
+
+        if verify_oci is not None:
+            command = _normalized_shell(verify_oci)
+            environment = _mapping(verify_oci.get("env"))
+            oci_required = (
+                'scripts/validate_release.py --tag "${EXPECTED_TAG}"',
+                '--rehearsal-oci-archive "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci.tar"',
+                '--expected-oci-digest "${REHEARSAL_DIGEST}"',
+            )
+            if (
+                any(token not in command for token in oci_required)
+                or environment
+                != {
+                    "EXPECTED_TAG": "${{ inputs.expected_tag }}",
+                    "REHEARSAL_DIGEST": "${{ steps.rehearsal-build.outputs.digest }}",
+                }
+                or verify_oci.get("continue-on-error") not in (None, False)
+            ):
+                errors.append(
+                    "rehearsal must verify the local OCI digest, SPDX SBOM, and provenance"
+                )
+
+        if render is not None:
+            command = _normalized_shell(render)
+            environment = _mapping(render.get("env"))
+            render_required = (
+                "scripts/publish_github_release.py --phase rehearse",
+                '--tag "${EXPECTED_TAG}"',
+                '--target-commit "${{ steps.bind-rehearsal-source.outputs.source_commit }}"',
+                '--digest "${{ steps.rehearsal-build.outputs.digest }}"',
+                '--evidence-output "${RUNNER_TEMP}/release-rehearsal-evidence.json"',
+            )
+            if (
+                any(token not in command for token in render_required)
+                or environment != {"EXPECTED_TAG": "${{ inputs.expected_tag }}"}
+                or render.get("continue-on-error") not in (None, False)
+            ):
+                errors.append(
+                    "rehearsal must render source-bound release evidence without a GitHub token"
+                )
+
+        if summary is not None:
+            command = _normalized_shell(summary)
+            if any(
+                token not in command
+                for token in (
+                    "release_notes_sha256",
+                    "release_body_sha256",
+                    "release_payload_sha256",
+                    "external_mutations",
+                    "sha256sum",
+                    "GITHUB_STEP_SUMMARY",
+                )
+            ):
+                errors.append("rehearsal must record durable non-mutating evidence in its summary")
+
+        ordered = (
+            "bind-rehearsal-source",
+            "rehearsal-build",
+            "rehearsal-scan",
+            "verify-rehearsal-oci",
+            "render-rehearsal-evidence",
+            "summarize-rehearsal",
+        )
+        indices = [_step_index(steps, step_id) for step_id in ordered]
+        if any(index is None for index in indices) or indices != sorted(cast(list[int], indices)):
+            errors.append(
+                "rehearsal order must bind source, build, scan, verify, render, then summarize"
+            )
+        forbidden_actions = (
+            "docker/login-action@",
+            "actions/attest@",
+            "actions/upload-artifact@",
+            "softprops/action-gh-release@",
+        )
+        if any(
+            any(token in str(step.get("uses", "")) for token in forbidden_actions) for step in steps
+        ):
+            errors.append("rehearsal must not use registry, attestation, or publication actions")
+        rehearsal_shell = " ".join(_normalized_shell(step) for step in steps)
+        if any(
+            token in rehearsal_shell
+            for token in (
+                "docker push",
+                "imagetools create",
+                "release_registry.py",
+                "--phase inspect",
+                "--phase prepare",
+                "--phase finalize",
+                "gh release",
+            )
+        ):
+            errors.append("rehearsal must not contain any external release mutation command")
+
     if release_preflight is not None:
         if (
             _needs(release_preflight) != {"verify"}
@@ -578,7 +762,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         if authorize_new is not None:
             command = _normalized_shell(authorize_new)
             expected_gate = (
-                "startsWith(github.ref, 'refs/tags/v') && "
+                "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
                 "steps.inspect-release-authorization.outputs.state == 'absent'"
             )
             if " ".join(str(authorize_new.get("if", "")).split()) != expected_gate or any(
@@ -612,8 +796,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
             )
         if candidate.get("if") != PUBLISH_REF_GATE:
             errors.append(
-                "candidate job must be gated to master or v-prefixed tags so manual runs on "
-                "arbitrary branches remain verify-only"
+                "candidate job must be push-only so workflow_dispatch cannot publish an image"
             )
         steps = _workflow_steps(candidate, "candidate", errors)
         _validate_checkout(steps, "candidate", errors)
@@ -634,9 +817,18 @@ def validate_workflow_text(workflow: str) -> list[str]:
                 "type=semver,pattern={{version}}",
                 "type=semver,pattern={{major}}.{{minor}}",
                 "type=semver,pattern={{major}}",
-                "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}",
-                "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}",
-                "type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/master' }}",
+                (
+                    "type=raw,value=latest,enable=${{ github.event_name == 'push' && "
+                    "startsWith(github.ref, 'refs/tags/v') }}"
+                ),
+                (
+                    "type=raw,value=edge,enable=${{ github.event_name == 'push' && "
+                    "github.ref == 'refs/heads/master' }}"
+                ),
+                (
+                    "type=sha,prefix=sha-,format=short,enable=${{ github.event_name == 'push' && "
+                    "github.ref == 'refs/heads/master' }}"
+                ),
             ]
             actual_rules: list[str] = []
             if metadata_with is not None and isinstance(metadata_with.get("tags"), str):
@@ -661,7 +853,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         if validate_master_tags is not None:
             command = _normalized_shell(validate_master_tags)
             if (
-                validate_master_tags.get("if") != "github.ref == 'refs/heads/master'"
+                validate_master_tags.get("if") != MASTER_REF_GATE
                 or _mapping(validate_master_tags.get("env")) != expected_validation_environment
                 or validate_master_tags.get("shell") != "bash"
                 or validate_master_tags.get("continue-on-error") not in (None, False)
@@ -881,7 +1073,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         _validate_attestation_job(
             attest_master,
             job_name="attest-master",
-            expected_gate="github.ref == 'refs/heads/master'",
+            expected_gate=MASTER_REF_GATE,
             require_reuse_preflight=False,
             errors=errors,
         )
@@ -1001,7 +1193,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
     if promote_master is not None:
         if _needs(promote_master) != {"verify", "candidate", "attest-master"}:
             errors.append("promote-master must wait for verified master OIDC provenance")
-        if promote_master.get("if") != "github.ref == 'refs/heads/master'":
+        if promote_master.get("if") != MASTER_REF_GATE:
             errors.append("promote-master must be master-only")
         steps = _workflow_steps(promote_master, "promote-master", errors)
         promote = _workflow_step(steps, "promote", "promote-master", errors)
@@ -1326,6 +1518,45 @@ def validate_release_documentation(project_root: Path, version: str) -> list[str
         errors.append(f"CHANGELOG.md must contain a {version} release entry")
     if ".github/rulesets/README.md" not in readme:
         errors.append("README.md must link the immutable release-tag ruleset instructions")
+    try:
+        ruleset_readme = (project_root / ".github" / "rulesets" / "README.md").read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        ruleset_readme = ""
+    rehearsal_documentation_tokens = (
+        f"expected_tag=v{version}",
+        "non-mutating rehearsal",
+        "origin/master",
+        "offline OCI archive with SBOM and provenance",
+    )
+    if any(token not in ruleset_readme for token in rehearsal_documentation_tokens):
+        errors.append("release-tag instructions must require the exact non-mutating rehearsal")
+
+    notes_relative_path = Path("docs") / "releases" / f"v{version}.md"
+    if notes_relative_path.as_posix() not in readme:
+        errors.append(f"README.md must link the current release notes {notes_relative_path}")
+    release_versions = re.findall(
+        r"^## ((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)) - ",
+        changelog,
+        re.MULTILINE,
+    )
+    previous_version: str | None = None
+    if version in release_versions:
+        current_index = release_versions.index(version)
+        if current_index + 1 < len(release_versions):
+            previous_version = release_versions[current_index + 1]
+    try:
+        release_notes = (project_root / notes_relative_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        release_notes = ""
+        errors.append(f"release notes must exist at {notes_relative_path}")
+    if previous_version is not None and not release_notes.startswith(
+        f"## What changed since v{previous_version}"
+    ):
+        errors.append(
+            f"release notes must describe changes since the previous release v{previous_version}"
+        )
 
     try:
         release_helper = (project_root / "scripts" / "publish_github_release.py").read_text(
@@ -1346,6 +1577,12 @@ def validate_release_documentation(project_root: Path, version: str) -> list[str
     )
     if any(token not in release_helper for token in readiness_tokens):
         errors.append("release notes must distinguish readiness from web process liveness")
+    source_bound_notes_tokens = (
+        "load_release_notes(args.version)",
+        "release_notes=release_notes",
+    )
+    if any(token not in release_helper for token in source_bound_notes_tokens):
+        errors.append("GitHub Release publication must use the source-bound release notes")
     return errors
 
 
@@ -1456,6 +1693,200 @@ def verify_remote_release_tag(
     return normalized
 
 
+def verify_rehearsal_source(
+    project_root: Path,
+    *,
+    expected_commit: str,
+    event_ref: str,
+    default_branch: str,
+    git_runner: GitRunner | None = None,
+) -> str:
+    """Bind a manual rehearsal to local HEAD and the freshly fetched default branch."""
+
+    if GIT_COMMIT_PATTERN.fullmatch(expected_commit) is None:
+        raise ReleaseContractError("expected rehearsal commit must be an exact Git object id")
+    if default_branch != "master":
+        raise ReleaseContractError("release rehearsal requires master to remain the default branch")
+    if event_ref != "refs/heads/master":
+        raise ReleaseContractError("release rehearsal must be dispatched from refs/heads/master")
+
+    runner = git_runner or (lambda arguments: _run_git(project_root, arguments))
+    runner(
+        (
+            "fetch",
+            "--atomic",
+            "--force",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "origin",
+            f"+refs/heads/master:{REMOTE_REHEARSAL_MASTER_REF}",
+        )
+    )
+    local_commit = runner(("rev-parse", "HEAD^{commit}")).strip().lower()
+    remote_commit = (
+        runner(("rev-parse", f"{REMOTE_REHEARSAL_MASTER_REF}^{{commit}}")).strip().lower()
+    )
+    normalized_expected = expected_commit.lower()
+    if GIT_COMMIT_PATTERN.fullmatch(local_commit) is None:
+        raise ReleaseContractError("could not resolve the checked-out rehearsal source")
+    if GIT_COMMIT_PATTERN.fullmatch(remote_commit) is None:
+        raise ReleaseContractError("could not resolve freshly fetched origin/master")
+    if local_commit != normalized_expected or remote_commit != normalized_expected:
+        raise ReleaseContractError(
+            "release rehearsal source must equal local HEAD, event SHA, and current "
+            f"origin/master exactly; local={local_commit}, event={normalized_expected}, "
+            f"origin/master={remote_commit}"
+        )
+    return normalized_expected
+
+
+def _rehearsal_json_object(raw: bytes, *, label: str) -> Mapping[str, object]:
+    if len(raw) > 16 * 1024 * 1024:
+        raise ReleaseContractError(f"{label} exceeds the 16 MiB rehearsal limit")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseContractError(f"{label} is not valid JSON") from exc
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ReleaseContractError(f"{label} must be a JSON object")
+    return value
+
+
+def validate_rehearsal_oci_archive(archive_path: Path, *, expected_digest: str) -> None:
+    """Verify an offline OCI layout contains the expected digest, SPDX SBOM, and provenance."""
+
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest) is None:
+        raise ReleaseContractError("rehearsal OCI digest must be a canonical SHA-256 digest")
+    try:
+        archive = tarfile.open(archive_path, mode="r:*")  # noqa: SIM115
+    except (OSError, tarfile.TarError) as exc:
+        raise ReleaseContractError(f"cannot read rehearsal OCI archive: {exc}") from exc
+
+    with archive:
+        members = archive.getmembers()
+        names = [member.name.removeprefix("./") for member in members]
+        if len(names) != len(set(names)):
+            raise ReleaseContractError("rehearsal OCI archive contains duplicate paths")
+        member_by_name = {
+            member.name.removeprefix("./"): member for member in members if member.isfile()
+        }
+
+        def read_member(name: str) -> bytes:
+            member = member_by_name.get(name)
+            if member is None:
+                raise ReleaseContractError(f"rehearsal OCI archive is missing {name}")
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise ReleaseContractError(f"cannot read rehearsal OCI member {name}")
+            return extracted.read(16 * 1024 * 1024 + 1)
+
+        index_raw = read_member("index.json")
+        index = _rehearsal_json_object(index_raw, label="rehearsal OCI index")
+        roots = index.get("manifests")
+        if not isinstance(roots, list) or not roots:
+            raise ReleaseContractError("rehearsal OCI index must contain manifest descriptors")
+
+        seen: set[str] = set()
+        image_manifests: set[str] = set()
+        attestation_references: set[str] = set()
+        predicate_types: set[str] = set()
+        expected_reachable = hashlib.sha256(index_raw).hexdigest() == expected_digest.removeprefix(
+            "sha256:"
+        )
+
+        def walk_descriptor(raw_descriptor: object, *, depth: int) -> None:
+            nonlocal expected_reachable
+            if depth > 8 or len(seen) >= 256:
+                raise ReleaseContractError("rehearsal OCI descriptor graph exceeds safety limits")
+            if not isinstance(raw_descriptor, dict):
+                raise ReleaseContractError("rehearsal OCI descriptor must be an object")
+            digest = raw_descriptor.get("digest")
+            media_type = raw_descriptor.get("mediaType")
+            annotations = raw_descriptor.get("annotations", {})
+            if (
+                not isinstance(digest, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+                or not isinstance(media_type, str)
+                or not isinstance(annotations, dict)
+            ):
+                raise ReleaseContractError("rehearsal OCI descriptor is malformed")
+            if digest == expected_digest:
+                expected_reachable = True
+            if digest in seen:
+                return
+            seen.add(digest)
+            blob_name = f"blobs/sha256/{digest.removeprefix('sha256:')}"
+            blob = read_member(blob_name)
+            if hashlib.sha256(blob).hexdigest() != digest.removeprefix("sha256:"):
+                raise ReleaseContractError(f"rehearsal OCI blob digest mismatch for {digest}")
+            document = _rehearsal_json_object(blob, label=f"rehearsal OCI blob {digest}")
+
+            if media_type.endswith("image.index.v1+json") or media_type.endswith(
+                "manifest.list.v2+json"
+            ):
+                children = document.get("manifests")
+                if not isinstance(children, list) or not children:
+                    raise ReleaseContractError("rehearsal OCI nested index is empty")
+                for child in children:
+                    walk_descriptor(child, depth=depth + 1)
+                return
+            if not (
+                media_type.endswith("image.manifest.v1+json")
+                or media_type.endswith("manifest.v2+json")
+            ):
+                raise ReleaseContractError(
+                    f"rehearsal OCI uses unsupported manifest media type {media_type!r}"
+                )
+
+            reference_type = annotations.get("vnd.docker.reference.type")
+            if reference_type == "attestation-manifest":
+                reference_digest = annotations.get("vnd.docker.reference.digest")
+                if (
+                    not isinstance(reference_digest, str)
+                    or re.fullmatch(r"sha256:[0-9a-f]{64}", reference_digest) is None
+                ):
+                    raise ReleaseContractError(
+                        "rehearsal attestation manifest is missing its subject digest"
+                    )
+                attestation_references.add(reference_digest)
+                layers = document.get("layers")
+                if not isinstance(layers, list):
+                    raise ReleaseContractError("rehearsal attestation manifest is missing layers")
+                for layer in layers:
+                    if not isinstance(layer, dict):
+                        raise ReleaseContractError("rehearsal attestation layer is malformed")
+                    layer_annotations = layer.get("annotations", {})
+                    if isinstance(layer_annotations, dict):
+                        predicate = layer_annotations.get("in-toto.io/predicate-type")
+                        if isinstance(predicate, str):
+                            predicate_types.add(predicate)
+            else:
+                image_manifests.add(digest)
+
+        for root in roots:
+            walk_descriptor(root, depth=0)
+
+    if not expected_reachable:
+        raise ReleaseContractError(
+            "rehearsal OCI archive does not contain the Buildx-reported digest"
+        )
+    if not image_manifests:
+        raise ReleaseContractError("rehearsal OCI archive contains no image manifest")
+    if not attestation_references or not attestation_references.issubset(image_manifests):
+        raise ReleaseContractError(
+            "rehearsal OCI attestations must reference an image manifest in the archive"
+        )
+    required_predicates = {
+        "https://spdx.dev/Document",
+        "https://slsa.dev/provenance/v1",
+    }
+    if not required_predicates.issubset(predicate_types):
+        missing = ", ".join(sorted(required_predicates - predicate_types))
+        raise ReleaseContractError(
+            f"rehearsal OCI archive is missing required attestations: {missing}"
+        )
+
+
 def validate_local_only_dependency_contract(project_root: Path) -> list[str]:
     """Require the exact audited dependency surface for local-only inference."""
 
@@ -1527,6 +1958,12 @@ def validate_release_contract(
     verify_tag_origin: bool = False,
     verify_remote_tag: bool = False,
     expected_tag_commit: str | None = None,
+    verify_rehearsal_source_mode: bool = False,
+    expected_rehearsal_commit: str | None = None,
+    rehearsal_ref: str | None = None,
+    rehearsal_default_branch: str | None = None,
+    rehearsal_oci_archive: Path | None = None,
+    expected_oci_digest: str | None = None,
     git_runner: GitRunner | None = None,
 ) -> ReleaseContract:
     """Validate repository and optional tag-event metadata as one contract."""
@@ -1568,10 +2005,25 @@ def validate_release_contract(
             f"Git tag must be v{version} for project version {version}, got {tag!r}"
         )
     tag_commit: str | None = None
-    if verify_tag_origin and verify_remote_tag:
+    source_commit: str | None = None
+    verification_modes = sum((verify_tag_origin, verify_remote_tag, verify_rehearsal_source_mode))
+    if verification_modes > 1:
         raise ReleaseContractError(
-            "tag-origin and remote-tag verification modes are mutually exclusive"
+            "tag-origin, remote-tag, and rehearsal-source verification modes are mutually exclusive"
         )
+    rehearsal_source_arguments = (
+        expected_rehearsal_commit,
+        rehearsal_ref,
+        rehearsal_default_branch,
+    )
+    if verify_rehearsal_source_mode and expected_tag_commit is not None:
+        raise ReleaseContractError(
+            "--expected-tag-commit is not accepted for rehearsal-source verification"
+        )
+    if not verify_rehearsal_source_mode and any(
+        value is not None for value in rehearsal_source_arguments
+    ):
+        raise ReleaseContractError("rehearsal source arguments require --verify-rehearsal-source")
     if verify_tag_origin:
         if tag is None:
             raise ReleaseContractError("tag-origin verification requires an explicit Git tag")
@@ -1590,9 +2042,37 @@ def validate_release_contract(
             expected_commit=expected_tag_commit,
             git_runner=git_runner,
         )
+    elif verify_rehearsal_source_mode:
+        if tag is None:
+            raise ReleaseContractError("rehearsal-source verification requires an expected tag")
+        if (
+            expected_rehearsal_commit is None
+            or rehearsal_ref is None
+            or rehearsal_default_branch is None
+        ):
+            raise ReleaseContractError(
+                "rehearsal-source verification requires commit, ref, and default branch"
+            )
+        source_commit = verify_rehearsal_source(
+            project_root,
+            expected_commit=expected_rehearsal_commit,
+            event_ref=rehearsal_ref,
+            default_branch=rehearsal_default_branch,
+            git_runner=git_runner,
+        )
     elif expected_tag_commit is not None:
         raise ReleaseContractError(
             "--expected-tag-commit requires tag-origin or remote-tag verification"
+        )
+
+    if (rehearsal_oci_archive is None) != (expected_oci_digest is None):
+        raise ReleaseContractError(
+            "--rehearsal-oci-archive and --expected-oci-digest must be provided together"
+        )
+    if rehearsal_oci_archive is not None and expected_oci_digest is not None:
+        validate_rehearsal_oci_archive(
+            rehearsal_oci_archive.resolve(),
+            expected_digest=expected_oci_digest,
         )
 
     if (image_name is None) != (image_tags is None):
@@ -1619,6 +2099,7 @@ def validate_release_contract(
         version=version,
         image_tags=expected_image_tags,
         tag_commit=tag_commit,
+        source_commit=source_commit,
     )
 
 
@@ -1643,6 +2124,16 @@ def _parse_args() -> argparse.Namespace:
         "--expected-tag-commit",
         help="Require the freshly fetched remote tag to match this exact commit",
     )
+    parser.add_argument(
+        "--verify-rehearsal-source",
+        action="store_true",
+        help="Require local HEAD, event SHA, and freshly fetched origin/master to match",
+    )
+    parser.add_argument("--expected-rehearsal-commit")
+    parser.add_argument("--rehearsal-ref")
+    parser.add_argument("--rehearsal-default-branch")
+    parser.add_argument("--rehearsal-oci-archive", type=Path)
+    parser.add_argument("--expected-oci-digest")
     parser.add_argument("--github-output", type=Path, help="Append the validated version here")
     return parser.parse_args()
 
@@ -1659,12 +2150,20 @@ def main() -> int:
             verify_tag_origin=args.verify_tag_origin,
             verify_remote_tag=args.verify_remote_tag,
             expected_tag_commit=args.expected_tag_commit,
+            verify_rehearsal_source_mode=args.verify_rehearsal_source,
+            expected_rehearsal_commit=args.expected_rehearsal_commit,
+            rehearsal_ref=args.rehearsal_ref,
+            rehearsal_default_branch=args.rehearsal_default_branch,
+            rehearsal_oci_archive=args.rehearsal_oci_archive,
+            expected_oci_digest=args.expected_oci_digest,
         )
         if args.github_output is not None:
             with args.github_output.open("a", encoding="utf-8", newline="\n") as output:
                 output.write(f"version={contract.version}\n")
                 if contract.tag_commit is not None:
                     output.write(f"tag_commit={contract.tag_commit}\n")
+                if contract.source_commit is not None:
+                    output.write(f"source_commit={contract.source_commit}\n")
     except (OSError, SyntaxError, tomllib.TOMLDecodeError, ReleaseContractError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -1674,7 +2173,10 @@ def main() -> int:
         if args.master_commit is not None
         else contract.image_tags
     )
-    context = "Master" if args.master_commit is not None else f"Release v{contract.version}"
+    if args.verify_rehearsal_source or args.rehearsal_oci_archive is not None:
+        context = f"Rehearsal v{contract.version}"
+    else:
+        context = "Master" if args.master_commit is not None else f"Release v{contract.version}"
     print(f"{context} contract valid: GHCR aliases {', '.join(aliases)}")
     return 0
 

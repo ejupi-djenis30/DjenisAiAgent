@@ -329,7 +329,7 @@ it, and re-run readiness to verify the model contract.
 The versioned agent image uses SemVer tags without the Git tag's leading `v`:
 
 ```powershell
-docker pull ghcr.io/ejupi-djenis30/djenis-ai-agent:0.2.2
+docker pull ghcr.io/ejupi-djenis30/djenis-ai-agent:0.3.0
 ```
 
 Every push to `master` updates only `edge` and its commit-specific `sha-*` alias. A
@@ -339,6 +339,8 @@ line, and major line. Release authorization requires the annotated, SSH-signed t
 SBOM, provenance, signature verification, draft authorization, and immutable Release
 checks gate alias promotion. See [AGENT.md](AGENT.md) and the checked-in
 [release-tag ruleset](.github/rulesets/README.md) for the maintenance contract.
+The complete operator-facing changes from `v0.2.2` are recorded in the
+[v0.3.0 release notes](docs/releases/v0.3.0.md).
 
 ## Configuration
 
