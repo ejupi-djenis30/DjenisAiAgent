@@ -23,6 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_NAME = "djenis-ai-agent"
 WORKFLOW_PATH = Path(".github/workflows/docker-publish.yml")
 CI_WORKFLOW_PATH = Path(".github/workflows/ci.yml")
+PAGES_WORKFLOW_PATH = Path(".github/workflows/pages.yml")
 TAG_RULESET_PATH = Path(".github/rulesets/immutable-v-tags.json")
 SEMVER_PATTERN = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 GIT_COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{40,64}")
@@ -1344,6 +1345,73 @@ def validate_repository_workflows(project_root: Path) -> list[str]:
     return errors
 
 
+def validate_pages_workflow_text(workflow: str) -> list[str]:
+    """Require the Pages build to validate and retain the complete site inventory."""
+
+    document, errors = _parse_workflow(workflow, "Pages workflow")
+    if document is None:
+        return errors
+    deploy = _workflow_job(document, "deploy", "Pages workflow", errors)
+    if deploy is None:
+        return errors
+    steps = _workflow_steps(deploy, "Pages deploy", errors)
+
+    validate_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if _normalized_shell(step) == "python scripts/validate_site.py"
+    ]
+    upload_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith("actions/upload-pages-artifact@")
+    ]
+    deployment_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith("actions/deploy-pages@")
+    ]
+
+    if len(validate_indexes) != 1:
+        errors.append("Pages build must run the site validator exactly once")
+    if len(upload_indexes) != 1:
+        errors.append("Pages build must upload exactly one static-site artifact")
+    else:
+        upload_settings = _mapping(steps[upload_indexes[0]].get("with"))
+        if (
+            upload_settings is None
+            or upload_settings.get("path") != "site"
+            or upload_settings.get("include-hidden-files") is not True
+        ):
+            errors.append(
+                "Pages artifact must upload the complete site inventory, including .well-known"
+            )
+    if len(deployment_indexes) != 1:
+        errors.append("Pages build must deploy exactly one validated artifact")
+
+    if (
+        len(validate_indexes) == 1
+        and len(upload_indexes) == 1
+        and len(deployment_indexes) == 1
+        and not validate_indexes[0] < upload_indexes[0] < deployment_indexes[0]
+    ):
+        errors.append("Pages build must validate before uploading and deploying the site")
+
+    triggers = _mapping(document.get("on"))
+    push = _mapping(triggers.get("push")) if triggers is not None else None
+    paths = _sequence(push.get("paths")) if push is not None else None
+    path_inventory = {path for path in paths or [] if isinstance(path, str)}
+    required_paths = {
+        "site/**",
+        "scripts/validate_site.py",
+        ".github/workflows/pages.yml",
+    }
+    if not required_paths.issubset(path_inventory):
+        errors.append("Pages trigger path inventory must cover the site, validator, and workflow")
+
+    return errors
+
+
 def validate_ci_workflow_text(workflow: str) -> list[str]:
     """Require fail-closed lint, local-runtime smoke, and coverage controls."""
 
@@ -1998,6 +2066,9 @@ def validate_release_contract(
     ci_errors = validate_ci_workflow_text(
         (project_root / CI_WORKFLOW_PATH).read_text(encoding="utf-8")
     )
+    pages_errors = validate_pages_workflow_text(
+        (project_root / PAGES_WORKFLOW_PATH).read_text(encoding="utf-8")
+    )
     ruleset_errors = validate_tag_ruleset_text(
         (project_root / TAG_RULESET_PATH).read_text(encoding="utf-8")
     )
@@ -2006,6 +2077,7 @@ def validate_release_contract(
     structural_errors = (
         workflow_errors
         + ci_errors
+        + pages_errors
         + ruleset_errors
         + repository_workflow_errors
         + dependency_errors
