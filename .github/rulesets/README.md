@@ -44,13 +44,27 @@ promotion, and draft finalization.
 Release tags must be annotated and SSH-signed with a signing key registered on
 GitHub. The workflow reads the exact tag object through GitHub's API and requires
 `verification.verified: true`, `reason: valid`, an SSH signature, and the expected
-commit before every release mutation. For the current release, create and check
-the tag locally before pushing it:
+commit before every release mutation.
+
+Before creating the immutable tag, run the non-mutating rehearsal from the current
+default branch and require its complete workflow run to pass:
 
 ```bash
-git tag -s v0.2.2 -m "Djenis AI Agent v0.2.2"
-git verify-tag v0.2.2
-git push origin refs/tags/v0.2.2
+gh workflow run docker-publish.yml --ref master -f expected_tag=v0.3.0
+```
+
+The rehearsal binds the input to local `HEAD`, the dispatch SHA and a freshly fetched
+`origin/master`; builds and scans an offline OCI archive with SBOM and provenance; and
+hashes the source-bound notes and deterministic Release payload into the job summary.
+It has read-only repository permission and cannot create tags, registry aliases, draft
+Releases, published Releases or Release assets.
+
+After that successful rehearsal, create and check the tag locally before pushing it:
+
+```bash
+git tag -s v0.3.0 -m "Djenis AI Agent v0.3.0"
+git verify-tag v0.3.0
+git push origin refs/tags/v0.3.0
 ```
 
 Repository release immutability is a separate required administrator setting.

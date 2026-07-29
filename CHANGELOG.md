@@ -4,11 +4,16 @@ This file records user-visible and release-engineering changes to DjenisAiAgent.
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-29
+
 ### Added
 
 - Host-enforced completion evidence, distinct `completed` and `blocked` outcomes,
   strict tool-argument validation, and a repeated-action stagnation guard.
 - Remote Selenium navigation and multimodal browser perception for container runtimes.
+- A local-only Compose stack with an unprivileged loopback gateway, internal Ollama
+  service, explicit model-provisioning profile, and isolated Selenium browser egress.
+- A threat model and fail-closed liveness/readiness split for operators.
 
 ### Changed
 
@@ -19,7 +24,16 @@ This file records user-visible and release-engineering changes to DjenisAiAgent.
 - Preserve the newest execution evidence when prompt history is truncated.
 - Keep desktop element lookup side-effect free and remove the incomplete coordinate
   mouse protocol from the model-visible capability set.
+- Restrict native program execution to configured absolute executables, a minimal child
+  environment, bounded output, and direct process launch without a command shell.
+- Validate browser destinations before navigation and after redirects, with explicit
+  allowlisting for intentional private or local hosts.
 - Run the complete unit suite in release gates and align local quality tooling with CI.
+
+### Removed
+
+- Gemini inference, `GEMINI_API_KEY`, and `DJENIS_GEMINI_MODEL`. Existing `v0.2.2`
+  deployments must configure a supported local model before upgrading.
 
 ## 0.2.2 - 2026-07-20
 

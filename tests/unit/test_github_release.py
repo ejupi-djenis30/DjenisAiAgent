@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from collections.abc import Mapping
 
 import pytest
@@ -50,6 +52,66 @@ def test_release_notes_expose_complete_local_stack_and_context_contract() -> Non
     assert "CLI startup and web readiness fail closed" in body
     assert "at least the configured 65,536-token context window" in body
     assert "`/health` endpoint remains a process-liveness probe" in body
+
+
+def test_source_bound_release_notes_fail_closed_when_missing(tmp_path) -> None:
+    with pytest.raises(ReleasePublishError, match=r"release notes are missing for v0\.3\.0"):
+        publisher.load_release_notes("0.3.0", project_root=tmp_path)
+
+
+def test_source_bound_release_notes_require_the_previous_release_heading(tmp_path) -> None:
+    notes_root = tmp_path / "docs" / "releases"
+    notes_root.mkdir(parents=True)
+    (notes_root / "v0.3.0.md").write_text(
+        "## Release notes\n\nUnbound summary.",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReleasePublishError, match="What changed since"):
+        publisher.load_release_notes("0.3.0", project_root=tmp_path)
+
+
+def test_rehearsal_cli_writes_deterministic_evidence_without_a_token(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_path = tmp_path / "evidence.json"
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "publish_github_release.py",
+            "--phase",
+            "rehearse",
+            "--repository",
+            REPOSITORY,
+            "--tag",
+            "v0.3.0",
+            "--target-commit",
+            COMMIT,
+            "--image",
+            IMAGE,
+            "--version",
+            "0.3.0",
+            "--digest",
+            DIGEST,
+            "--evidence-output",
+            str(evidence_path),
+        ],
+    )
+
+    assert publisher.main() == 0
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["mode"] == "non-mutating-release-rehearsal"
+    assert evidence["external_mutations"] is False
+    assert evidence["tag"] == "v0.3.0"
+    assert evidence["source_commit"] == COMMIT
+    assert evidence["oci_digest"] == DIGEST
+    assert evidence["expected_release_assets"] == []
+    assert len(evidence["release_notes_sha256"]) == 64
+    assert len(evidence["release_body_sha256"]) == 64
+    assert len(evidence["release_payload_sha256"]) == 64
 
 
 def _actual(

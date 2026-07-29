@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from scripts.publish_github_release import release_body
+from scripts.publish_github_release import load_release_notes, release_body
 from scripts.validate_site import EXPECTED_SOCIAL_IMAGE_SIZE, _png_dimensions, validate_site
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -97,6 +97,23 @@ def test_release_body_uses_the_pinned_local_only_compose_stack() -> None:
     assert "SELENIUM_REMOTE_URL: http://chrome:4444/wd/hub" in compose
     assert 'OLLAMA_NO_CLOUD: "1"' in compose
     assert "internal: true" in compose
+
+
+def test_v0_3_0_release_body_includes_source_bound_upgrade_notes() -> None:
+    notes = load_release_notes("0.3.0", project_root=PROJECT_ROOT)
+    body = release_body(
+        image="ghcr.io/example/djenis-ai-agent",
+        version="0.3.0",
+        digest=f"sha256:{'a' * 64}",
+        target_commit="b" * 40,
+        release_notes=notes,
+    )
+
+    assert body.startswith("## What changed since v0.2.2")
+    assert "replaces the hosted Gemini planner with local inference" in body
+    assert "This is a compatibility change." in body
+    assert body.index("## What changed since v0.2.2") < body.index("## Docker image")
+    assert "_API_KEY" not in body
 
 
 def test_release_body_has_no_cloud_or_image_only_escape_hatch() -> None:

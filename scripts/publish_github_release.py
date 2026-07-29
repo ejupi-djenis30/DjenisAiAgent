@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,7 @@ GHCR_IMAGE_PATTERN = re.compile(
     r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*"
     r"(?:/[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*)+"
 )
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleasePublishError(RuntimeError):
@@ -55,10 +57,39 @@ Transport = Callable[[str, str, Mapping[str, object] | None], ApiResponse]
 Sleep = Callable[[float], None]
 
 
-def release_body(*, image: str, version: str, digest: str, target_commit: str) -> str:
+def load_release_notes(version: str, *, project_root: Path = PROJECT_ROOT) -> str:
+    """Load the operator-facing notes committed for one exact stable version."""
+
+    if TAG_PATTERN.fullmatch(f"v{version}") is None:
+        raise ReleasePublishError("release notes version must be canonical stable SemVer")
+    notes_path = project_root / "docs" / "releases" / f"v{version}.md"
+    try:
+        notes = notes_path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+    except OSError as exc:
+        raise ReleasePublishError(
+            f"release notes are missing for v{version}: {notes_path}"
+        ) from exc
+    if not notes.startswith("## What changed since v"):
+        raise ReleasePublishError(
+            "release notes must begin with a 'What changed since v<previous>' heading"
+        )
+    if len(notes.encode("utf-8")) > 32 * 1024:
+        raise ReleasePublishError("release notes exceed the 32 KiB publication limit")
+    return notes
+
+
+def release_body(
+    *,
+    image: str,
+    version: str,
+    digest: str,
+    target_commit: str,
+    release_notes: str = "",
+) -> str:
     """Build deterministic release notes tied to one scanned OCI digest."""
 
-    return f"""## Docker image
+    notes = f"{release_notes.strip()}\n\n" if release_notes.strip() else ""
+    return f"""{notes}## Docker image
 
 Pull the immutable release alias:
 
@@ -113,6 +144,7 @@ def expected_release(
     version: str,
     digest: str,
     draft: bool = False,
+    release_notes: str = "",
 ) -> dict[str, object]:
     """Return the exact mutable fields accepted for this release."""
 
@@ -133,11 +165,63 @@ def expected_release(
             version=version,
             digest=digest,
             target_commit=target_commit,
+            release_notes=release_notes,
         ),
         "draft": draft,
         "prerelease": False,
         "generate_release_notes": False,
         "make_latest": "false" if draft else "true",
+    }
+
+
+def rehearsal_evidence(
+    *,
+    repository: str,
+    tag: str,
+    target_commit: str,
+    image: str,
+    version: str,
+    digest: str,
+    release_notes: str,
+) -> dict[str, object]:
+    """Describe the exact release payload without contacting or mutating GitHub."""
+
+    if REPOSITORY_PATTERN.fullmatch(repository) is None:
+        raise ReleasePublishError("repository must be in owner/name form")
+    expected = expected_release(
+        tag=tag,
+        target_commit=target_commit,
+        image=image,
+        version=version,
+        digest=digest,
+        release_notes=release_notes,
+    )
+    body = cast(str, expected["body"])
+    notes_bytes = release_notes.encode("utf-8")
+    body_bytes = body.encode("utf-8")
+    payload_bytes = json.dumps(
+        expected,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "schema_version": 1,
+        "mode": "non-mutating-release-rehearsal",
+        "external_mutations": False,
+        "repository": repository,
+        "tag": tag,
+        "version": version,
+        "source_commit": target_commit,
+        "image": image,
+        "oci_digest": digest,
+        "release_notes_bytes": len(notes_bytes),
+        "release_notes_sha256": hashlib.sha256(notes_bytes).hexdigest(),
+        "release_body_bytes": len(body_bytes),
+        "release_body_sha256": hashlib.sha256(body_bytes).hexdigest(),
+        "release_payload_sha256": hashlib.sha256(payload_bytes).hexdigest(),
+        "expected_release_draft": False,
+        "expected_release_prerelease": False,
+        "expected_release_assets": [],
     }
 
 
@@ -572,6 +656,7 @@ def inspect_release_authorization(
     transport: Transport,
     retry_delays: Sequence[int],
     sleep: Sleep = time.sleep,
+    release_notes: str = "",
 ) -> ReleaseState:
     """Inspect an absent, exact draft, or exact immutable published Release."""
 
@@ -581,6 +666,7 @@ def inspect_release_authorization(
         image=image,
         version=version,
         digest=f"sha256:{'0' * 64}",
+        release_notes=release_notes,
     )
     base, validated_tag = _validate_publication_context(
         repository=repository,
@@ -607,6 +693,7 @@ def inspect_release_authorization(
         image=image,
         version=version,
         digest=digest,
+        release_notes=release_notes,
     )
     draft_expected = expected_release(
         tag=tag,
@@ -615,6 +702,7 @@ def inspect_release_authorization(
         version=version,
         digest=digest,
         draft=True,
+        release_notes=release_notes,
     )
     return _observe_release_state(
         current,
@@ -854,7 +942,11 @@ def _retry_delays(raw: str) -> tuple[int, ...]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", required=True, choices=("inspect", "prepare", "finalize"))
+    parser.add_argument(
+        "--phase",
+        required=True,
+        choices=("inspect", "prepare", "finalize", "rehearse"),
+    )
     parser.add_argument("--repository", required=True)
     parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN"))
     parser.add_argument("--api-url", default="https://api.github.com")
@@ -865,12 +957,42 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--digest")
     parser.add_argument("--retry-delays", default="2 4 8 10 10 10 10 10 10 10 10")
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--evidence-output", type=Path)
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
     try:
+        release_notes = load_release_notes(args.version)
+        if args.phase == "rehearse":
+            if args.digest is None:
+                raise ReleasePublishError("--digest is required for the rehearsal phase")
+            if args.evidence_output is None:
+                raise ReleasePublishError("--evidence-output is required for the rehearsal phase")
+            if args.github_output is not None:
+                raise ReleasePublishError(
+                    "--github-output is not accepted by the non-mutating rehearsal phase"
+                )
+            evidence = rehearsal_evidence(
+                repository=args.repository,
+                tag=args.tag,
+                target_commit=args.target_commit,
+                image=args.image,
+                version=args.version,
+                digest=args.digest,
+                release_notes=release_notes,
+            )
+            with args.evidence_output.open("x", encoding="utf-8", newline="\n") as output:
+                json.dump(evidence, output, indent=2, sort_keys=True)
+                output.write("\n")
+            print(
+                f"Release rehearsal {args.tag} source={args.target_commit} "
+                f"digest={args.digest} external_mutations=false"
+            )
+            return 0
+        if args.evidence_output is not None:
+            raise ReleasePublishError("--evidence-output is accepted only for rehearsal")
         if not args.token:
             raise ReleasePublishError("GITHUB_TOKEN is required")
         transport = GitHubTransport(api_url=args.api_url, token=args.token)
@@ -884,6 +1006,7 @@ def main() -> int:
                 version=args.version,
                 transport=transport,
                 retry_delays=retry_delays,
+                release_notes=release_notes,
             )
         else:
             if args.digest is None:
@@ -894,6 +1017,7 @@ def main() -> int:
                 image=args.image,
                 version=args.version,
                 digest=args.digest,
+                release_notes=release_notes,
             )
             draft_expected = expected_release(
                 tag=args.tag,
@@ -902,6 +1026,7 @@ def main() -> int:
                 version=args.version,
                 digest=args.digest,
                 draft=True,
+                release_notes=release_notes,
             )
         if args.phase == "prepare":
             state = prepare_release_authorization(
