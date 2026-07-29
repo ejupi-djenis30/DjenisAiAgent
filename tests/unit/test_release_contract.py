@@ -18,6 +18,7 @@ from scripts.validate_release import (
     validate_ci_workflow_text,
     validate_image_metadata,
     validate_local_only_dependency_contract,
+    validate_pages_workflow_text,
     validate_rehearsal_oci_archive,
     validate_release_contract,
     validate_release_documentation,
@@ -33,6 +34,7 @@ from scripts.verify_github_tag import GitHubTagVerificationError, verify_github_
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOCKER_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "docker-publish.yml"
 CI_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
+PAGES_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "pages.yml"
 TAG_RULESET = PROJECT_ROOT / ".github" / "rulesets" / "immutable-v-tags.json"
 IMAGE_NAME = "ghcr.io/ejupi-djenis30/djenis-ai-agent"
 
@@ -992,6 +994,22 @@ def test_coverage_artifact_must_remain_complete_and_inspectable() -> None:
 
 def test_all_repository_actions_are_full_sha_pinned() -> None:
     assert validate_repository_workflows(PROJECT_ROOT) == []
+
+
+def test_pages_release_contract_retains_the_hidden_security_inventory() -> None:
+    workflow = PAGES_WORKFLOW.read_text(encoding="utf-8")
+    assert validate_pages_workflow_text(workflow) == []
+
+    broken = workflow.replace(
+        "          include-hidden-files: true\n",
+        "          include-hidden-files: false\n",
+        1,
+    )
+    assert broken != workflow
+
+    errors = validate_pages_workflow_text(broken)
+
+    assert "Pages artifact must upload the complete site inventory, including .well-known" in errors
 
 
 @pytest.mark.parametrize(

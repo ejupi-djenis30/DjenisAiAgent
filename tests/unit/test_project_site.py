@@ -5,11 +5,23 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
+import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from scripts.publish_github_release import load_release_notes, release_body
-from scripts.validate_site import EXPECTED_SOCIAL_IMAGE_SIZE, _png_dimensions, validate_site
+from scripts.validate_site import (
+    EXPECTED_ROBOTS,
+    EXPECTED_SOCIAL_IMAGE_SIZE,
+    SECURITY_CONTACT_URL,
+    SECURITY_POLICY_URL,
+    SECURITY_URL,
+    SITE_URL,
+    SITEMAP_NAMESPACE,
+    _png_dimensions,
+    validate_site,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SITE_ROOT = PROJECT_ROOT / "site"
@@ -181,8 +193,59 @@ def test_project_site_keeps_secondary_labels_above_wcag_aa_contrast() -> None:
     assert styles.count(f"color: {foreground}") >= 3
 
 
-def test_project_site_publishes_a_valid_robots_policy() -> None:
-    assert (SITE_ROOT / "robots.txt").read_text(encoding="utf-8") == ("User-agent: *\nDisallow:\n")
+def test_project_site_publishes_project_scoped_discovery_metadata() -> None:
+    assert (SITE_ROOT / "robots.txt").read_text(encoding="utf-8") == EXPECTED_ROBOTS
+
+    sitemap = ET.fromstring((SITE_ROOT / "sitemap.xml").read_text(encoding="utf-8"))
+    sitemap_location = sitemap.find(f"{{{SITEMAP_NAMESPACE}}}url/{{{SITEMAP_NAMESPACE}}}loc")
+    assert sitemap_location is not None
+    assert sitemap_location.text == SITE_URL
+
+    security = (SITE_ROOT / ".well-known" / "security.txt").read_text(encoding="utf-8")
+    assert security.splitlines() == [
+        f"Contact: {SECURITY_CONTACT_URL}",
+        "Expires: 2027-06-30T23:59:59Z",
+        "Preferred-Languages: en",
+        f"Canonical: {SECURITY_URL}",
+        f"Policy: {SECURITY_POLICY_URL}",
+    ]
+    assert "mailto:" not in security.casefold()
+
+
+def test_site_validator_rejects_unscoped_or_stale_discovery_metadata() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        site_copy = Path(folder) / "site"
+        shutil.copytree(SITE_ROOT, site_copy)
+        robots_path = site_copy / "robots.txt"
+        robots_path.write_text(
+            robots_path.read_text(encoding="utf-8").replace(
+                "Allow: /DjenisAiAgent/",
+                "Allow: /",
+            ),
+            encoding="utf-8",
+        )
+        security_path = site_copy / ".well-known" / "security.txt"
+        security_path.write_text(
+            security_path.read_text(encoding="utf-8")
+            .replace(
+                f"Contact: {SECURITY_CONTACT_URL}",
+                "Contact: mailto:security@example.invalid",
+            )
+            .replace(
+                "Expires: 2027-06-30T23:59:59Z",
+                "Expires: 2026-06-30T23:59:59Z",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = validate_site(
+            site_copy,
+            now=datetime(2026, 7, 29, tzinfo=UTC),
+        )
+
+    assert any("canonical project path" in error for error in errors)
+    assert any("must not publish an email contact" in error for error in errors)
+    assert any("Expires must remain in the future" in error for error in errors)
 
 
 def test_hero_title_type_scale_is_continuous_across_the_mobile_breakpoint() -> None:

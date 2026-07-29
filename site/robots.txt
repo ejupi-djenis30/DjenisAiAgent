@@ -1,2 +1,4 @@
 User-agent: *
-Disallow:
+Allow: /DjenisAiAgent/
+
+Sitemap: https://ejupi-djenis30.github.io/DjenisAiAgent/sitemap.xml

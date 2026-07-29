@@ -1,0 +1,5 @@
+Contact: https://github.com/ejupi-djenis30/DjenisAiAgent/security/advisories/new
+Expires: 2027-06-30T23:59:59Z
+Preferred-Languages: en
+Canonical: https://ejupi-djenis30.github.io/DjenisAiAgent/.well-known/security.txt
+Policy: https://github.com/ejupi-djenis30/DjenisAiAgent/security/policy

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -10,8 +11,33 @@ from urllib.parse import unquote, urlparse
 SITE_ORIGIN = "https://ejupi-djenis30.github.io"
 SITE_PREFIX = "/DjenisAiAgent/"
 SITE_URL = f"{SITE_ORIGIN}{SITE_PREFIX}"
+SITEMAP_URL = f"{SITE_URL}sitemap.xml"
+SECURITY_URL = f"{SITE_URL}.well-known/security.txt"
+SECURITY_CONTACT_URL = "https://github.com/ejupi-djenis30/DjenisAiAgent/security/advisories/new"
+SECURITY_POLICY_URL = "https://github.com/ejupi-djenis30/DjenisAiAgent/security/policy"
 SOCIAL_IMAGE_URL = f"{SITE_ORIGIN}{SITE_PREFIX}media/djenis-ai-agent-social-preview.png"
 EXPECTED_SOCIAL_IMAGE_SIZE = (1200, 675)
+SITEMAP_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9"
+PUBLIC_DISCOVERY_FILES = (
+    Path("robots.txt"),
+    Path("sitemap.xml"),
+    Path(".well-known/security.txt"),
+)
+EXPECTED_ROBOTS = f"User-agent: *\nAllow: {SITE_PREFIX}\n\nSitemap: {SITEMAP_URL}\n"
+EXPECTED_SITEMAP = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    f'<urlset xmlns="{SITEMAP_NAMESPACE}">\n'
+    "  <url>\n"
+    f"    <loc>{SITE_URL}</loc>\n"
+    "  </url>\n"
+    "</urlset>\n"
+)
+EXPECTED_SECURITY_VALUES = {
+    "Contact": SECURITY_CONTACT_URL,
+    "Preferred-Languages": "en",
+    "Canonical": SECURITY_URL,
+    "Policy": SECURITY_POLICY_URL,
+}
 REQUIRED_CSP_DIRECTIVES = {
     "default-src 'self'",
     "base-uri 'none'",
@@ -74,13 +100,94 @@ def _png_dimensions(path: Path) -> tuple[int, int]:
     return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
 
 
-def validate_site(site_root: Path) -> list[str]:
+def _validate_robots(path: Path, errors: list[str]) -> None:
+    try:
+        robots = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"site/robots.txt is unreadable: {exc}")
+        return
+    if robots != EXPECTED_ROBOTS:
+        errors.append(
+            "site/robots.txt must allow only the canonical project path and advertise "
+            f"{SITEMAP_URL}"
+        )
+
+
+def _validate_sitemap(path: Path, errors: list[str]) -> None:
+    try:
+        sitemap = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"site/sitemap.xml is unreadable: {exc}")
+        return
+    if sitemap != EXPECTED_SITEMAP:
+        errors.append(f"site/sitemap.xml must list only the canonical project URL {SITE_URL!r}")
+
+
+def _validate_security_txt(path: Path, errors: list[str], *, now: datetime) -> None:
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"site/.well-known/security.txt is unreadable: {exc}")
+        return
+
+    fields: dict[str, list[str]] = {}
+    for line_number, line in enumerate(source.splitlines(), start=1):
+        if not line:
+            continue
+        name, separator, value = line.partition(":")
+        if not separator or not name or not value.strip():
+            errors.append(
+                f"site/.well-known/security.txt contains an invalid field on line {line_number}"
+            )
+            continue
+        fields.setdefault(name, []).append(value.strip())
+
+    expected_fields = {*EXPECTED_SECURITY_VALUES, "Expires"}
+    unexpected_fields = sorted(set(fields) - expected_fields)
+    if unexpected_fields:
+        errors.append(
+            "site/.well-known/security.txt contains unexpected fields: "
+            f"{', '.join(unexpected_fields)}"
+        )
+
+    for field, expected in EXPECTED_SECURITY_VALUES.items():
+        values = fields.get(field, [])
+        if values != [expected]:
+            errors.append(f"site/.well-known/security.txt {field} must be exactly {expected!r}")
+
+    contacts = fields.get("Contact", [])
+    if any(contact.casefold().startswith("mailto:") for contact in contacts):
+        errors.append("site/.well-known/security.txt must not publish an email contact")
+
+    expires_values = fields.get("Expires", [])
+    if len(expires_values) != 1:
+        errors.append("site/.well-known/security.txt must contain exactly one Expires field")
+        return
+    try:
+        expires = datetime.strptime(expires_values[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        errors.append("site/.well-known/security.txt Expires must be an RFC 3339 UTC timestamp")
+        return
+
+    current_time = now.astimezone(UTC)
+    if expires <= current_time:
+        errors.append("site/.well-known/security.txt Expires must remain in the future")
+    if expires > current_time + timedelta(days=366):
+        errors.append("site/.well-known/security.txt Expires must be no more than one year ahead")
+
+
+def validate_site(site_root: Path, *, now: datetime | None = None) -> list[str]:
     """Return validation errors for a project site, or an empty list."""
 
     errors: list[str] = []
     index_path = site_root / "index.html"
     if not index_path.is_file():
         return ["site/index.html is missing"]
+    for relative_path in PUBLIC_DISCOVERY_FILES:
+        if not (site_root / relative_path).is_file():
+            errors.append(
+                f"site/{relative_path.as_posix()} is missing from the public discovery inventory"
+            )
 
     html_source = index_path.read_text(encoding="utf-8")
     document = SiteDocument()
@@ -115,6 +222,7 @@ def validate_site(site_root: Path) -> list[str]:
         errors.append(f"CSP is missing: {', '.join(sorted(missing_directives))}")
 
     expected_meta = {
+        "og:url": SITE_URL,
         "og:image": SOCIAL_IMAGE_URL,
         "og:image:type": "image/png",
         "og:image:width": str(EXPECTED_SOCIAL_IMAGE_SIZE[0]),
@@ -140,13 +248,16 @@ def validate_site(site_root: Path) -> list[str]:
             errors.append(f"referenced asset is missing: {reference}")
 
     robots_path = site_root / "robots.txt"
-    try:
-        robots = robots_path.read_text(encoding="utf-8")
-    except OSError:
-        errors.append("site/robots.txt is missing or unreadable")
-    else:
-        if robots != "User-agent: *\nDisallow:\n":
-            errors.append("site/robots.txt must explicitly allow the public project site")
+    if robots_path.is_file():
+        _validate_robots(robots_path, errors)
+
+    sitemap_path = site_root / "sitemap.xml"
+    if sitemap_path.is_file():
+        _validate_sitemap(sitemap_path, errors)
+
+    security_path = site_root / ".well-known" / "security.txt"
+    if security_path.is_file():
+        _validate_security_txt(security_path, errors, now=now or datetime.now(UTC))
 
     styles_path = site_root / "styles.css"
     try:
@@ -190,7 +301,10 @@ def main() -> int:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    print("Site validation passed: metadata, policy, social preview, and walkthrough are valid.")
+    print(
+        "Site validation passed: metadata, discovery files, policy, social preview, "
+        "and walkthrough are valid."
+    )
     return 0
 
 
