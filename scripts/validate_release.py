@@ -621,7 +621,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
             if (
                 not str(scan.get("uses", "")).startswith("aquasecurity/trivy-action@")
                 or settings is None
-                or settings.get("scan-ref") != "${{ runner.temp }}/djenis-ai-agent-rehearsal.oci"
+                or settings.get("input") != "${{ runner.temp }}/djenis-ai-agent-rehearsal.oci"
                 or settings.get("exit-code") != "1"
             ):
                 errors.append("rehearsal Trivy scan must fail closed over the local OCI layout")
