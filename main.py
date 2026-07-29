@@ -7,7 +7,6 @@ import asyncio
 import io
 import json
 import logging
-import os
 import sys
 import time
 from contextlib import asynccontextmanager, suppress
@@ -21,7 +20,6 @@ try:
 except ImportError:
     HAS_PYAUTOGUI = False
 import uvicorn
-from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
     File,
@@ -39,6 +37,7 @@ from pydantic import BaseModel, field_validator
 from src.config import VERSION, config
 from src.orchestration.agent_loop import agent_loop, run_agent_loop
 from src.perception.audio_transcription import TranscriptionError, transcribe_wav_bytes
+from src.reasoning.local_llm import LocalLLMRequestError, validate_local_runtime
 from src.redaction import RedactingFormatter, safe_preview
 from src.runtime_state import AgentState, create_runtime_state
 from src.web_security import SESSION_COOKIE, web_security
@@ -155,6 +154,9 @@ async def status_broadcaster():
                 elif "CANCELLED:" in status_message:
                     new_state = "idle"
                     logger.info("Agent state changing to 'idle' - task cancelled")
+                elif "BLOCKED:" in status_message:
+                    new_state = "idle"
+                    logger.info("Agent state changing to 'idle' - task blocked")
 
                 if new_state:
                     await runtime.set_agent_state(new_state)
@@ -182,7 +184,7 @@ async def status_broadcaster():
 # Global FastAPI application instance with lifespan
 app = FastAPI(
     title="DjenisAiAgent",
-    description="AI-powered Windows automation agent",
+    description="Local-only, permission-gated computer automation agent",
     lifespan=lifespan,
 )
 WEB_STATIC_DIR = Path(__file__).parent / "web" / "static"
@@ -397,17 +399,44 @@ class WebSocketMessage(BaseModel):
 
 @app.get("/health")
 async def health_check():
-    """Liveness/readiness check endpoint used by Docker HEALTHCHECK and CI.
+    """Return process liveness without depending on the local model runtime."""
 
-    Returns:
-        JSON with status, version, uptime in seconds, and current agent state.
-    """
     agent_state = await runtime.get_agent_state()
     return {
         "status": "ok",
         "version": VERSION,
         "uptime_seconds": round(time.time() - _APP_START_TIME, 1),
         "agent_state": agent_state,
+    }
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Verify that the configured local model artifact is ready for safe inference."""
+
+    try:
+        runtime_info = await asyncio.to_thread(validate_local_runtime)
+    except (LocalLLMRequestError, ValueError) as exc:
+        logging.getLogger(__name__).warning(
+            "Readiness check failed: %s",
+            safe_preview(exc),
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "version": VERSION,
+                "reason": "local_model_unavailable",
+            },
+        )
+
+    return {
+        "status": "ready",
+        "version": VERSION,
+        "backend": runtime_info.backend,
+        "model": runtime_info.model,
+        "runtime_version": runtime_info.runtime_version,
+        "context_tokens": runtime_info.context_tokens,
     }
 
 
@@ -647,19 +676,24 @@ async def transcribe_audio_endpoint(request: Request, file: UploadFile = File(..
     return {"transcript": text}
 
 
-async def screen_generator():
+async def screen_generator(session_id: str | None = None):
     """
     Asynchronous generator that continuously captures and yields screen frames.
 
     The capture and JPEG encoding work are both offloaded to worker threads via
     ``asyncio.to_thread`` to avoid blocking the event loop, keeping the FastAPI
-    server responsive even under sustained streaming load.
+    server responsive even under sustained streaming load. Cookie-backed streams
+    revalidate their opaque session before and after each frame capture so revoked
+    or expired sessions cannot receive another frame.
+
+    Args:
+        session_id: Opaque browser session backing the stream, if cookie-authenticated.
 
     Yields:
         bytes: Formatted JPEG frame data in multipart format with appropriate headers
 
     Technical Details:
-        - Frame Rate: ~10 FPS (controlled by 0.1s sleep)
+        - Frame Rate: Configured by ``DJENIS_STREAM_MAX_FPS``
         - Format: JPEG (good compression for real-time streaming)
         - Delivery: Multipart format with 'frame' boundary
         - Memory: Uses in-memory buffer to avoid disk I/O
@@ -667,7 +701,7 @@ async def screen_generator():
     Performance Considerations:
         - Non-blocking: Uses async/await with thread offloading
         - Efficient: JPEG compression reduces bandwidth
-        - Throttled: 10 FPS prevents CPU overload
+        - Throttled: Configured FPS limit prevents CPU overload
         - Low latency: Direct screen capture without complex processing
     """
     logger = logging.getLogger(__name__)
@@ -677,6 +711,10 @@ async def screen_generator():
         target_sleep = max(0.001, 1.0 / max(1, config.stream_max_fps))
 
         while True:
+            if session_id is not None and not web_security.session_is_valid(session_id):
+                logger.info("Screen streaming generator stopped: session expired or revoked")
+                return
+
             buffer = io.BytesIO()
             try:
                 # Capture the current screen using pyautogui without blocking the loop
@@ -717,13 +755,18 @@ async def screen_generator():
             finally:
                 buffer.close()
 
+            # A session can be revoked while capture or encoding is in flight. Recheck
+            # immediately before yielding so that completed work is discarded safely.
+            if session_id is not None and not web_security.session_is_valid(session_id):
+                logger.info("Screen streaming generator stopped: session expired or revoked")
+                return
+
             # Yield the frame in multipart/x-mixed-replace format
             # This format allows the browser to continuously replace frames
             # Format: boundary + content type header + frame data + boundary
             yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
-            # Control frame rate: ~10 FPS (100ms delay)
-            # This prevents overwhelming the CPU while providing smooth video
+            # Control frame rate according to the configured maximum.
             await asyncio.sleep(target_sleep)
 
     except asyncio.CancelledError:
@@ -753,8 +796,9 @@ async def video_stream(request: Request):
     Technical Details:
         - Protocol: HTTP with multipart/x-mixed-replace
         - Format: Continuous JPEG frames
-        - Frame Rate: ~10 FPS
+        - Frame Rate: Configurable, up to the server-side maximum
         - Latency: Very low (suitable for real-time monitoring)
+        - Cookie-backed streams end as soon as their session expires or is revoked
 
     Benefits:
         - Simple to implement and consume
@@ -771,7 +815,7 @@ async def video_stream(request: Request):
         ```
     """
     logger = logging.getLogger(__name__)
-    web_security.require_request(request, "stream")
+    session_id = web_security.require_request(request, "stream")
     if not config.supports_native_desktop():
         raise HTTPException(
             status_code=503,
@@ -783,7 +827,8 @@ async def video_stream(request: Request):
 
     async def guarded_screen_generator():
         try:
-            async for frame in screen_generator():
+            frames = screen_generator(session_id) if session_id is not None else screen_generator()
+            async for frame in frames:
                 yield frame
         finally:
             runtime.release_stream_slot()
@@ -808,97 +853,71 @@ def setup_logging():
 
 
 def run_cli_mode(args):
-    """
-    Run the agent in traditional CLI mode.
+    """Run the agent in one-shot or interactive CLI mode."""
 
-    Args:
-        args: Parsed command-line arguments
-    """
     logger = logging.getLogger(__name__)
 
     try:
-        # API Key Configuration and Validation
-        gemini_api_key = os.getenv("GEMINI_API_KEY")
-
-        if not gemini_api_key or gemini_api_key == "YOUR_API_KEY_HERE":
-            raise ValueError("GEMINI_API_KEY is not configured. Add your Gemini API key to .env.")
-
-        logger.info("Gemini API key detected successfully")
-
-        # Validate additional configuration
         config.validate()
-        logger.info("Configuration validated successfully")
-        logger.info(f"Using model: {config.gemini_model_name}")
-        logger.info(f"Max loop turns: {config.max_loop_turns}")
+        runtime_info = validate_local_runtime()
+        logger.info("Configuration and local model runtime validated successfully")
+        logger.info(
+            "Using local model %s via %s (runtime %s, artifact %s, context %s)",
+            runtime_info.model,
+            runtime_info.backend,
+            runtime_info.runtime_version,
+            runtime_info.model_digest[:12] or "unreported",
+            runtime_info.context_tokens or "server-managed",
+        )
+        logger.info("Max loop turns: %d", config.max_loop_turns)
 
-        # Single command mode or interactive loop
         if args.command and not args.interactive:
             user_command = args.command
             logger.info("Command provided via CLI (%d characters)", len(user_command))
-
-            # Run the main agent loop
-            logger.info("Starting agent loop with a %d-character command", len(user_command))
             result = run_agent_loop(user_command)
 
             logger.info("Agent loop completed: %s", safe_preview(result))
             print(f"\n{'=' * 80}")
             print(f"  Final result: {result}")
             print(f"{'=' * 80}\n")
+            return
 
-        else:
-            # Interactive mode: Continuous command loop
-            print("DjenisAiAgent Initialized. Ready for your commands.")
-            print("Enter 'exit' or 'quit' to terminate the program.\n")
-
-            # Continuous user interaction loop
-            while True:
-                try:
-                    # Prompt user for command
-                    user_command = input("Please enter your command (or 'exit' to quit): ").strip()
-
-                    # Check for exit commands (case-insensitive)
-                    if user_command.lower() in ["exit", "quit"]:
-                        print("\n👋 Goodbye. DjenisAiAgent is shutting down.\n")
-                        logger.info("User requested exit")
-                        break
-
-                    # Skip empty commands
-                    if not user_command:
-                        print("⚠️  Empty command. Enter a valid instruction.\n")
-                        continue
-
-                    # Execute the command
-                    logger.info(
-                        "Starting agent loop with a %d-character command", len(user_command)
-                    )
-                    result = run_agent_loop(user_command)
-
-                    logger.info("Agent loop completed: %s", safe_preview(result))
-                    print(f"\n{'=' * 80}")
-                    print(f"  Result: {result}")
-                    print(f"{'=' * 80}\n")
-
-                except KeyboardInterrupt:
-                    print("\n\n⚠️  Interrupted. Enter 'exit' to shut down cleanly.\n")
+        print("DjenisAiAgent initialized with local-only inference.")
+        print("Enter 'exit' or 'quit' to terminate the program.\n")
+        while True:
+            try:
+                user_command = input("Please enter your command (or 'exit' to quit): ").strip()
+                if user_command.lower() in {"exit", "quit"}:
+                    print("\nGoodbye. DjenisAiAgent is shutting down.\n")
+                    logger.info("User requested exit")
+                    break
+                if not user_command:
+                    print("Empty command. Enter a valid instruction.\n")
                     continue
 
-                except Exception as e:
-                    logger.error(f"Error during command execution: {e}", exc_info=True)
-                    print(f"\n❌ Execution error: {e}\n")
-                    print("Try another instruction or enter 'exit' to quit.\n")
-                    continue
+                result = run_agent_loop(user_command)
+                logger.info("Agent loop completed: %s", safe_preview(result))
+                print(f"\n{'=' * 80}")
+                print(f"  Result: {result}")
+                print(f"{'=' * 80}\n")
+            except KeyboardInterrupt:
+                print("\n\nInterrupted. Enter 'exit' to shut down cleanly.\n")
+            except Exception as exc:
+                logger.error("Error during command execution: %s", exc, exc_info=True)
+                print(f"\nExecution error: {exc}\n")
+                print("Try another instruction or enter 'exit' to quit.\n")
 
-    except ValueError as e:
-        logger.error(f"Configuration error: {e}")
-        print(f"\n❌ Configuration error: {e}\n")
+    except (LocalLLMRequestError, ValueError) as exc:
+        logger.error("Local runtime configuration error: %s", exc)
+        print(f"\nLocal runtime is not ready: {exc}\n")
         sys.exit(1)
     except KeyboardInterrupt:
         logger.info("Agent interrupted by user")
-        print("\n\n⚠️  Agent interrupted by the operator.\n")
+        print("\n\nAgent interrupted by the operator.\n")
         sys.exit(0)
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
-        print(f"\n❌ Unexpected error: {e}\n")
+    except Exception as exc:
+        logger.error("Unexpected error: %s", exc, exc_info=True)
+        print(f"\nUnexpected error: {exc}\n")
         sys.exit(1)
 
 
@@ -919,8 +938,6 @@ async def process_commands_from_queue():
 async def run_web_mode_async(host: str, port: int):
     """
     Run the agent in web server mode with FastAPI and WebSocket support (async version).
-
-    This is the core of Step 10: Final Integration and Concurrent Execution.
 
     Architecture:
         This function creates and runs three concurrent tasks using asyncio.gather():
@@ -951,15 +968,25 @@ async def run_web_mode_async(host: str, port: int):
     """
     logger = logging.getLogger(__name__)
 
-    # Configure Gemini API for web mode
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_api_key or gemini_api_key == "YOUR_API_KEY_HERE":
-        raise ValueError("GEMINI_API_KEY is not configured. Add your Gemini API key to .env.")
-
     config.validate_web()
-    logger.info("Gemini API key detected for web mode")
-    logger.info(f"Using model: {config.gemini_model_name}")
-    logger.info(f"Max loop turns: {config.max_loop_turns}")
+    try:
+        runtime_info = await asyncio.to_thread(validate_local_runtime)
+    except (LocalLLMRequestError, ValueError) as exc:
+        logger.error(
+            "Local model is not ready; web liveness will start but readiness remains false: %s",
+            safe_preview(exc),
+        )
+    else:
+        logger.info("Configuration and local model runtime validated successfully")
+        logger.info(
+            "Using local model %s via %s (runtime %s, artifact %s, context %s)",
+            runtime_info.model,
+            runtime_info.backend,
+            runtime_info.runtime_version,
+            runtime_info.model_digest[:12] or "unreported",
+            runtime_info.context_tokens or "server-managed",
+        )
+    logger.info("Max loop turns: %d", config.max_loop_turns)
 
     # Configure Uvicorn server programmatically
     # Using Config + Server pattern instead of uvicorn.run() for better control
@@ -1032,7 +1059,7 @@ def run_web_mode(args):
 
     logger.info("Starting DjenisAiAgent in web mode")
     print("\n" + "=" * 80)
-    print("  🤖 DjenisAiAgent - Web Server Mode (Step 10: Unified Concurrent System)")
+    print("  DjenisAiAgent - Local Web Control Plane")
     print("=" * 80)
     print(f"\n  Server will start on http://{args.host}:{args.port}")
     print(f"  WebSocket endpoint: ws://{args.host}:{args.port}/ws")
@@ -1061,19 +1088,18 @@ def main():
     Main application entry point.
 
     This function handles:
-    1. Environment variable loading from .env
+    1. Logging initialization
     2. Command-line argument parsing
     3. Routing to either CLI mode or web server mode
-    """
-    # Step 1: Load environment variables from .env file
-    load_dotenv()
 
+    Environment loading and typed validation are centralized in ``src.config``.
+    """
     setup_logging()
     logger = logging.getLogger(__name__)
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description="DjenisAiAgent - AI-powered Windows automation agent"
+        description="DjenisAiAgent - local-only computer automation agent"
     )
     parser.add_argument(
         "command",
@@ -1109,7 +1135,7 @@ def main():
 
     logger.info("DjenisAiAgent starting...")
     print("\n" + "=" * 80)
-    print("  🤖 DjenisAiAgent - AI-Powered Windows Automation")
+    print("  DjenisAiAgent - Local-Only Computer Automation")
     print("=" * 80 + "\n")
 
     try:

@@ -3,15 +3,21 @@
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PYTHON      := python
-PIP         := pip
-PYTEST      := pytest
-RUFF        := ruff
-MYPY        := mypy
-DOCKER      := docker
-COMPOSE     := docker compose
-IMAGE_NAME  := djenis-ai-agent
-IMAGE_TAG   := latest
+UV             := uv
+UV_RUN         := $(UV) run --frozen --no-sync
+PYTHON         := $(UV_RUN) python
+PYTEST         := $(UV_RUN) pytest
+RUFF           := $(UV_RUN) ruff
+MYPY           := $(UV_RUN) mypy
+BANDIT         := $(UV_RUN) bandit
+PIP_AUDIT      := $(UV_RUN) pip-audit
+DOCKER         := docker
+COMPOSE        := docker compose
+IMAGE_NAME     := djenis-ai-agent
+IMAGE_TAG      := latest
+PYTHON_PATHS   := src tests scripts main.py
+MYPY_PATHS     := src scripts
+SECURITY_PATHS := src scripts main.py
 
 # ---------------------------------------------------------------------------
 # Help
@@ -30,51 +36,51 @@ help: ## Show this help message
 # ---------------------------------------------------------------------------
 .PHONY: install
 install: ## Install core + web + browser dependencies
-	$(PIP) install -e ".[web,browser]"
+	$(UV) sync --frozen --extra web --extra browser
 
 .PHONY: install-dev
 install-dev: ## Install all dependencies including dev tools
-	$(PIP) install -e ".[full,dev]"
+	$(UV) sync --frozen --extra full --extra dev
 
 .PHONY: install-pre-commit
 install-pre-commit: ## Install pre-commit hooks
-	pre-commit install
+	$(UV_RUN) pre-commit install
 
 # ---------------------------------------------------------------------------
 # Code Quality
 # ---------------------------------------------------------------------------
 .PHONY: lint
 lint: ## Run ruff linter
-	$(RUFF) check src/ tests/ main.py
+	$(RUFF) check $(PYTHON_PATHS)
 
 .PHONY: format
 format: ## Auto-format code with ruff
-	$(RUFF) format src/ tests/ main.py
+	$(RUFF) format $(PYTHON_PATHS)
 
 .PHONY: format-check
 format-check: ## Check formatting without modifying files
-	$(RUFF) format --check src/ tests/ main.py
+	$(RUFF) format --check $(PYTHON_PATHS)
 
 .PHONY: type-check
 type-check: ## Run mypy type checker
-	$(MYPY) src/ --ignore-missing-imports
+	$(MYPY) $(MYPY_PATHS)
 
 .PHONY: check
 check: lint format-check type-check ## Run all code quality checks
 
 .PHONY: security-bandit
 security-bandit: ## Run Bandit security scan
-	bandit -r src/
+	$(BANDIT) -r $(SECURITY_PATHS)
 
 .PHONY: security-deps
 security-deps: ## Run dependency vulnerability audit
-	pip-audit
+	$(PIP_AUDIT)
 
 .PHONY: security
 security: security-bandit security-deps ## Run all security checks
 
 .PHONY: ci-local
-ci-local: check security test-ci ## Run the main CI checks locally
+ci-local: validate check security test-ci ## Run the main CI checks locally
 
 # ---------------------------------------------------------------------------
 # Testing
@@ -139,6 +145,21 @@ docker-clean: ## Remove built images and stopped containers
 # ---------------------------------------------------------------------------
 # Maintenance
 # ---------------------------------------------------------------------------
+.PHONY: lock-check
+lock-check: ## Check that uv.lock matches project metadata
+	$(UV) lock --check
+
+.PHONY: validate-site
+validate-site: ## Validate the static project site
+	$(PYTHON) scripts/validate_site.py
+
+.PHONY: validate-release
+validate-release: ## Validate package and release metadata
+	$(PYTHON) scripts/validate_release.py
+
+.PHONY: validate
+validate: lock-check validate-site validate-release ## Run repository contract validators
+
 .PHONY: clean
 clean: ## Remove Python bytecode, caches and build artifacts
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

@@ -1,8 +1,7 @@
 # Minimal dependencies for Docker (web mode only — no Windows UI automation)
 # Generated from pyproject.toml [web] + [browser] + core groups
 
-# Core AI
-google-genai>=2.14.0
+# Core runtime (local LLM access uses Python's standard HTTP client)
 Pillow>=10.0.0
 python-dotenv>=1.0.0
 

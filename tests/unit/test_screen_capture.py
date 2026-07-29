@@ -314,4 +314,30 @@ class TestSnapshotBuilders:
 
         assert screen_capture.get_context() == (screenshot, "tree")
         assert screen_capture.capture_screen() is screenshot
-        assert screen_capture.prepare_for_gemini(screenshot) is screenshot
+        assert screen_capture.prepare_for_local_model(screenshot) is screenshot
+
+
+class TestRemoteBrowserContext:
+    def test_multimodal_context_uses_remote_selenium_without_desktop_capture(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        remote_image = Image.new("RGB", (200, 100), "navy")
+        remote_capture = MagicMock(return_value=(remote_image, "Remote browser context\nDOM"))
+        desktop_capture = MagicMock(side_effect=AssertionError("desktop capture must not run"))
+        active_window = MagicMock(side_effect=AssertionError("desktop UI tree must not run"))
+
+        monkeypatch.setattr(
+            "src.perception.screen_capture.config.browser_connection_mode", "remote-selenium"
+        )
+        monkeypatch.setattr("src.perception.screen_capture.config.perception_downscale", 0.5)
+        monkeypatch.setattr("src.action.browser_tools.capture_browser_context", remote_capture)
+        monkeypatch.setattr("src.perception.screen_capture.pyautogui.screenshot", desktop_capture)
+        monkeypatch.setattr("src.perception.screen_capture._get_active_window", active_window)
+
+        screenshot, context = get_multimodal_context()
+
+        remote_capture.assert_called_once_with()
+        desktop_capture.assert_not_called()
+        active_window.assert_not_called()
+        assert screenshot.size == (100, 50)
+        assert context == "Remote browser context\nDOM"

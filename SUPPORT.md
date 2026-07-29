@@ -21,4 +21,3 @@ Do not open a public issue for a vulnerability or exposed credential. Follow the
 
 This is an open-source experimental project, not a managed service. Response times are not
 guaranteed, but complete and reproducible reports are prioritized.
-

@@ -13,6 +13,7 @@ from scripts.validate_release import (
     master_image_tags_for_commit,
     validate_ci_workflow_text,
     validate_image_metadata,
+    validate_local_only_dependency_contract,
     validate_release_contract,
     validate_release_documentation,
     validate_repository_workflows,
@@ -142,6 +143,29 @@ def test_workflow_comments_cannot_satisfy_semver_flavor_contract() -> None:
     errors = validate_workflow_text(broken)
 
     assert "metadata-action must disable automatic latest for SemVer tags" in errors
+
+
+def test_release_candidate_requires_the_complete_windows_runtime_gate() -> None:
+    workflow = _docker_workflow()
+    partial_suite = workflow.replace(
+        "        id: windows-tests\n        run: uv run --frozen --no-sync pytest tests/unit\n",
+        "        id: windows-tests\n"
+        "        run: uv run --frozen --no-sync pytest tests/unit/test_config.py\n",
+        1,
+    )
+    detached_candidate = workflow.replace(
+        "needs: [verify, verify-windows, release-preflight]",
+        "needs: [verify, release-preflight]",
+        1,
+    )
+
+    assert "verify-windows must execute the complete Windows unit suite" in (
+        validate_workflow_text(partial_suite)
+    )
+    assert (
+        "candidate job must depend on verify, verify-windows, and release-preflight"
+        in validate_workflow_text(detached_candidate)
+    )
 
 
 def test_master_and_release_image_aliases_are_strictly_separated() -> None:
@@ -582,6 +606,58 @@ def test_actionlint_is_pinned_checksummed_and_executed_by_ci() -> None:
     assert "CI lint job must execute actionlint over all workflows" in errors
 
 
+def test_local_only_dependency_contract_rejects_an_extra_core_sdk(tmp_path: Path) -> None:
+    project_text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    docker_text = (PROJECT_ROOT / "requirements-docker.txt").read_text(encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(project_text, encoding="utf-8")
+    (tmp_path / "requirements-docker.txt").write_text(docker_text, encoding="utf-8")
+    assert validate_local_only_dependency_contract(tmp_path) == []
+
+    (tmp_path / "pyproject.toml").write_text(
+        project_text.replace(
+            "dependencies = [",
+            'dependencies = [\n    "hosted-model-sdk>=1.0.0",',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_local_only_dependency_contract(tmp_path)
+
+    assert "pyproject.toml must use the exact audited local-only core dependency set" in errors
+
+
+@pytest.mark.parametrize(
+    ("trusted", "untrusted"),
+    [
+        (
+            "DJENIS_LOCAL_LLM_ENDPOINT=http://ollama:11434",
+            "DJENIS_LOCAL_LLM_ENDPOINT=http://model.example:11434",
+        ),
+        ("DJENIS_LOCAL_LLM_CONTEXT_TOKENS=65536", "DJENIS_LOCAL_LLM_CONTEXT_TOKENS=32768"),
+        ('"qwen3vl.context_length": 262144', '"qwen3vl.context_length": 32768'),
+        ("http://localhost:8000/ready", "http://localhost:8000/not-ready"),
+    ],
+)
+def test_local_runtime_smoke_cannot_lose_preflight_contract(trusted: str, untrusted: str) -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    broken = workflow.replace(trusted, untrusted, 1)
+    assert broken != workflow
+
+    errors = validate_ci_workflow_text(broken)
+
+    assert "CI Docker smoke must exercise fail-closed local-model preflight and readiness" in errors
+
+
+def test_ci_rejects_reintroduced_provider_credentials() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    broken = workflow + "\n# PROVIDER_API_KEY=forbidden\n"
+
+    errors = validate_ci_workflow_text(broken)
+
+    assert "CI local-model smoke must not configure a provider credential" in errors
+
+
 @pytest.mark.parametrize(
     ("trusted", "untrusted"),
     [
@@ -920,6 +996,91 @@ def test_release_documentation_rejects_a_v_prefixed_image_tag(tmp_path: Path) ->
     errors = validate_release_documentation(tmp_path, "0.2.1")
 
     assert "README.md must not use the v-prefixed Git tag as an image tag" in errors
+
+
+@pytest.mark.parametrize(
+    "removed_token",
+    [
+        "mkdir -p djenis-ai-agent-release/deploy",
+        "{target_commit}/deploy/nginx.conf",
+        "--output deploy/nginx.conf",
+    ],
+)
+def test_release_documentation_rejects_each_missing_gateway_handoff_token(
+    tmp_path: Path, removed_token: str
+) -> None:
+    (tmp_path / "README.md").write_text(
+        "docker pull ghcr.io/example/djenis-ai-agent:0.2.1\nSee .github/rulesets/README.md",
+        encoding="utf-8",
+    )
+    (tmp_path / "CHANGELOG.md").write_text("## 0.2.1 - 2026-07-20", encoding="utf-8")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    helper = "\n".join(
+        (
+            "mkdir -p djenis-ai-agent-release/deploy",
+            "{target_commit}/deploy/nginx.conf",
+            "--output deploy/nginx.conf",
+            "CLI startup and web readiness fail closed",
+            "`/health` endpoint remains a process-liveness probe",
+        )
+    )
+    (scripts / "publish_github_release.py").write_text(
+        helper.replace(removed_token, "removed-gateway-token", 1),
+        encoding="utf-8",
+    )
+
+    errors = validate_release_documentation(tmp_path, "0.2.1")
+
+    assert "release notes must fetch the gateway asset from the exact authorized commit" in errors
+
+
+def test_release_documentation_distinguishes_readiness_from_liveness(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text(
+        "docker pull ghcr.io/example/djenis-ai-agent:0.2.1\nSee .github/rulesets/README.md",
+        encoding="utf-8",
+    )
+    (tmp_path / "CHANGELOG.md").write_text("## 0.2.1 - 2026-07-20", encoding="utf-8")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "publish_github_release.py").write_text(
+        "\n".join(
+            (
+                "mkdir -p djenis-ai-agent-release/deploy",
+                "{target_commit}/deploy/nginx.conf",
+                "--output deploy/nginx.conf",
+                "startup uses /health for readiness",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    errors = validate_release_documentation(tmp_path, "0.2.1")
+
+    assert "release notes must distinguish readiness from web process liveness" in errors
+
+
+def test_release_documentation_requires_gateway_asset_from_authorized_commit(
+    tmp_path: Path,
+) -> None:
+    shutil.copy2(PROJECT_ROOT / "README.md", tmp_path / "README.md")
+    shutil.copy2(PROJECT_ROOT / "CHANGELOG.md", tmp_path / "CHANGELOG.md")
+    scripts_root = tmp_path / "scripts"
+    scripts_root.mkdir()
+    release_helper = (PROJECT_ROOT / "scripts" / "publish_github_release.py").read_text(
+        encoding="utf-8"
+    )
+    broken = release_helper.replace(
+        "{target_commit}/deploy/nginx.conf",
+        "{target_commit}/deploy/missing.conf",
+        1,
+    )
+    assert broken != release_helper
+    (scripts_root / "publish_github_release.py").write_text(broken, encoding="utf-8")
+
+    errors = validate_release_documentation(tmp_path, "0.2.2")
+
+    assert "release notes must fetch the gateway asset from the exact authorized commit" in errors
 
 
 def test_release_validator_detects_a_stale_runtime_version(tmp_path: Path) -> None:

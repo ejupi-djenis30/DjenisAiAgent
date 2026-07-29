@@ -67,39 +67,30 @@ docker pull {image}:{version}
 ```
 
 Authorized source commit: `{target_commit}`
+Authorized OCI subject: `{image}@{digest}`
 
-## Browser-enabled stack (recommended)
+## Local-only stack (recommended)
 
-Browser automation requires the repository's pinned Selenium service. Download the Compose definition from the exact authorized commit, then run it with the verified application digest:
+DjenisAiAgent requires a local Ollama runtime and never falls back to a hosted model. Download the Compose definition from the exact authorized commit, select the verified application digest, and provision the model explicitly before starting the runtime:
 
 ```bash
-mkdir -p djenis-ai-agent-release && cd djenis-ai-agent-release
+mkdir -p djenis-ai-agent-release/deploy && cd djenis-ai-agent-release
 curl --fail --silent --show-error --location \\
   https://raw.githubusercontent.com/ejupi-djenis30/DjenisAiAgent/{target_commit}/docker-compose.yml \\
   --output compose.yaml
-export GEMINI_API_KEY="your-key"
+curl --fail --silent --show-error --location \\
+  https://raw.githubusercontent.com/ejupi-djenis30/DjenisAiAgent/{target_commit}/deploy/nginx.conf \\
+  --output deploy/nginx.conf
 export DJENIS_WEB_AUTH_TOKEN="$(openssl rand -hex 24)"
 export DJENIS_AGENT_IMAGE="{image}@{digest}"
-docker compose -f compose.yaml pull
+export DJENIS_LOCAL_LLM_MODEL="qwen3-vl:8b"
+export DJENIS_LOCAL_LLM_CONTEXT_TOKENS="65536"
+docker compose -f compose.yaml --profile provision pull
+docker compose -f compose.yaml --profile provision run --rm ollama-provision
 docker compose -f compose.yaml up --no-build
 ```
 
-Open `http://127.0.0.1:8008`. Compose publishes the console on loopback only and provides the pinned Chromium Selenium service used by the browser tools.
-
-## Image-only control plane
-
-Use this only when you need the authenticated web console without browser automation, Windows UI Automation, or host display capture:
-
-```bash
-export GEMINI_API_KEY="your-key"
-export DJENIS_WEB_AUTH_TOKEN="$(openssl rand -hex 24)"
-docker run --rm \\
-  -p 127.0.0.1:8000:8000 \\
-  -e GEMINI_API_KEY \\
-  -e DJENIS_WEB_AUTH_TOKEN \\
-  -e DJENIS_PERMISSION_TIER=observe \\
-  {image}@{digest}
-```
+Open `http://127.0.0.1:8008`. Compose publishes the console on loopback only, keeps Ollama on an internal network, disables Ollama cloud features, and provides the pinned Chromium Selenium service used by the browser tools. Model weights are downloaded only by the explicit provisioning command above; normal agent startup performs no download. CLI startup and web readiness fail closed unless the local model advertises at least the configured 65,536-token context window; the web `/health` endpoint remains a process-liveness probe.
 
 Trivy scanned the digest used above before alias promotion. Its SPDX SBOM and BuildKit SLSA provenance were checked, then GitHub OIDC provenance was signed and cryptographically verified before any public alias changed.
 """

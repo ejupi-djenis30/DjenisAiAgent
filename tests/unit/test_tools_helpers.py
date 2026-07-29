@@ -38,7 +38,12 @@ class _Control:
 
 
 @pytest.fixture(autouse=True)
-def clear_locator_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+def clear_locator_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    notepad = tmp_path / "notepad.exe"
+    missing = tmp_path / "missing.exe"
+    remove_item = tmp_path / "Remove-Item.exe"
+    for executable in (notepad, missing, remove_item):
+        executable.touch()
     monkeypatch.setattr(tools_module, "_LOCATOR_CACHE", OrderedDict())
     monkeypatch.setattr(tools_module.config, "permission_tier", "system")
     monkeypatch.setattr(tools_module.config, "confirm_dangerous_actions", True)
@@ -50,18 +55,49 @@ def clear_locator_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         tools_module.config,
         "allowed_applications",
-        ("notepad.exe", "missing.exe"),
+        (str(notepad), str(missing)),
     )
     monkeypatch.setattr(
         tools_module.config,
         "allowed_shell_commands",
-        (sys.executable, "Remove-Item"),
+        (sys.executable, str(remove_item)),
     )
+    monkeypatch.setattr(tools_module.config, "allowed_url_hosts", ("example.com",))
 
 
 class TestBasicHelpers:
     def test_execute_with_timeout_returns_result(self) -> None:
         assert tools_module._execute_with_timeout(lambda: "ok", timeout=0.2) == "ok"
+
+    def test_child_process_environment_is_minimal_and_sanitized(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sensitive_names = (
+            "EXTERNAL_API_KEY",
+            "DJENIS_WEB_AUTH_TOKEN",
+            "DJENIS_RUNTIME_MODE",
+            "SERVICE_TOKEN",
+            "SIGNING_KEY",
+            "CLIENT_SECRET",
+            "DATABASE_PASSWORD",
+            "DATABASE_PWD",
+            "CLOUD_CREDENTIALS_FILE",
+        )
+        monkeypatch.setenv("PATH", "test-path")
+        monkeypatch.setenv("TEMP", "test-temp")
+        monkeypatch.setenv("UNRELATED_APPLICATION_SETTING", "test-setting")
+        for name in sensitive_names:
+            monkeypatch.setenv(name, "test-sentinel")
+
+        child_env = tools_module._build_sanitized_child_env()
+
+        assert child_env["PATH"] == "test-path"
+        assert child_env["TEMP"] == "test-temp"
+        assert set(child_env).issubset(tools_module._CHILD_ENV_ALLOWLIST)
+        assert "UNRELATED_APPLICATION_SETTING" not in child_env
+        assert set(sensitive_names).isdisjoint(child_env)
+        assert all(tools_module._is_sensitive_child_env_name(name) for name in sensitive_names)
 
     def test_execute_with_timeout_returns_default_on_timeout(self) -> None:
         result = tools_module._execute_with_timeout(
@@ -222,7 +258,7 @@ class TestCommandAndClipboard:
         assert truncated is True
 
     def test_run_shell_command_blocks_mutating_commands(self) -> None:
-        payload = json.loads(tools_module.run_shell_command("Remove-Item test.txt"))
+        payload = json.loads(tools_module.run_shell_command("Remove-Item.exe test.txt"))
 
         assert payload["return_code"] == -1
         assert "blocked" in payload["stderr"].lower()
@@ -366,7 +402,7 @@ class TestCommandAndClipboard:
         result = tools_module.start_application("notepad.exe")
 
         assert "Start command issued" in result
-        assert popen_calls == [["notepad.exe"]]
+        assert popen_calls == [[tools_module.config.allowed_applications[0]]]
 
         def fake_missing(app_name: list[str], **kwargs: object) -> None:
             raise FileNotFoundError()
@@ -385,7 +421,7 @@ class TestCommandAndClipboard:
         opened_urls: list[str] = []
 
         monkeypatch.setattr(os, "startfile", lambda path: opened_files.append(path))
-        fake_webbrowser = SimpleNamespace(open=lambda url: opened_urls.append(url))
+        fake_webbrowser = SimpleNamespace(open=lambda url: opened_urls.append(url) or True)
         monkeypatch.setitem(sys.modules, "webbrowser", fake_webbrowser)
 
         assert "does not exist" in tools_module.open_file(str(tmp_path / "missing.txt"))

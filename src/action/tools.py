@@ -5,8 +5,8 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import os
 import re
-import shutil
 
 # subprocess is confined to explicitly permission-gated tools below.
 import subprocess  # nosec B404
@@ -14,10 +14,9 @@ import tempfile
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock, Thread
-from typing import Any, Protocol, TypeVar, cast
+from typing import Any, Literal, Protocol, TypeVar, cast
 from uuid import uuid4
 
 try:
@@ -56,7 +55,6 @@ from src.action.permissions import (
     require_safe_url,
     require_tier,
     resolve_allowed_path,
-    split_command_arguments,
 )
 from src.config import config
 from src.perception.screen_capture import get_latest_ui_snapshot, refresh_ui_snapshot
@@ -76,6 +74,27 @@ class _ProcessOutputStream(Protocol):
 _LOCATOR_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _LOCATOR_CACHE_LOCK: Lock = Lock()
 _MAX_SHELL_COMMAND_LENGTH = 512
+_CHILD_ENV_ALLOWLIST = (
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "WINDIR",
+)
+_SENSITIVE_ENV_NAME_MARKERS = (
+    "AUTH",
+    "CREDENTIAL",
+    "KEY",
+    "PASS",
+    "PWD",
+    "SECRET",
+    "TOKEN",
+)
 _BLOCKED_SHELL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
@@ -374,6 +393,26 @@ def _build_suggestions(snapshot: list[dict[str, Any]], limit: int = 5) -> str:
     return "Suggestion: activate the correct window and make sure the target is visible."
 
 
+def _is_sensitive_child_env_name(name: str) -> bool:
+    normalized = name.upper()
+    return normalized.startswith("DJENIS") or any(
+        marker in normalized for marker in _SENSITIVE_ENV_NAME_MARKERS
+    )
+
+
+def _build_sanitized_child_env() -> dict[str, str]:
+    """Build the minimal inherited environment for privileged child processes."""
+
+    child_env: dict[str, str] = {}
+    for name in _CHILD_ENV_ALLOWLIST:
+        if _is_sensitive_child_env_name(name):
+            continue
+        value = os.environ.get(name)
+        if value is not None:
+            child_env[name] = value
+    return child_env
+
+
 def _validate_shell_command(command: str) -> str | None:
     stripped = command.strip()
     if not stripped:
@@ -423,7 +462,7 @@ def run_shell_command(command: str) -> str:
     """
     try:
         require_tier("system", dangerous=True)
-        require_allowed_shell_command(command)
+        executable_path, command_arguments = require_allowed_shell_command(command)
     except ToolPermissionError as exc:
         return json.dumps({"stdout": "", "stderr": str(exc), "return_code": -1})
 
@@ -441,26 +480,12 @@ def run_shell_command(command: str) -> str:
         )
 
     try:
-        arguments = split_command_arguments(command)
-        executable = arguments[0]
-        executable_path = (
-            shutil.which(executable)
-            if Path(executable).name == executable
-            else str(Path(executable).expanduser().resolve())
-        )
-        if not executable_path or not Path(executable_path).is_file():
-            return json.dumps(
-                {
-                    "stdout": "",
-                    "stderr": "The allowlisted executable was not found.",
-                    "return_code": -1,
-                }
-            )
         # File-backed capture prevents a noisy allowlisted process from exhausting memory.
         with tempfile.TemporaryFile() as stdout_stream, tempfile.TemporaryFile() as stderr_stream:
             # No shell interpreter is involved, so arguments cannot become nested commands.
             result = subprocess.run(  # nosec B603
-                [executable_path, *arguments[1:]],
+                [str(executable_path), *command_arguments],
+                env=_build_sanitized_child_env(),
                 stdout=stdout_stream,
                 stderr=stderr_stream,
                 timeout=config.shell_timeout,
@@ -565,14 +590,14 @@ def element_id(
     )
     snapshot = snapshot_result or []
 
-    # If snapshot refresh timed out or failed, try browser fallback immediately
     if not snapshot:
         logger.warning("UI snapshot refresh failed for query: %s", safe_preview(query))
         if _is_browser_window(window) and browser_tools.is_browser_available():
-            logger.info("Falling back to Selenium after UI lookup timeout")
-            browser_result = browser_tools.browser_find_and_click(query)
-            if "✅" in browser_result:
-                return f"🔍 [Browser Mode] {browser_result}"
+            return (
+                "Error: Desktop UI lookup could not inspect this browser page. "
+                "Use browser_find_and_click or browser_find_and_type explicitly; element_id "
+                "never clicks as a lookup side effect."
+            )
         return (
             "Error: The active window could not be inspected before the timeout. "
             f"For browser content, {browser_tools.get_browser_setup_hint()}"
@@ -606,12 +631,12 @@ def element_id(
         scored.append((score, entry))
 
     if not scored:
-        # Try browser fallback if we're in a browser window
         if _is_browser_window(window) and browser_tools.is_browser_available():
-            logger.info("Falling back to Selenium after UI element lookup failed")
-            browser_result = browser_tools.browser_find_and_click(query)
-            if "✅" in browser_result:
-                return f"🔍 [Browser Mode] {browser_result}"
+            return (
+                "Error: No desktop UI element matched inside this browser. "
+                "Use browser_find_and_click or browser_find_and_type explicitly; element_id "
+                "is lookup-only."
+            )
 
         suggestion = _build_suggestions(snapshot)
         return "Error: No matching element was found. " + suggestion
@@ -716,13 +741,6 @@ def click(element_id: str) -> str:
 
     control, metadata = _resolve_control(window, element_id)
     if control is None:
-        # Try browser fallback if we're in a browser window
-        if _is_browser_window(window) and browser_tools.is_browser_available():
-            logger.info(f"⚠️ click fallito con pywinauto, tentativo con Selenium per '{element_id}'")
-            browser_result = browser_tools.browser_find_and_click(element_id)
-            if "✅" in browser_result:
-                return f"[Browser Mode] {browser_result}"
-
         reason = metadata.get("error") if metadata else "Element not found."
         return f"Error: Could not find or interact with element '{element_id}'. Details: {reason}"
 
@@ -1341,51 +1359,31 @@ def browser_media_capability(media_type: str = "window_or_tab_share") -> str:
     )
 
 
-def deep_think(reasoning: str) -> str:
-    """
-    Take time for deeper analysis and reasoning about a complex situation.
+def finish_task(
+    outcome: Literal["completed", "blocked"],
+    summary: str,
+    evidence: str,
+) -> str:
+    """Request a terminal task outcome from the host verifier.
 
-    Use this tool when you need extended reasoning to analyze complex decisions,
-    multiple failure scenarios, ambiguous UI states, or intricate navigation paths.
-
-    CRITICAL RULES:
-    - Can only be used ONCE before an action tool
-    - CANNOT be used consecutively
-    - After using this, you MUST call an action tool in the next turn
-    - Pattern: deep_think (optional) -> action (mandatory)
+    The orchestration layer validates this request before it can become a terminal
+    result. Calling the function does not by itself prove completion.
 
     Args:
-        reasoning: Your detailed thought process analyzing the situation, considering
-                  alternatives, weighing trade-offs, and planning the best approach.
+        outcome: Use ``completed`` only for a verified result, or ``blocked`` when safe
+            progress is impossible.
+        summary: Concise description of the achieved result or specific blocker.
+        evidence: Concrete current UI label, value, URL, or successful read-tool
+            observation supporting the outcome.
 
     Returns:
-        A confirmation message that your reasoning has been recorded.
-
-    Example:
-        deep_think("Analyzing the current UI state: I see three menu items but previous
-                   click attempts failed. Option 1: Try keyboard shortcut Alt+F for File menu.
-                   Option 2: Look for toolbar icons instead. Option 3: Right-click for context menu.
-                   Best approach: Alt+F is most reliable for accessing File menu across applications.")
+        A message describing the requested terminal outcome.
     """
-    logger.info("Deep thinking engaged for complex reasoning")
-    logger.debug("Reasoning content: %s", safe_preview(reasoning))
 
-    # Return a message that will be added to history
-    return f"PENSIERO PROFONDO registrato: {reasoning}"
-
-
-def finish_task(summary: str) -> str:
-    """
-    Signal that the agent has completed the requested task.
-
-    Args:
-        summary: A brief summary of what was accomplished.
-
-    Returns:
-        A string message confirming task completion.
-    """
-    logger.info("Task completed: %s", safe_preview(summary))
-    return f"Task completed: {summary}"
+    logger.info("Task outcome requested: %s", outcome)
+    logger.debug("Outcome summary: %s", safe_preview(summary))
+    logger.debug("Outcome evidence: %s", safe_preview(evidence))
+    return f"Task outcome requested: {outcome}. {summary} Evidence: {evidence}"
 
 
 def double_click(element_id: str) -> str:
@@ -1448,129 +1446,6 @@ def right_click(element_id: str) -> str:
     except Exception as exc:
         logger.error("Failed to right-click %s: %s", element_id, exc, exc_info=True)
         return f"Error while right-clicking {descriptor}: {exc}"
-
-
-def move_mouse(x: int, y: int) -> str:
-    """
-    Move the mouse cursor to specific screen coordinates.
-
-    COORDINATE SYSTEM (Screen Space - Origin at TOP-LEFT):
-    - X-axis: Horizontal position (0 = left edge, increases going RIGHT)
-    - Y-axis: Vertical position (0 = top edge, increases going DOWN)
-
-    NAVIGATION GUIDE:
-    - Target is ABOVE cursor (North): DECREASE Y (e.g., y - 50)
-    - Target is BELOW cursor (South): INCREASE Y (e.g., y + 50)
-    - Target is LEFT of cursor (West): DECREASE X (e.g., x - 50)
-    - Target is RIGHT of cursor (East): INCREASE X (e.g., x + 50)
-    - Diagonal adjustments: modify BOTH X and Y
-      * North-East: x + value, y - value
-      * South-East: x + value, y + value
-      * South-West: x - value, y + value
-      * North-West: x - value, y - value
-
-    IMPORTANT: This is a LAST RESORT tool. Only use when:
-    - element_id and element_id_fast have BOTH failed multiple times
-    - You cannot interact with the UI through any other means
-    - You must use the mouse positioning mini-loop protocol
-
-    Mini-Loop Protocol:
-    1. Call move_mouse with initial coordinates from screenshot analysis
-    2. Call verify_mouse_position to check position
-    3. Analyze screenshot to see where cursor is relative to target
-    4. Calculate adjustment using coordinate system above
-    5. Call move_mouse again with adjusted coordinates
-    6. Repeat until verify_mouse_position confirms correct positioning
-    7. Call confirm_mouse_position to EXIT mini-loop
-    8. In NEXT turn (outside mini-loop), call click or other action tool
-
-    Args:
-        x: The X coordinate on the screen (horizontal, 0 = left).
-        y: The Y coordinate on the screen (vertical, 0 = top).
-
-    Returns:
-        A string message indicating the result.
-    """
-    import pyautogui
-
-    try:
-        # Convert parameters to integers (function calling may pass strings)
-        x_coord = int(x)
-        y_coord = int(y)
-
-        logger.info(f"Moving mouse to coordinates ({x_coord}, {y_coord})")
-        pyautogui.moveTo(x_coord, y_coord, duration=0.5)
-        logger.info(f"Successfully moved mouse to ({x_coord}, {y_coord})")
-        return f"Mouse moved to coordinates ({x_coord}, {y_coord}). Use verify_mouse_position to confirm accuracy before clicking."
-    except ValueError as e:
-        error_msg = f"Error: Invalid coordinates x={x}, y={y}. Must be integers. Details: {e!s}"
-        logger.error(error_msg)
-        return error_msg
-    except Exception as e:
-        error_msg = f"Error moving mouse to ({x}, {y}): {e!s}"
-        logger.error(error_msg, exc_info=True)
-        return error_msg
-
-
-def verify_mouse_position() -> str:
-    """
-    Get the current mouse cursor position for verification.
-
-    Use this tool in the mouse positioning mini-loop to verify the mouse
-    position and determine if adjustment is needed.
-
-    AFTER CALLING THIS:
-    1. Check screenshot to see cursor location relative to target
-    2. If cursor is NOT on target:
-       - Estimate pixel distance needed (up/down/left/right)
-       - Use move_mouse with adjusted coordinates
-       - Call verify_mouse_position again
-    3. If cursor IS on target:
-       - Call confirm_mouse_position to EXIT mini-loop
-       - Next turn you can use click/double_click/right_click
-
-    Returns:
-        A string with current mouse coordinates.
-    """
-    import pyautogui
-
-    try:
-        x, y = pyautogui.position()
-        logger.info(f"Current mouse position: ({x}, {y})")
-        return f"MOUSE POSITION VERIFIED: Current position is ({x}, {y}). Analyze the screenshot to confirm this is the correct location. If correct, proceed with click. If not, adjust with move_mouse."
-    except Exception as e:
-        error_msg = f"Error getting mouse position: {e!s}"
-        logger.error(error_msg, exc_info=True)
-        return error_msg
-
-
-def confirm_mouse_position() -> str:
-    """
-    Confirm that the mouse is correctly positioned and EXIT the mini-loop.
-
-    CRITICAL: Only call this when you have visually verified in the screenshot
-    that the mouse cursor is EXACTLY on the target element.
-
-    This tool does NOT perform a click. It only exits the mouse positioning mini-loop.
-    After exiting, you will be in the next normal turn where you can call:
-    - click(element_id) for normal UI elements
-    - double_click(element_id) for double-click actions
-    - right_click(element_id) for context menus
-    - Or any other action tool
-
-    Returns:
-        A confirmation message that mini-loop has ended.
-    """
-    import pyautogui
-
-    try:
-        x, y = pyautogui.position()
-        logger.info(f"Mouse position confirmed at ({x}, {y}), exiting mini-loop")
-        return f"MOUSE POSITION CONFIRMED at ({x}, {y}). Mini-loop exited. You are now in the next turn. Use click, double_click, or other action tools to interact with the element at this position."
-    except Exception as e:
-        error_msg = f"Error confirming mouse position: {e!s}"
-        logger.error(error_msg, exc_info=True)
-        return error_msg
 
 
 def wait_seconds(seconds: int) -> str:
@@ -1754,18 +1629,19 @@ def start_application(app_name: str) -> str:
     """
     try:
         require_tier("system", dangerous=True)
-        require_allowed_application(app_name)
+        approved_application = require_allowed_application(app_name)
         logger.info("Issuing approved application start: %s", safe_preview(app_name))
         # Use Popen for a non-blocking call
         # DETACHED_PROCESS flag allows the process to run independently
-        # app_name passed an exact operator allowlist check.
+        # The configured absolute path is used directly; PATH is never searched here.
         creation_flags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         )
         subprocess.Popen(  # nosec B603
-            [app_name],
+            [str(approved_application)],
             creationflags=creation_flags,
             close_fds=True,
+            env=_build_sanitized_child_env(),
         )
         logger.info(f"Successfully issued start command for '{app_name}'")
         return f"Start command issued for '{app_name}'. Use 'switch_window' in the next turn to focus it."
@@ -1773,7 +1649,9 @@ def start_application(app_name: str) -> str:
     except ToolPermissionError as exc:
         return f"Error: {exc}"
     except FileNotFoundError:
-        error_msg = f"Application '{app_name}' not found in system PATH."
+        error_msg = (
+            f"Application '{app_name}' was not found because its allowlisted path no longer exists."
+        )
         logger.error(error_msg)
         return f"Error: {error_msg}"
     except Exception as e:
@@ -1819,27 +1697,32 @@ def open_file(file_path: str) -> str:
 
 
 def open_url(url: str) -> str:
-    """
-    Open a URL in the default web browser.
+    """Open a public or explicitly allowlisted URL in the host's default browser.
+
+    This native-desktop tool is not exposed in remote Selenium runtimes. Use
+    ``browser_navigate`` there so navigation and its final URL can be verified.
 
     Args:
-        url: The URL to open (e.g., 'https://www.google.com').
+        url: Absolute HTTP(S) URL allowed by the network policy.
 
     Returns:
-        A string message indicating the result.
+        A string message indicating the verified launch request result.
     """
+
     import webbrowser
 
     try:
         require_safe_url(url)
         logger.info("Opening URL: %s", safe_preview(url))
-        webbrowser.open(url)
-        logger.info("Successfully opened URL")
+        opened = webbrowser.open(url)
+        if not opened:
+            return "Error: The default browser rejected the URL launch request."
+        logger.info("Default browser accepted the URL launch request")
         return f"URL '{url}' opened in the default browser."
     except ToolPermissionError as exc:
         return f"Error: {exc}"
-    except Exception as e:
-        error_msg = f"Error opening URL '{safe_preview(url)}': {e!s}"
+    except Exception as exc:
+        error_msg = f"Error opening URL '{safe_preview(url)}': {exc!s}"
         logger.error(error_msg, exc_info=True)
         return error_msg
 

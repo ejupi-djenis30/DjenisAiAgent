@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import ipaddress
+import math
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -39,9 +43,12 @@ def _env_float(name: str, default: float) -> float:
     if value is None:
         return default
     try:
-        return float(value)
+        parsed = float(value)
     except ValueError as exc:
         raise ValueError(f"Environment variable {name} must be a float") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"Environment variable {name} must be finite")
+    return parsed
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -72,6 +79,76 @@ def _env_csv(name: str, default: str = "") -> tuple[str, ...]:
     return tuple(values)
 
 
+def _is_exact_hostname_or_ip(value: str, *, allow_ipv6: bool = True) -> bool:
+    """Return whether *value* is an exact hostname/IP without URL syntax."""
+
+    if not value or value != value.strip() or len(value) > 253:
+        return False
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        if ":" in value or "*" in value:
+            return False
+        labels = value.split(".")
+        return all(
+            1 <= len(label) <= 63
+            and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label) is not None
+            for label in labels
+        )
+    return allow_ipv6 or address.version == 4
+
+
+_LOCAL_LLM_DOCKER_HOSTS = frozenset({"host.docker.internal", "local-llm", "ollama"})
+
+
+def _validate_local_llm_endpoint(endpoint: str, backend: str, runtime_mode: str) -> None:
+    """Require an exact credential-free endpoint that cannot target the public network."""
+
+    if len(endpoint) > 2_048:
+        raise ValueError("DJENIS_LOCAL_LLM_ENDPOINT must not exceed 2048 characters")
+    if not endpoint.isascii() or any(character.isspace() for character in endpoint):
+        raise ValueError("DJENIS_LOCAL_LLM_ENDPOINT must be an ASCII URL without whitespace")
+    parsed = urlparse(endpoint)
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("DJENIS_LOCAL_LLM_ENDPOINT contains an invalid port") from exc
+    if (
+        parsed.scheme != "http"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("DJENIS_LOCAL_LLM_ENDPOINT must be an absolute credential-free HTTP URL")
+
+    normalized_path = parsed.path.rstrip("/")
+    expected_path = "" if backend == "ollama" else "/v1"
+    if normalized_path != expected_path:
+        raise ValueError(
+            "DJENIS_LOCAL_LLM_ENDPOINT path must be empty for ollama or /v1 for openai-compatible"
+        )
+
+    hostname = parsed.hostname.casefold()
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None:
+        if not address.is_loopback:
+            raise ValueError("DJENIS_LOCAL_LLM_ENDPOINT must use a loopback IP")
+        return
+    if hostname == "localhost":
+        return
+    if runtime_mode == "docker" and hostname in _LOCAL_LLM_DOCKER_HOSTS:
+        return
+    raise ValueError(
+        "DJENIS_LOCAL_LLM_ENDPOINT must use localhost/loopback or a fixed local Docker host"
+    )
+
+
 def _resolve_runtime_mode() -> str:
     requested_mode = os.getenv("DJENIS_RUNTIME_MODE", "auto").strip().lower()
     valid_modes = {"auto", "windows", "docker", "headless"}
@@ -100,24 +177,53 @@ def _resolve_browser_connection_mode() -> str:
 class AgentConfig:
     """Configuration container with environment overrides and validation."""
 
-    # Gemini API Configuration (secret accessed lazily for safety)
-    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
-    gemini_model_name: str = field(
-        default_factory=lambda: os.getenv("DJENIS_GEMINI_MODEL", "gemini-3.5-flash")
+    # Local inference. No credential or cloud endpoint is accepted.
+    local_llm_backend: str = field(
+        default_factory=lambda: os.getenv("DJENIS_LOCAL_LLM_BACKEND", "ollama").strip().lower()
+    )
+    local_llm_endpoint: str = field(
+        default_factory=lambda: os.getenv(
+            "DJENIS_LOCAL_LLM_ENDPOINT", "http://127.0.0.1:11434"
+        ).strip()
+    )
+    local_llm_model: str = field(
+        default_factory=lambda: os.getenv("DJENIS_LOCAL_LLM_MODEL", "qwen3-vl:8b").strip()
+    )
+    local_llm_expected_digest: str = field(
+        default_factory=lambda: os.getenv("DJENIS_LOCAL_LLM_EXPECTED_DIGEST", "").strip().lower()
+    )
+    local_llm_vision_enabled: bool = field(
+        default_factory=lambda: _env_bool("DJENIS_LOCAL_LLM_VISION", True)
+    )
+    local_llm_keep_alive: str = field(
+        default_factory=lambda: os.getenv("DJENIS_LOCAL_LLM_KEEP_ALIVE", "10m").strip()
+    )
+    local_llm_seed: int = field(default_factory=lambda: _env_int("DJENIS_LOCAL_LLM_SEED", 0))
+    local_llm_context_tokens: int = field(
+        default_factory=lambda: _env_int("DJENIS_LOCAL_LLM_CONTEXT_TOKENS", 65_536)
+    )
+    local_llm_response_max_bytes: int = field(
+        default_factory=lambda: _env_int("DJENIS_LOCAL_LLM_RESPONSE_MAX_BYTES", 1_048_576)
+    )
+    local_llm_image_max_bytes: int = field(
+        default_factory=lambda: _env_int("DJENIS_LOCAL_LLM_IMAGE_MAX_BYTES", 5 * 1024 * 1024)
+    )
+    local_llm_vision_max_dimension: int = field(
+        default_factory=lambda: _env_int("DJENIS_LOCAL_LLM_VISION_MAX_DIMENSION", 1_600)
+    )
+    local_llm_vision_quality: int = field(
+        default_factory=lambda: _env_int("DJENIS_LOCAL_LLM_VISION_QUALITY", 80)
     )
 
     # Agent Behavior Parameters
     max_loop_turns: int = field(default_factory=lambda: _env_int("DJENIS_MAX_LOOP_TURNS", 50))
-    max_mouse_positioning_attempts: int = field(
-        default_factory=lambda: _env_int("DJENIS_MAX_MOUSE_POSITIONING_ATTEMPTS", 10)
-    )
     action_timeout: int = field(default_factory=lambda: _env_int("DJENIS_ACTION_TIMEOUT", 45))
     screenshot_interval: float = field(
         default_factory=lambda: _env_float("DJENIS_SCREENSHOT_INTERVAL", 0.1)
     )
 
     # Model Parameters
-    temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.2))
+    temperature: float = field(default_factory=lambda: _env_float("DJENIS_TEMPERATURE", 0.0))
     max_tokens: int = field(default_factory=lambda: _env_int("DJENIS_MAX_TOKENS", 4096))
 
     # API Timeout and Retry Configuration
@@ -138,6 +244,15 @@ class AgentConfig:
     )
     ui_tree_max_chars: int = field(
         default_factory=lambda: _env_int("DJENIS_UI_TREE_MAX_CHARS", 65_536)
+    )
+    tool_argument_max_chars: int = field(
+        default_factory=lambda: _env_int("DJENIS_TOOL_ARGUMENT_MAX_CHARS", 16_384)
+    )
+    max_repeated_actions: int = field(
+        default_factory=lambda: _env_int("DJENIS_MAX_REPEATED_ACTIONS", 2)
+    )
+    completion_evidence_min_chars: int = field(
+        default_factory=lambda: _env_int("DJENIS_COMPLETION_EVIDENCE_MIN_CHARS", 12)
     )
 
     # Logging Configuration
@@ -268,20 +383,69 @@ class AgentConfig:
     allowed_shell_commands: tuple[str, ...] = field(
         default_factory=lambda: _env_csv("DJENIS_ALLOWED_SHELL_COMMANDS")
     )
+    allowed_url_hosts: tuple[str, ...] = field(
+        default_factory=lambda: _env_csv("DJENIS_ALLOWED_URL_HOSTS")
+    )
 
     def validate(self) -> bool:
-        """Validate configuration settings and ensure secrets are present."""
+        """Validate local inference, safety, and resource settings."""
 
-        if not self.gemini_api_key or self.gemini_api_key == "YOUR_API_KEY_HERE":
+        if self.local_llm_backend not in {"ollama", "openai-compatible"}:
+            raise ValueError("DJENIS_LOCAL_LLM_BACKEND must be ollama or openai-compatible")
+        if (
+            not self.local_llm_model
+            or len(self.local_llm_model) > 256
+            or any(character.isspace() for character in self.local_llm_model)
+        ):
             raise ValueError(
-                "GEMINI_API_KEY not set or using placeholder. Update .env or environment variables."
+                "DJENIS_LOCAL_LLM_MODEL must be a non-empty identifier without whitespace"
             )
+        if re.search(
+            r"(?:^|[-:/.])cloud(?:$|[-:/.])",
+            self.local_llm_model.casefold(),
+        ):
+            raise ValueError("DJENIS_LOCAL_LLM_MODEL must not select a cloud model")
+        if self.local_llm_expected_digest:
+            if self.local_llm_backend != "ollama":
+                raise ValueError(
+                    "DJENIS_LOCAL_LLM_EXPECTED_DIGEST is supported only by the ollama backend"
+                )
+            if re.fullmatch(r"[0-9a-f]{64}", self.local_llm_expected_digest) is None:
+                raise ValueError(
+                    "DJENIS_LOCAL_LLM_EXPECTED_DIGEST must be a lowercase SHA-256 digest"
+                )
+        _validate_local_llm_endpoint(
+            self.local_llm_endpoint,
+            self.local_llm_backend,
+            self.runtime_mode,
+        )
+        if re.fullmatch(r"(?:0|-?\d+(?:ns|us|µs|ms|s|m|h))", self.local_llm_keep_alive) is None:
+            raise ValueError("DJENIS_LOCAL_LLM_KEEP_ALIVE must be 0 or a duration such as 10m")
+        if not 4_096 <= self.local_llm_context_tokens <= 262_144:
+            raise ValueError("DJENIS_LOCAL_LLM_CONTEXT_TOKENS must be between 4096 and 262144")
+        if not 1_024 <= self.local_llm_response_max_bytes <= 4 * 1024 * 1024:
+            raise ValueError("DJENIS_LOCAL_LLM_RESPONSE_MAX_BYTES must be between 1024 and 4194304")
+        if not 64 * 1024 <= self.local_llm_image_max_bytes <= 20 * 1024 * 1024:
+            raise ValueError("DJENIS_LOCAL_LLM_IMAGE_MAX_BYTES must be between 65536 and 20971520")
+        if not 256 <= self.local_llm_vision_max_dimension <= 4_096:
+            raise ValueError("DJENIS_LOCAL_LLM_VISION_MAX_DIMENSION must be between 256 and 4096")
+        if not 40 <= self.local_llm_vision_quality <= 95:
+            raise ValueError("DJENIS_LOCAL_LLM_VISION_QUALITY must be between 40 and 95")
 
-        if self.max_loop_turns <= 0:
-            raise ValueError("DJENIS_MAX_LOOP_TURNS must be greater than 0")
+        for name, value in (
+            ("DJENIS_SCREENSHOT_INTERVAL", self.screenshot_interval),
+            ("DJENIS_TEMPERATURE", self.temperature),
+            ("DJENIS_API_RETRY_DELAY", self.api_retry_delay),
+            ("DJENIS_STREAM_RESIZE_FACTOR", self.stream_resize_factor),
+            ("DJENIS_PERCEPTION_DOWNSCALE", self.perception_downscale),
+            ("DJENIS_WEB_SOCKET_SEND_TIMEOUT", self.web_socket_send_timeout),
+            ("DJENIS_WEB_TRANSCRIPTION_TIMEOUT", self.web_transcription_timeout),
+        ):
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be finite")
 
-        if self.max_mouse_positioning_attempts <= 0:
-            raise ValueError("DJENIS_MAX_MOUSE_POSITIONING_ATTEMPTS must be greater than 0")
+        if not 1 <= self.max_loop_turns <= 200:
+            raise ValueError("DJENIS_MAX_LOOP_TURNS must be between 1 and 200")
 
         if self.action_timeout <= 0:
             raise ValueError("DJENIS_ACTION_TIMEOUT must be greater than 0")
@@ -292,20 +456,42 @@ class AgentConfig:
         if not 0 <= self.temperature <= 2:
             raise ValueError("DJENIS_TEMPERATURE must be between 0 and 2")
 
+        if self.log_level.strip().upper() not in {
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+            "CRITICAL",
+        }:
+            raise ValueError("DJENIS_LOG_LEVEL must be a standard Python logging level")
+
+        if self.profile.strip().lower() not in {
+            "default",
+            "performance",
+            "turbo",
+            "fast",
+            "quality",
+            "hires",
+        }:
+            raise ValueError("DJENIS_PROFILE is not a supported performance profile")
+
         if self.max_tokens <= 0:
             raise ValueError("DJENIS_MAX_TOKENS must be greater than 0")
 
         if self.api_timeout <= 0:
             raise ValueError("DJENIS_API_TIMEOUT must be greater than 0")
 
-        if self.api_max_retries <= 0:
-            raise ValueError("DJENIS_API_MAX_RETRIES must be greater than 0")
+        if not 1 <= self.api_max_retries <= 10:
+            raise ValueError("DJENIS_API_MAX_RETRIES must be between 1 and 10")
 
         if self.api_retry_delay < 0:
             raise ValueError("DJENIS_API_RETRY_DELAY cannot be negative")
 
         if not 1 <= self.screenshot_quality <= 100:
             raise ValueError("DJENIS_SCREENSHOT_QUALITY must be between 1 and 100")
+
+        if self.screenshot_format.strip().upper() not in {"PNG", "JPEG"}:
+            raise ValueError("DJENIS_SCREENSHOT_FORMAT must be PNG or JPEG")
 
         if not 50 <= self.stream_frame_quality <= 100:
             raise ValueError("DJENIS_STREAM_FRAME_QUALITY must be between 50 and 100")
@@ -338,9 +524,23 @@ class AgentConfig:
             ("DJENIS_OBSERVATION_MAX_CHARS", self.observation_max_chars),
             ("DJENIS_PROMPT_HISTORY_MAX_CHARS", self.prompt_history_max_chars),
             ("DJENIS_UI_TREE_MAX_CHARS", self.ui_tree_max_chars),
+            ("DJENIS_TOOL_ARGUMENT_MAX_CHARS", self.tool_argument_max_chars),
+            ("DJENIS_MAX_REPEATED_ACTIONS", self.max_repeated_actions),
+            ("DJENIS_COMPLETION_EVIDENCE_MIN_CHARS", self.completion_evidence_min_chars),
         ):
             if bounded_size <= 0:
                 raise ValueError(f"{name} must be greater than 0")
+        if self.tool_argument_max_chars > 1_048_576:
+            raise ValueError("DJENIS_TOOL_ARGUMENT_MAX_CHARS must not exceed 1048576")
+        if self.max_repeated_actions > 10:
+            raise ValueError("DJENIS_MAX_REPEATED_ACTIONS must not exceed 10")
+        if self.completion_evidence_min_chars > 4_096:
+            raise ValueError("DJENIS_COMPLETION_EVIDENCE_MIN_CHARS must not exceed 4096")
+        if self.tool_argument_max_chars < self.completion_evidence_min_chars + 128:
+            raise ValueError(
+                "DJENIS_TOOL_ARGUMENT_MAX_CHARS must leave room for completion evidence "
+                "and the finish_task JSON envelope"
+            )
 
         if self.snapshot_depth <= 0:
             raise ValueError("DJENIS_SNAPSHOT_DEPTH must be greater than 0")
@@ -363,11 +563,66 @@ class AgentConfig:
         if self.browser_connection_mode not in {"local-debugger", "remote-selenium"}:
             raise ValueError("Browser connection mode resolved to an unsupported value")
 
-        if self.browser_debugging_port <= 0:
-            raise ValueError("DJENIS_BROWSER_DEBUGGING_PORT must be greater than 0")
+        if self.selenium_remote_url.strip():
+            selenium_url = urlparse(self.selenium_remote_url)
+            try:
+                _ = selenium_url.port
+            except ValueError as exc:
+                raise ValueError("SELENIUM_REMOTE_URL contains an invalid port") from exc
+            if (
+                selenium_url.scheme not in {"http", "https"}
+                or not selenium_url.hostname
+                or selenium_url.username
+                or selenium_url.password
+            ):
+                raise ValueError(
+                    "SELENIUM_REMOTE_URL must be an absolute credential-free HTTP(S) URL"
+                )
+
+        if not 1 <= self.browser_debugging_port <= 65_535:
+            raise ValueError("DJENIS_BROWSER_DEBUGGING_PORT must be between 1 and 65535")
+        if not _is_exact_hostname_or_ip(self.browser_debugging_host, allow_ipv6=False):
+            raise ValueError(
+                "DJENIS_BROWSER_DEBUGGING_HOST must be an exact hostname or IPv4 address"
+            )
 
         if self.permission_tier not in {"observe", "interact", "system"}:
             raise ValueError("DJENIS_PERMISSION_TIER must be one of observe, interact, or system")
+
+        for name, executable_paths in (
+            ("DJENIS_ALLOWED_APPLICATIONS", self.allowed_applications),
+            ("DJENIS_ALLOWED_SHELL_COMMANDS", self.allowed_shell_commands),
+        ):
+            if any(not Path(entry).expanduser().is_absolute() for entry in executable_paths):
+                raise ValueError(f"{name} entries must be absolute executable paths")
+
+        for host in self.allowed_url_hosts:
+            if not _is_exact_hostname_or_ip(host):
+                raise ValueError(
+                    "DJENIS_ALLOWED_URL_HOSTS entries must be exact hostnames or IP addresses"
+                )
+
+        if not self.web_host.strip():
+            raise ValueError("DJENIS_WEB_HOST cannot be empty")
+        for origin in self.web_allowed_origins:
+            parsed_origin = urlparse(origin)
+            try:
+                _ = parsed_origin.port
+            except ValueError as exc:
+                raise ValueError("DJENIS_WEB_ALLOWED_ORIGINS contains an invalid port") from exc
+            if (
+                parsed_origin.scheme not in {"http", "https"}
+                or not parsed_origin.hostname
+                or parsed_origin.username
+                or parsed_origin.password
+                or parsed_origin.path not in {"", "/"}
+                or parsed_origin.params
+                or parsed_origin.query
+                or parsed_origin.fragment
+            ):
+                raise ValueError(
+                    "DJENIS_WEB_ALLOWED_ORIGINS entries must be exact credential-free HTTP(S) origins"
+                )
 
         for name, value in (
             ("DJENIS_WEB_SESSION_TTL", self.web_session_ttl),
@@ -412,8 +667,6 @@ class AgentConfig:
 
         data = asdict(self)
         redacted_value = "***" + "redacted" + "***"
-        if "gemini_api_key" in data:
-            data["gemini_api_key"] = redacted_value
         if "web_auth_token" in data:
             data["web_auth_token"] = redacted_value
         return data

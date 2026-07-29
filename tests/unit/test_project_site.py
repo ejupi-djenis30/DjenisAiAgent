@@ -59,32 +59,47 @@ def test_setup_cta_targets_the_existing_readme_section() -> None:
     assert "DjenisAiAgent#quick-start-windows" in site_html
 
 
-def test_release_body_uses_the_pinned_browser_enabled_compose_stack() -> None:
+def test_release_body_uses_the_pinned_local_only_compose_stack() -> None:
+    digest = f"sha256:{'a' * 64}"
+    target_commit = "b" * 40
     body = release_body(
         image="ghcr.io/example/djenis-ai-agent",
         version="0.2.1",
-        digest=f"sha256:{'a' * 64}",
-        target_commit="b" * 40,
+        digest=digest,
+        target_commit=target_commit,
     )
 
-    assert "## Browser-enabled stack (recommended)" in body
-    assert (
-        "https://raw.githubusercontent.com/ejupi-djenis30/DjenisAiAgent/"
-        f"{'b' * 40}/docker-compose.yml"
-    ) in body
+    raw_root = "https://raw.githubusercontent.com/ejupi-djenis30/DjenisAiAgent"
+    assert "## Local-only stack (recommended)" in body
+    assert "requires a local Ollama runtime" in body
+    assert "never falls back to a hosted model" in body
+    assert "mkdir -p djenis-ai-agent-release/deploy && cd djenis-ai-agent-release" in body
+    assert f"{raw_root}/{target_commit}/docker-compose.yml" in body
+    assert f"{raw_root}/{target_commit}/deploy/nginx.conf" in body
+    assert "--output compose.yaml" in body
+    assert "--output deploy/nginx.conf" in body
     assert "curl --fail --silent --show-error --location \\\n" in body
     assert 'DJENIS_WEB_AUTH_TOKEN="$(openssl rand -hex 24)"' in body
-    assert f'DJENIS_AGENT_IMAGE="ghcr.io/example/djenis-ai-agent@sha256:{"a" * 64}"' in body
-    assert "docker compose -f compose.yaml pull" in body
+    assert f'DJENIS_AGENT_IMAGE="ghcr.io/example/djenis-ai-agent@{digest}"' in body
+    assert 'DJENIS_LOCAL_LLM_MODEL="qwen3-vl:8b"' in body
+    assert 'DJENIS_LOCAL_LLM_CONTEXT_TOKENS="65536"' in body
+    assert "docker compose -f compose.yaml --profile provision pull" in body
+    assert "docker compose -f compose.yaml --profile provision run --rm ollama-provision" in body
     assert "docker compose -f compose.yaml up --no-build" in body
     assert "http://127.0.0.1:8008" in body
+    assert "CLI startup and web readiness fail closed" in body
+    assert "`/health` endpoint remains a process-liveness probe" in body
+    assert body.count(digest) == 2
 
     compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "image: ${DJENIS_AGENT_IMAGE:-djenis-ai-agent:latest}" in compose
+    assert "DJENIS_LOCAL_LLM_ENDPOINT: http://ollama:11434" in compose
     assert "SELENIUM_REMOTE_URL: http://chrome:4444/wd/hub" in compose
+    assert 'OLLAMA_NO_CLOUD: "1"' in compose
+    assert "internal: true" in compose
 
 
-def test_release_body_keeps_the_image_only_control_plane_on_loopback() -> None:
+def test_release_body_has_no_cloud_or_image_only_escape_hatch() -> None:
     body = release_body(
         image="ghcr.io/example/djenis-ai-agent",
         version="0.2.1",
@@ -92,12 +107,14 @@ def test_release_body_keeps_the_image_only_control_plane_on_loopback() -> None:
         target_commit="b" * 40,
     )
 
-    assert "## Image-only control plane" in body
-    assert "without browser automation" in body
-    assert "-p 127.0.0.1:8000:8000" in body
+    assert "## Image-only control plane" not in body
+    assert "docker run" not in body
     assert "-p 8000:8000" not in body
-    assert "-e DJENIS_WEB_AUTH_TOKEN" in body
-    assert "-e DJENIS_PERMISSION_TIER=observe" in body
+    assert "_API_KEY" not in body
+    assert "Model weights are downloaded only by the explicit provisioning command" in body
+    assert "normal agent startup performs no download" in body
+    assert "keeps Ollama on an internal network" in body
+    assert "disables Ollama cloud features" in body
 
 
 def test_walkthrough_tabs_support_standard_keyboard_navigation() -> None:

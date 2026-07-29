@@ -13,7 +13,9 @@ uv sync --frozen --extra dev --extra full
 Copy-Item .env.example .env
 ```
 
-Do not put a real API key in `.env` unless a manual test needs it. Most unit tests use mocks and run without external credentials.
+The default `.env.example` needs no inference credential. Provision a local test model
+only for deliberate integration testing; unit and CI tests must use deterministic HTTP
+fakes or mocks and must not download a model or contact a hosted inference service.
 
 ## Before opening a pull request
 
@@ -37,6 +39,12 @@ Add or update tests when behavior changes. Explain any check you could not run.
 ## Respect the permission boundary
 
 New tools must use the existing permission checks. Keep the default tier at `observe`, require a narrow allowlist for system access, and never route model output through a command shell. A refusal is a hard stop; tools must not work around it.
+
+The local inference boundary is also part of the security contract. Do not add public
+endpoint exceptions, proxy inheritance, redirects, provider SDKs, API-key settings,
+automatic pulls, or remote-model fallback. Changes to endpoint validation, model
+identity/capability checks, Docker networks, or `/health` versus `/ready` semantics need
+negative tests and matching updates to the README and threat model.
 
 ## Protect private data
 

@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'none'; font-src 'self'; connect-src 'none'; frame-src 'none'; worker-src 'none'">
-  <meta name="description" content="DjenisAiAgent is an experimental, permission-gated desktop and browser automation agent developed by Ejupi Labs and DjenisAiAgent contributors.">
+  <meta name="description" content="DjenisAiAgent is a local-first, permission-gated desktop and browser automation agent with evidence-based verification.">
   <meta name="theme-color" content="#0a0f0c">
   <meta property="og:title" content="DjenisAiAgent — observable computer automation">
-  <meta property="og:description" content="A permission-gated Gemini agent that observes, acts, and verifies on Windows and the web.">
+  <meta property="og:description" content="A local-model agent that observes, acts, and verifies on Windows and the web.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ejupi-djenis30.github.io/DjenisAiAgent/">
   <meta property="og:image" content="https://ejupi-djenis30.github.io/DjenisAiAgent/media/djenis-ai-agent-social-preview.png">
@@ -18,7 +18,7 @@
   <meta property="og:image:alt" content="DjenisAiAgent: computer automation you can inspect">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="DjenisAiAgent — observable computer automation">
-  <meta name="twitter:description" content="A permission-gated Gemini agent that observes, acts, and verifies on Windows and the web.">
+  <meta name="twitter:description" content="A local-model agent that observes, acts, and verifies on Windows and the web.">
   <meta name="twitter:image" content="https://ejupi-djenis30.github.io/DjenisAiAgent/media/djenis-ai-agent-social-preview.png">
   <meta name="twitter:image:alt" content="DjenisAiAgent: computer automation you can inspect">
   <title>DjenisAiAgent — Observable computer automation</title>
@@ -44,9 +44,9 @@
   <main id="main" tabindex="-1">
     <section class="hero" id="top">
       <div class="hero-copy">
-        <p class="kicker"><span></span> Experimental agent / Windows + browser</p>
+        <p class="kicker"><span></span> Local inference / Windows + browser</p>
         <h1>Computer automation you can inspect.</h1>
-        <p class="hero-lede">DjenisAiAgent reads the current interface, chooses one bounded action, and checks the result before moving on. It is a practical study in making tool-calling agents easier to observe and harder to over-trust.</p>
+        <p class="hero-lede">DjenisAiAgent reads the current interface, asks a model running on your machine for one bounded action, and checks the result before moving on. No provider key, remote-model fallback, or hidden runtime download.</p>
         <div class="hero-actions">
           <a class="button button-primary" href="#demo">Run the walkthrough</a>
           <a class="button button-secondary" href="https://github.com/ejupi-djenis30/DjenisAiAgent#quick-start-windows">Read the setup guide</a>
@@ -68,14 +68,14 @@
       <div class="hero-meta" aria-label="Project facts">
         <div><span>01</span><strong>One tool</strong><small>per reasoning step</small></div>
         <div><span>02</span><strong>Three tiers</strong><small>observe, interact, system</small></div>
-        <div><span>03</span><strong>Two runtimes</strong><small>native Windows, remote browser</small></div>
+        <div><span>03</span><strong>Local model</strong><small>Ollama or compatible /v1 server</small></div>
       </div>
     </section>
 
     <section class="statement" id="system">
       <p class="section-index">01 / System</p>
       <h2>See the state.<br>Choose one action.<br><em>Check the result.</em></h2>
-      <p class="section-intro">The loop stays deliberately legible. Screenshots and accessibility data provide context; Gemini returns a structured function call; the tool layer executes only what the active runtime and permission tier expose.</p>
+      <p class="section-intro">The loop stays deliberately legible. Screenshots and accessibility data go only to the configured local endpoint; the model returns one structured function call; the host executes only what the active runtime and permission tier expose.</p>
     </section>
 
     <section class="architecture" aria-labelledby="architecture-title">
@@ -85,7 +85,7 @@
       </div>
       <ol class="flow">
         <li><span>01</span><div><strong>Observe</strong><p>Capture the screen and a structured UI snapshot.</p></div></li>
-        <li><span>02</span><div><strong>Reason</strong><p>Ask Gemini for exactly one declared function call.</p></div></li>
+        <li><span>02</span><div><strong>Reason locally</strong><p>Ask the pre-provisioned local model for exactly one declared function call.</p></div></li>
         <li><span>03</span><div><strong>Act</strong><p>Run a tool allowed by the runtime and operator policy.</p></div></li>
         <li><span>04</span><div><strong>Verify</strong><p>Feed the outcome into the next turn before claiming success.</p></div></li>
       </ol>
@@ -97,7 +97,7 @@
           <p class="section-index">02 / Guided demo</p>
           <h2 id="demo-title">A complete turn,<br>without the black box.</h2>
         </div>
-        <p>This deterministic walkthrough runs in your browser. It demonstrates the orchestration contract; it is not connected to a live desktop or Gemini account.</p>
+        <p>This deterministic walkthrough runs entirely in your browser. It demonstrates the orchestration contract; it is not connected to a live desktop or model server.</p>
       </div>
       <div class="demo" data-demo>
         <div class="demo-steps" role="tablist" aria-label="Walkthrough steps">
@@ -129,6 +129,7 @@
         <div class="matrix-row" role="row"><strong role="cell">Browser DOM tools</strong><span role="cell" class="yes"><small>Windows native</small>Local debugger</span><span role="cell" class="yes"><small>Docker / remote browser</small>Remote Selenium</span></div>
         <div class="matrix-row" role="row"><strong role="cell">Host screen capture</strong><span role="cell" class="yes"><small>Windows native</small>Supported</span><span role="cell" class="no"><small>Docker / remote browser</small>Unavailable</span></div>
         <div class="matrix-row" role="row"><strong role="cell">Authenticated web console</strong><span role="cell" class="yes"><small>Windows native</small>Supported</span><span role="cell" class="yes"><small>Docker / remote browser</small>Supported</span></div>
+        <div class="matrix-row" role="row"><strong role="cell">Local inference</strong><span role="cell" class="yes"><small>Windows native</small>Loopback endpoint</span><span role="cell" class="yes"><small>Docker / remote browser</small>Internal Ollama sidecar</span></div>
       </div>
     </section>
 
@@ -136,7 +137,7 @@
       <div class="security-copy">
         <p class="section-index">03 / Security model</p>
         <h2 id="security-title">Useful by choice.<br><em>Restricted by default.</em></h2>
-        <p>The default tier can inspect approved files and reason about the current state. Interaction and system control are separate opt-ins. The web console binds to localhost unless you change it, and web mode refuses to start without an operator token.</p>
+        <p>The default tier can inspect approved files and reason about the current state. Interaction and system control are separate opt-ins. In Docker, agent and model stay internal; a hardened loopback gateway exposes the console, while browser egress remains separate.</p>
       </div>
       <div class="tiers">
         <article><span>Default</span><h3>Observe</h3><p>Read within approved paths, inspect runtime status, and reason. No desktop mutation.</p></article>
@@ -152,11 +153,12 @@
           <h2 id="build-title">Read the code.<br>Set the boundaries.<br><em>Then run it.</em></h2>
         </div>
         <div>
-          <pre><code><span>git clone</span> https://github.com/ejupi-djenis30/DjenisAiAgent.git
+          <pre><code><span>ollama pull</span> qwen3-vl:8b
+<span>git clone</span> https://github.com/ejupi-djenis30/DjenisAiAgent.git
 <span>cd</span> DjenisAiAgent
 <span>uv sync</span> --frozen --extra dev --extra full
 <span>uv run</span> --frozen --no-sync djenis</code></pre>
-          <p>This is experimental software with powerful optional tools. Review the security model and <code>.env.example</code> before enabling interaction or system access.</p>
+          <p>The model is provisioned explicitly and never pulled at agent startup. Review the local inference and security boundaries before enabling interaction or system access.</p>
           <a class="text-link" href="https://github.com/ejupi-djenis30/DjenisAiAgent">Open the repository <span aria-hidden="true">↗</span></a>
         </div>
       </div>

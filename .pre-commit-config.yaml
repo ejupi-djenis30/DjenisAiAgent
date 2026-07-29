@@ -1,9 +1,9 @@
 repos:
   # Ruff: linting + formatting (replaces flake8, isort, black)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.4
+    rev: v0.16.0
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format
 
@@ -31,9 +31,9 @@ repos:
 
   # Mypy type checking
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
+    rev: v2.3.0
     hooks:
       - id: mypy
-        additional_dependencies: [types-Pillow]
-        args: [--ignore-missing-imports, --no-strict-optional]
-        files: ^src/
+        additional_dependencies: [types-Pillow==10.2.0.20240822]
+        args: [src, scripts]
+        pass_filenames: false
