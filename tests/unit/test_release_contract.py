@@ -417,6 +417,16 @@ def test_rehearsal_is_offline_fail_closed_and_source_bound() -> None:
         1,
     )
     missing_attestation = workflow.replace("          sbom: true\n", "          sbom: false\n", 1)
+    missing_oci_layout_check = workflow.replace(
+        '          test -f "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci/index.json"\n',
+        "",
+        1,
+    )
+    wrong_scan_target = workflow.replace(
+        "          scan-ref: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci\n",
+        "          scan-ref: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar\n",
+        1,
+    )
 
     assert "rehearsal must build an offline OCI archive with SBOM and provenance" in (
         validate_workflow_text(publish_build)
@@ -432,6 +442,13 @@ def test_rehearsal_is_offline_fail_closed_and_source_bound() -> None:
     assert "rehearsal must not contain any external release mutation command" in mutation_errors
     assert "rehearsal must build an offline OCI archive with SBOM and provenance" in (
         validate_workflow_text(missing_attestation)
+    )
+    assert (
+        "rehearsal must extract and validate the local OCI layout before scanning"
+        in validate_workflow_text(missing_oci_layout_check)
+    )
+    assert "rehearsal Trivy scan must fail closed over the local OCI layout" in (
+        validate_workflow_text(wrong_scan_target)
     )
 
 
