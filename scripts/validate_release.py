@@ -49,6 +49,7 @@ EXPECTED_JOB_PERMISSIONS: dict[str, dict[str, dict[str, str]]] = {
     },
     "docker-publish.yml": {
         "verify": {"contents": "read"},
+        "verify-windows": {"contents": "read"},
         "release-preflight": {"contents": "write"},
         "candidate": {"contents": "read", "packages": "write"},
         "attest": {
@@ -457,6 +458,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         errors.append("publication runs for one ref must serialize without cancellation")
 
     verify = _workflow_job(document, "verify", "docker-publish workflow", errors)
+    verify_windows = _workflow_job(document, "verify-windows", "docker-publish workflow", errors)
     release_preflight = _workflow_job(
         document, "release-preflight", "docker-publish workflow", errors
     )
@@ -479,6 +481,43 @@ def validate_workflow_text(workflow: str) -> list[str]:
         outputs = _mapping(verify.get("outputs"))
         if outputs != {"version": "${{ steps.release-contract.outputs.version }}"}:
             errors.append("verify job must export the structurally validated release version")
+
+    if verify_windows is not None:
+        if (
+            verify_windows.get("runs-on") != "windows-latest"
+            or verify_windows.get("if") is not None
+            or _needs(verify_windows)
+        ):
+            errors.append(
+                "verify-windows must run independently on windows-latest for every release trigger"
+            )
+        steps = _workflow_steps(verify_windows, "verify-windows", errors)
+        _validate_checkout(steps, "verify-windows", errors)
+        dependencies = _workflow_step(
+            steps,
+            "windows-dependencies",
+            "verify-windows",
+            errors,
+        )
+        windows_tests = _workflow_step(steps, "windows-tests", "verify-windows", errors)
+        if dependencies is not None:
+            dependency_command = _normalized_shell(dependencies)
+            required_dependency_tokens = (
+                "uv sync --frozen",
+                "--extra dev",
+                "--extra windows",
+                "--extra web",
+                "--extra browser",
+                "--extra transcription",
+            )
+            if any(token not in dependency_command for token in required_dependency_tokens):
+                errors.append(
+                    "verify-windows must install every locked Windows runtime and test extra"
+                )
+        if windows_tests is not None and _normalized_shell(windows_tests) != (
+            "uv run --frozen --no-sync pytest tests/unit"
+        ):
+            errors.append("verify-windows must execute the complete Windows unit suite")
 
     if release_preflight is not None:
         if (
@@ -567,8 +606,10 @@ def validate_workflow_text(workflow: str) -> list[str]:
             )
 
     if candidate is not None:
-        if _needs(candidate) != {"verify", "release-preflight"}:
-            errors.append("candidate job must depend on verify and release-preflight")
+        if _needs(candidate) != {"verify", "verify-windows", "release-preflight"}:
+            errors.append(
+                "candidate job must depend on verify, verify-windows, and release-preflight"
+            )
         if candidate.get("if") != PUBLISH_REF_GATE:
             errors.append(
                 "candidate job must be gated to master or v-prefixed tags so manual runs on "
@@ -1095,7 +1136,7 @@ def validate_repository_workflows(project_root: Path) -> list[str]:
 
 
 def validate_ci_workflow_text(workflow: str) -> list[str]:
-    """Structurally require fail-closed lint and coverage publication controls."""
+    """Require fail-closed lint, local-runtime smoke, and coverage controls."""
 
     document, errors = _parse_workflow(workflow, "CI workflow")
     if document is None:
@@ -1128,6 +1169,50 @@ def validate_ci_workflow_text(workflow: str) -> list[str]:
     actionlint_index = _step_index(steps, "actionlint")
     if install_index is None or actionlint_index is None or install_index >= actionlint_index:
         errors.append("CI must install actionlint before executing it")
+
+    docker_job = _workflow_job(document, "docker-build", "CI workflow", errors)
+    if docker_job is not None:
+        docker_steps = _workflow_steps(docker_job, "CI Docker build", errors)
+        local_smoke = _workflow_step(
+            docker_steps,
+            "local-runtime-smoke",
+            "CI Docker build",
+            errors,
+        )
+        if local_smoke is not None:
+            smoke_run = _normalized_shell(local_smoke)
+            required_local_runtime_tokens = (
+                "docker network create --internal djenis-llm-smoke-net",
+                "docker network create djenis-web-smoke-net",
+                "docker network connect djenis-llm-smoke-net djenis-smoke",
+                "docker start djenis-smoke",
+                "--network-alias ollama",
+                '"/api/version"',
+                '"/api/tags"',
+                '"/api/show"',
+                '"model_info": {',
+                '"qwen3vl.context_length": 262144',
+                "DJENIS_RUNTIME_MODE=docker",
+                "DJENIS_LOCAL_LLM_BACKEND=ollama",
+                "DJENIS_LOCAL_LLM_ENDPOINT=http://ollama:11434",
+                "DJENIS_LOCAL_LLM_MODEL=qwen3-vl:8b",
+                "DJENIS_LOCAL_LLM_CONTEXT_TOKENS=65536",
+                "-p 127.0.0.1:8000:8000",
+                "http://localhost:8000/health",
+                "http://localhost:8000/ready",
+            )
+            if (
+                any(token not in smoke_run for token in required_local_runtime_tokens)
+                or local_smoke.get("continue-on-error") is not None
+            ):
+                errors.append(
+                    "CI Docker smoke must exercise fail-closed local-model preflight and readiness"
+                )
+
+    normalized_workflow = workflow.casefold()
+    credential_markers = ("_api_key", "api-key")
+    if any(marker in normalized_workflow for marker in credential_markers):
+        errors.append("CI local-model smoke must not configure a provider credential")
 
     coverage_job = _workflow_job(document, "windows-coverage", "CI workflow", errors)
     if coverage_job is None:
@@ -1227,7 +1312,7 @@ def validate_tag_ruleset_text(ruleset_text: str) -> list[str]:
 
 
 def validate_release_documentation(project_root: Path, version: str) -> list[str]:
-    """Require the changelog and pull example to describe the current version."""
+    """Require current release docs and a self-contained immutable Compose handoff."""
 
     readme = (project_root / "README.md").read_text(encoding="utf-8")
     changelog = (project_root / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -1241,6 +1326,26 @@ def validate_release_documentation(project_root: Path, version: str) -> list[str
         errors.append(f"CHANGELOG.md must contain a {version} release entry")
     if ".github/rulesets/README.md" not in readme:
         errors.append("README.md must link the immutable release-tag ruleset instructions")
+
+    try:
+        release_helper = (project_root / "scripts" / "publish_github_release.py").read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        release_helper = ""
+    gateway_asset_tokens = (
+        "mkdir -p djenis-ai-agent-release/deploy",
+        "{target_commit}/deploy/nginx.conf",
+        "--output deploy/nginx.conf",
+    )
+    if any(token not in release_helper for token in gateway_asset_tokens):
+        errors.append("release notes must fetch the gateway asset from the exact authorized commit")
+    readiness_tokens = (
+        "CLI startup and web readiness fail closed",
+        "`/health` endpoint remains a process-liveness probe",
+    )
+    if any(token not in release_helper for token in readiness_tokens):
+        errors.append("release notes must distinguish readiness from web process liveness")
     return errors
 
 
@@ -1351,6 +1456,67 @@ def verify_remote_release_tag(
     return normalized
 
 
+def validate_local_only_dependency_contract(project_root: Path) -> list[str]:
+    """Require the exact audited dependency surface for local-only inference."""
+
+    errors: list[str] = []
+    expected_project_dependencies = {
+        "fastapi",
+        "pillow",
+        "pydantic",
+        "python-dotenv",
+        "python-multipart",
+        "uvicorn",
+    }
+    expected_docker_dependencies = expected_project_dependencies | {"selenium", "websockets"}
+
+    def dependency_name(specification: str) -> str | None:
+        match = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", specification.strip())
+        return match.group(0).replace("_", "-").casefold() if match is not None else None
+
+    project_path = project_root / "pyproject.toml"
+    try:
+        project_document = tomllib.loads(project_path.read_text(encoding="utf-8"))
+        project_table = project_document.get("project")
+        raw_project_dependencies = (
+            project_table.get("dependencies") if isinstance(project_table, Mapping) else None
+        )
+        project_dependencies = (
+            {
+                name
+                for item in raw_project_dependencies
+                if isinstance(item, str) and (name := dependency_name(item)) is not None
+            }
+            if isinstance(raw_project_dependencies, list)
+            else set()
+        )
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        errors.append(f"cannot inspect local-only dependency manifest pyproject.toml: {exc}")
+        project_dependencies = set()
+    if project_dependencies != expected_project_dependencies:
+        errors.append("pyproject.toml must use the exact audited local-only core dependency set")
+
+    docker_path = project_root / "requirements-docker.txt"
+    try:
+        docker_dependencies = {
+            name
+            for line in docker_path.read_text(encoding="utf-8").splitlines()
+            if (entry := line.split("#", 1)[0].strip())
+            and (name := dependency_name(entry)) is not None
+        }
+    except OSError as exc:
+        errors.append(
+            f"cannot inspect local-only dependency manifest requirements-docker.txt: {exc}"
+        )
+        docker_dependencies = set()
+    if docker_dependencies != expected_docker_dependencies:
+        errors.append(
+            "requirements-docker.txt must use the exact audited local-only container dependency set"
+        )
+
+    return errors
+
+
 def validate_release_contract(
     project_root: Path,
     *,
@@ -1382,7 +1548,14 @@ def validate_release_contract(
         (project_root / TAG_RULESET_PATH).read_text(encoding="utf-8")
     )
     repository_workflow_errors = validate_repository_workflows(project_root)
-    structural_errors = workflow_errors + ci_errors + ruleset_errors + repository_workflow_errors
+    dependency_errors = validate_local_only_dependency_contract(project_root)
+    structural_errors = (
+        workflow_errors
+        + ci_errors
+        + ruleset_errors
+        + repository_workflow_errors
+        + dependency_errors
+    )
     if structural_errors:
         raise ReleaseContractError("; ".join(structural_errors))
 

@@ -21,8 +21,8 @@ class ConfigurationError(DjenisError):
     """Raised when the agent configuration is invalid or incomplete."""
 
 
-class MissingApiKeyError(ConfigurationError):
-    """Raised when a required API key is absent or is a placeholder value."""
+class LocalModelUnavailableError(ConfigurationError):
+    """Raised when the configured local model runtime or artifact is unavailable."""
 
 
 # ---------------------------------------------------------------------------
@@ -51,8 +51,8 @@ class ReasoningError(DjenisError):
     """Raised when the AI reasoning step encounters an unrecoverable error."""
 
 
-class GeminiAPIError(ReasoningError):
-    """Raised when the Gemini API call fails after all retries are exhausted."""
+class InvalidModelResponseError(ReasoningError):
+    """Raised when a local model response violates the tool-calling contract."""
 
 
 class InvalidToolCallError(ReasoningError):

@@ -139,7 +139,9 @@ class WebSecurity:
         action: str,
         *,
         require_origin_for_session: bool = False,
-    ) -> None:
+    ) -> str | None:
+        """Authorize an HTTP request and return its opaque session id, when cookie-backed."""
+
         self.require_rate_limit(request.client.host if request.client else None, action)
         origin = request.headers.get("origin")
         host = request.headers.get("host")
@@ -152,9 +154,11 @@ class WebSecurity:
                 )
             if origin:
                 self.require_origin(origin, host)
-            return
+            return None
 
-        if self.session_is_valid(request.cookies.get(SESSION_COOKIE)):
+        raw_session_id = request.cookies.get(SESSION_COOKIE)
+        session_id = raw_session_id if isinstance(raw_session_id, str) else None
+        if self.session_is_valid(session_id):
             if require_origin_for_session and not origin:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -162,7 +166,7 @@ class WebSecurity:
                 )
             if origin:
                 self.require_origin(origin, host)
-            return
+            return session_id
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 from src.config import config
 from src.redaction import redact
@@ -51,6 +52,8 @@ class AuditLogger:
             return
 
         event = {
+            "schema_version": 1,
+            "event_id": uuid4().hex,
             "timestamp": datetime.now(UTC).isoformat(),
             "event_type": event_type,
             "payload": _json_safe(redact(payload)),

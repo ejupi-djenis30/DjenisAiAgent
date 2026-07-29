@@ -21,16 +21,35 @@ import pytest
 
 from src.action import tools as tools_module
 
+_SENSITIVE_CHILD_ENV_NAMES = (
+    "EXTERNAL_API_KEY",
+    "DJENIS_WEB_AUTH_TOKEN",
+    "DJENIS_RUNTIME_MODE",
+    "SERVICE_TOKEN",
+    "SIGNING_KEY",
+    "CLIENT_SECRET",
+    "DATABASE_PASSWORD",
+    "DATABASE_PWD",
+    "CLOUD_CREDENTIAL",
+)
+
 
 @pytest.fixture(autouse=True)
-def operator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def operator_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Start every test from an explicit, privileged operator configuration."""
 
+    approved_application = tmp_path / "approved.exe"
+    approved_application.touch()
     monkeypatch.setattr(tools_module.config, "permission_tier", "system")
     monkeypatch.setattr(tools_module.config, "confirm_dangerous_actions", True)
     monkeypatch.setattr(tools_module.config, "allowed_paths", (str(Path.cwd()),))
-    monkeypatch.setattr(tools_module.config, "allowed_applications", ("approved.exe",))
+    monkeypatch.setattr(
+        tools_module.config,
+        "allowed_applications",
+        (str(approved_application),),
+    )
     monkeypatch.setattr(tools_module.config, "allowed_shell_commands", (sys.executable,))
+    monkeypatch.setattr(tools_module.config, "allowed_url_hosts", ("example.com",))
 
 
 @pytest.mark.parametrize(
@@ -93,6 +112,8 @@ def test_shell_invocation_is_an_exact_argument_vector_with_bounded_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
+    for name in _SENSITIVE_CHILD_ENV_NAMES:
+        monkeypatch.setenv(name, "test-sentinel")
 
     def fake_run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         captured["arguments"] = arguments
@@ -111,6 +132,10 @@ def test_shell_invocation_is_an_exact_argument_vector_with_bounded_output(
     assert captured["arguments"][1:] == ["-c", "print(123)"]
     assert "shell" not in captured["kwargs"]
     assert captured["kwargs"]["timeout"] == tools_module.config.shell_timeout
+    child_env = captured["kwargs"]["env"]
+    assert isinstance(child_env, dict)
+    assert set(_SENSITIVE_CHILD_ENV_NAMES).isdisjoint(child_env)
+    assert child_env.get("PATH") == os.environ.get("PATH")
     assert payload == {
         "stdout": "approved output",
         "stderr": "diagnostic",
@@ -122,16 +147,21 @@ def test_shell_invocation_is_an_exact_argument_vector_with_bounded_output(
 
 def test_shell_reports_missing_executable_without_invoking_runner(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     runner = MagicMock(side_effect=AssertionError("missing executable must not run"))
-    monkeypatch.setattr(tools_module.config, "allowed_shell_commands", ("missing-tool.exe",))
-    monkeypatch.setattr(tools_module.shutil, "which", lambda _name: None)
+    missing_executable = tmp_path / "missing-tool.exe"
+    monkeypatch.setattr(
+        tools_module.config,
+        "allowed_shell_commands",
+        (str(missing_executable),),
+    )
     monkeypatch.setattr(tools_module.subprocess, "run", runner)
 
     payload = json.loads(tools_module.run_shell_command("missing-tool.exe --version"))
 
     assert payload["return_code"] == -1
-    assert payload["stderr"] == "The allowlisted executable was not found."
+    assert "does not exist" in payload["stderr"]
     runner.assert_not_called()
 
 
@@ -148,13 +178,13 @@ def test_shell_timeout_and_unexpected_errors_are_returned_as_bounded_json(
     assert "timed out" in timeout_payload["stderr"]
 
     monkeypatch.setattr(
-        tools_module,
-        "split_command_arguments",
-        MagicMock(side_effect=RuntimeError("parser unavailable")),
+        tools_module.subprocess,
+        "run",
+        MagicMock(side_effect=RuntimeError("runner unavailable")),
     )
     error_payload = json.loads(tools_module.run_shell_command(f'"{sys.executable}" --version'))
     assert error_payload["return_code"] == -1
-    assert error_payload["stderr"] == "Error: An unexpected error occurred: parser unavailable"
+    assert error_payload["stderr"] == "Error: An unexpected error occurred: runner unavailable"
 
 
 def test_application_launch_requires_tier_confirmation_and_exact_allowlist(
@@ -179,6 +209,8 @@ def test_approved_application_launch_passes_one_literal_executable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     popen = MagicMock()
+    for name in _SENSITIVE_CHILD_ENV_NAMES:
+        monkeypatch.setenv(name, "test-sentinel")
     monkeypatch.setattr(tools_module.subprocess, "Popen", popen)
 
     result = tools_module.start_application("approved.exe")
@@ -186,9 +218,13 @@ def test_approved_application_launch_passes_one_literal_executable(
     assert "Start command issued" in result
     popen.assert_called_once()
     arguments, options = popen.call_args
-    assert arguments == (["approved.exe"],)
+    assert arguments == ([tools_module.config.allowed_applications[0]],)
     assert options["close_fds"] is True
     assert isinstance(options["creationflags"], int)
+    child_env = options["env"]
+    assert isinstance(child_env, dict)
+    assert set(_SENSITIVE_CHILD_ENV_NAMES).isdisjoint(child_env)
+    assert child_env.get("PATH") == os.environ.get("PATH")
 
 
 def test_application_launch_reports_platform_and_runtime_errors(
@@ -199,7 +235,7 @@ def test_application_launch_reports_platform_and_runtime_errors(
         "Popen",
         MagicMock(side_effect=FileNotFoundError),
     )
-    assert "not found in system PATH" in tools_module.start_application("approved.exe")
+    assert "no longer exists" in tools_module.start_application("approved.exe")
 
     monkeypatch.setattr(
         tools_module.subprocess,
@@ -273,6 +309,19 @@ def test_url_open_reports_browser_error_without_exposing_a_credentialed_url(
 
     assert "browser unavailable" in result
     assert "https://example.com/path" in result
+
+
+def test_url_open_does_not_claim_success_when_browser_rejects_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import webbrowser
+
+    monkeypatch.setattr(webbrowser, "open", lambda _url: False)
+
+    result = tools_module.open_url("https://example.com/path")
+
+    assert result.startswith("Error:")
+    assert "rejected" in result
 
 
 def test_screenshot_save_is_confined_and_requires_confirmation(
@@ -415,10 +464,11 @@ def test_element_lookup_creates_locator_from_current_window_snapshot(
     assert "No element with index #99" in tools_module.element_id("#99")
 
 
-def test_element_lookup_browser_fallback_and_timeout_are_explicit(
+def test_element_lookup_browser_fallback_is_explicit_and_side_effect_free(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     window = SimpleNamespace(window_text=lambda: "Browser")
+    browser_clicks: list[str] = []
     monkeypatch.setattr(tools_module, "_get_active_window", lambda: window)
     monkeypatch.setattr(tools_module, "get_latest_ui_snapshot", lambda: [])
     monkeypatch.setattr(tools_module, "_execute_with_timeout", lambda *args, **kwargs: [])
@@ -427,21 +477,36 @@ def test_element_lookup_browser_fallback_and_timeout_are_explicit(
     monkeypatch.setattr(
         tools_module.browser_tools,
         "browser_find_and_click",
-        lambda _query: "✅ Browser target clicked",
+        lambda query: browser_clicks.append(query) or "Browser target clicked",
     )
-    assert "[Browser Mode]" in tools_module.element_id("Continue")
 
+    result = tools_module.element_id("Continue")
+
+    assert "Use browser_find_and_click" in result
+    assert "lookup side effect" in result
+    assert browser_clicks == []
+
+
+def test_desktop_click_never_falls_through_to_a_browser_side_effect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    browser_click = MagicMock(return_value="Browser element clicked successfully.")
     monkeypatch.setattr(
-        tools_module.browser_tools,
-        "browser_find_and_click",
-        lambda _query: "target unavailable",
+        tools_module,
+        "_get_active_window",
+        lambda: SimpleNamespace(window_text=lambda: "Browser"),
     )
     monkeypatch.setattr(
-        tools_module.browser_tools,
-        "get_browser_setup_hint",
-        lambda: "attach a supported browser",
+        tools_module,
+        "_resolve_control",
+        lambda window, identifier: (None, {"error": f"stale {identifier}"}),
     )
-    assert "attach a supported browser" in tools_module.element_id("Continue")
+    monkeypatch.setattr(tools_module.browser_tools, "browser_find_and_click", browser_click)
+
+    result = tools_module.click("element:stale")
+
+    assert result.startswith("Error:")
+    browser_click.assert_not_called()
 
 
 def test_fast_element_lookup_uses_native_control_then_falls_back(
@@ -512,8 +577,6 @@ def test_keyboard_and_pointer_contracts_validate_inputs_and_exact_events(
         press=lambda key: events.append(("press", key)),
         write=lambda text, interval: events.append(("write", (text, interval))),
         hotkey=lambda *keys: events.append(("hotkey", keys)),
-        moveTo=lambda x, y, duration: events.append(("move", (x, y, duration))),
-        position=lambda: (14, 28),
     )
     monkeypatch.setitem(sys.modules, "pyautogui", fake_pyautogui)
     monkeypatch.setattr(tools_module.time, "sleep", lambda _seconds: None)
@@ -526,11 +589,6 @@ def test_keyboard_and_pointer_contracts_validate_inputs_and_exact_events(
     assert "Successfully pressed key" in tools_module.press_key_repeat("enter", 2)
     assert "No keys provided" in tools_module.hotkey("+")
     assert "pressed successfully" in tools_module.hotkey("ctrl+shift+p")
-    assert "Mouse moved" in tools_module.move_mouse(10, 20)
-    assert "Invalid coordinates" in tools_module.move_mouse("x", 20)  # type: ignore[arg-type]
-    assert "Current position is (14, 28)" in tools_module.verify_mouse_position()
-    assert "CONFIRMED at (14, 28)" in tools_module.confirm_mouse_position()
-
     assert ("scroll", 2) in events
     assert ("hscroll", -3) in events
     assert events.count(("press", "enter")) == 2

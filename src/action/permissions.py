@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
+import os
 import shlex
+import socket
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -37,26 +40,49 @@ def resolve_allowed_path(path_value: str) -> Path:
     return candidate
 
 
-def require_allowed_application(app_name: str) -> None:
-    """Require an exact executable/name match from the configured application allowlist."""
+def _resolve_allowlisted_executable(
+    requested_value: str,
+    configured_values: tuple[str, ...],
+    *,
+    boundary_name: str,
+) -> Path:
+    requested = requested_value.strip()
+    requested_path = Path(requested).expanduser()
+    requested_is_name = requested_path.name == requested
+    matches: list[Path] = []
 
-    requested = app_name.strip()
-    requested_name = Path(requested).name.casefold()
-    permitted = False
-    for entry in config.allowed_applications:
-        configured = entry.strip()
-        if Path(configured).name == configured:
-            permitted = (
-                Path(requested).name == requested and requested_name == configured.casefold()
-            )
+    for entry in configured_values:
+        configured_path = Path(entry).expanduser()
+        if not configured_path.is_absolute():
+            continue
+        resolved = configured_path.resolve()
+        if requested_is_name:
+            matched = os.path.normcase(resolved.name) == os.path.normcase(requested)
         else:
-            permitted = Path(requested).resolve() == Path(configured).resolve()
-        if permitted:
-            break
-    if not permitted:
+            matched = os.path.normcase(str(requested_path.resolve())) == os.path.normcase(
+                str(resolved)
+            )
+        if matched and resolved not in matches:
+            matches.append(resolved)
+
+    if len(matches) != 1:
         raise ToolPermissionError(
-            "Application is not allowlisted. Configure DJENIS_ALLOWED_APPLICATIONS explicitly."
+            f"{boundary_name} is not allowlisted by one unique absolute path. "
+            f"Configure the corresponding DJENIS allowlist explicitly."
         )
+    if not matches[0].is_file():
+        raise ToolPermissionError(f"The allowlisted {boundary_name.casefold()} does not exist.")
+    return matches[0]
+
+
+def require_allowed_application(app_name: str) -> Path:
+    """Resolve an application name/path to one exact operator-configured executable."""
+
+    return _resolve_allowlisted_executable(
+        app_name,
+        config.allowed_applications,
+        boundary_name="Application",
+    )
 
 
 def split_command_arguments(command: str) -> list[str]:
@@ -77,8 +103,8 @@ def split_command_arguments(command: str) -> list[str]:
     return normalized
 
 
-def require_allowed_shell_command(command: str) -> None:
-    """Allow one native executable invocation from the configured allowlist."""
+def require_allowed_shell_command(command: str) -> tuple[Path, list[str]]:
+    """Resolve one native invocation to an exact allowlisted executable and arguments."""
 
     stripped = command.strip()
     if any(marker in stripped for marker in (";", "|", "&", "`", "$(", "\n", "\r")):
@@ -86,29 +112,50 @@ def require_allowed_shell_command(command: str) -> None:
 
     parts = split_command_arguments(stripped)
     executable = parts[0] if parts else ""
-    requested_name = Path(executable).name.casefold()
-    permitted = False
-    for entry in config.allowed_shell_commands:
-        configured = entry.strip()
-        if Path(configured).name == configured:
-            permitted = (
-                Path(executable).name == executable and requested_name == configured.casefold()
-            )
-        else:
-            permitted = Path(executable).resolve() == Path(configured).resolve()
-        if permitted:
-            break
-    if not executable or not permitted:
+    if not executable:
         raise ToolPermissionError(
-            "Shell command is not allowlisted. Configure DJENIS_ALLOWED_SHELL_COMMANDS "
-            "with exact executable or cmdlet names."
+            "Shell command is not allowlisted. Configure DJENIS_ALLOWED_SHELL_COMMANDS."
         )
+    resolved = _resolve_allowlisted_executable(
+        executable,
+        config.allowed_shell_commands,
+        boundary_name="Shell executable",
+    )
+    return resolved, parts[1:]
 
 
-def require_safe_url(url: str) -> None:
-    """Restrict browser launches to ordinary HTTP(S) URLs."""
+def _host_resolves_to_public_network(hostname: str, port: int) -> bool:
+    """Fail closed unless every resolved address is globally routable."""
 
-    require_tier("interact")
+    try:
+        literal = ipaddress.ip_address(hostname)
+        addresses = {literal}
+    except ValueError:
+        try:
+            results = socket.getaddrinfo(
+                hostname,
+                port,
+                type=socket.SOCK_STREAM,
+            )
+        except OSError as exc:
+            raise ToolPermissionError(
+                f"URL host '{hostname}' could not be resolved safely."
+            ) from exc
+        addresses = set()
+        for result in results:
+            try:
+                addresses.add(ipaddress.ip_address(result[4][0]))
+            except (ValueError, IndexError):
+                continue
+
+    if not addresses:
+        raise ToolPermissionError(f"URL host '{hostname}' resolved to no usable address.")
+    return all(address.is_global for address in addresses)
+
+
+def validate_url_network_policy(url: str) -> None:
+    """Validate an HTTP(S) destination without requiring an action capability."""
+
     parsed = urlparse(url)
     if (
         parsed.scheme not in {"http", "https"}
@@ -117,3 +164,26 @@ def require_safe_url(url: str) -> None:
         or parsed.password
     ):
         raise ToolPermissionError("Only absolute http:// or https:// URLs are allowed.")
+
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ToolPermissionError("URL contains an invalid port.") from exc
+    hostname = parsed.hostname.rstrip(".").casefold()
+    allowed_hosts = {host.rstrip(".").casefold() for host in config.allowed_url_hosts}
+    if hostname in allowed_hosts:
+        return
+
+    if not _host_resolves_to_public_network(hostname, port):
+        raise ToolPermissionError(
+            f"URL host '{hostname}' resolves to a private, local, reserved, or otherwise "
+            "non-public address. Add the exact host to DJENIS_ALLOWED_URL_HOSTS only when "
+            "that network access is intentional."
+        )
+
+
+def require_safe_url(url: str) -> None:
+    """Require browser interaction permission and a policy-compliant HTTP(S) URL."""
+
+    require_tier("interact")
+    validate_url_network_policy(url)

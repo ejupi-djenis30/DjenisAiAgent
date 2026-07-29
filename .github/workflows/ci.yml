@@ -178,23 +178,9 @@ jobs:
         run: uv sync --frozen --extra dev --extra web --extra browser --extra transcription
 
       - name: Run portable unit suite
-        run: |
-          uv run --frozen --no-sync pytest \
-            tests/unit/test_config.py \
-            tests/unit/test_exceptions.py \
-            tests/unit/test_gemini_core.py \
-            tests/unit/test_audio_transcription.py \
-            tests/unit/test_browser_tools.py \
-            tests/unit/test_agent_e2e_contract.py \
-            tests/unit/test_permissions.py \
-            tests/unit/test_privileged_tools.py \
-            tests/unit/test_project_site.py \
-            tests/unit/test_release_contract.py \
-            tests/unit/test_release_registry.py \
-            tests/unit/test_github_release.py \
-            tests/unit/test_redaction.py \
-            tests/unit/test_web_security.py \
-            --junitxml=pytest-portable.xml
+        run: >-
+          uv run --frozen --no-sync pytest tests/unit
+          --junitxml=pytest-portable.xml
 
       - name: Upload portable test results
         if: always()
@@ -284,35 +270,117 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Smoke test container HTTP and WebSocket contracts
+        id: local-runtime-smoke
         shell: bash
         run: |
           cleanup() {
             docker logs djenis-smoke || true
-            docker rm -f djenis-smoke || true
+            docker logs djenis-ollama-smoke || true
+            docker rm -f djenis-smoke djenis-ollama-smoke || true
+            docker network rm djenis-llm-smoke-net djenis-web-smoke-net || true
           }
           trap cleanup EXIT
           smoke_token="test_operator_token_for_ci_only_12345"
 
+          docker network create --internal djenis-llm-smoke-net
+          docker network create djenis-web-smoke-net
           docker run -d \
+            --name djenis-ollama-smoke \
+            --network djenis-llm-smoke-net \
+            --network-alias ollama \
+            --entrypoint python \
+            djenis-ai-agent:ci-${{ github.sha }} \
+            -c '
+          import json
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def write_json(self, payload, status=200):
+                  body = json.dumps(payload, separators=(",", ":")).encode()
+                  self.send_response(status)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def do_GET(self):
+                  if self.path == "/api/version":
+                      self.write_json({"version": "ci-local-stub"})
+                  elif self.path == "/api/tags":
+                      self.write_json({
+                          "models": [{
+                              "name": "qwen3-vl:8b",
+                              "size": 1,
+                              "digest": "a" * 64,
+                          }]
+                      })
+                  else:
+                      self.write_json({"error": "not found"}, status=404)
+
+              def do_POST(self):
+                  length = int(self.headers.get("Content-Length", "0"))
+                  self.rfile.read(length)
+                  if self.path == "/api/show":
+                      self.write_json({
+                          "capabilities": ["tools", "vision"],
+                          "model_info": {
+                              "qwen3vl.context_length": 262144,
+                          },
+                      })
+                  else:
+                      self.write_json({"error": "not found"}, status=404)
+
+              def log_message(self, _format, *_args):
+                  return
+
+          ThreadingHTTPServer(("0.0.0.0", 11434), Handler).serve_forever()
+          '
+
+          ollama_ready=false
+          for attempt in $(seq 1 20); do
+            if docker exec djenis-ollama-smoke python -c \
+              'from urllib.request import urlopen; urlopen("http://127.0.0.1:11434/api/version", timeout=2).read()'; then
+              echo "Local model stub is ready"
+              ollama_ready=true
+              break
+            fi
+            echo "Attempt ${attempt}/20: waiting for the local model stub..."
+            sleep 1
+          done
+          if [[ "${ollama_ready}" != "true" ]]; then
+            echo "Local model stub failed to become ready"
+            exit 1
+          fi
+
+          docker create \
             --name djenis-smoke \
-            -p 8000:8000 \
-            -e GEMINI_API_KEY=placeholder_for_smoke_test \
+            --network djenis-web-smoke-net \
+            -p 127.0.0.1:8000:8000 \
+            -e DJENIS_RUNTIME_MODE=docker \
+            -e DJENIS_LOCAL_LLM_BACKEND=ollama \
+            -e DJENIS_LOCAL_LLM_ENDPOINT=http://ollama:11434 \
+            -e DJENIS_LOCAL_LLM_MODEL=qwen3-vl:8b \
+            -e DJENIS_LOCAL_LLM_CONTEXT_TOKENS=65536 \
+            -e DJENIS_LOCAL_LLM_VISION=true \
             -e DJENIS_WEB_AUTH_TOKEN="${smoke_token}" \
             djenis-ai-agent:ci-${{ github.sha }}
+          docker network connect djenis-llm-smoke-net djenis-smoke
+          docker start djenis-smoke
 
           healthy=false
           for attempt in $(seq 1 20); do
-            if curl -fsS http://localhost:8000/health; then
-              echo "Health check passed"
+            if curl -fsS http://localhost:8000/health \
+              && curl -fsS http://localhost:8000/ready; then
+              echo "Liveness and local-model readiness checks passed"
               healthy=true
               break
             fi
-            echo "Attempt ${attempt}/20: waiting for /health..."
+            echo "Attempt ${attempt}/20: waiting for /health and /ready..."
             sleep 2
           done
 
           if [[ "${healthy}" != "true" ]]; then
-            echo "Container failed to become healthy in time"
+            echo "Container failed to become live and ready in time"
             exit 1
           fi
 

@@ -81,21 +81,40 @@ def test_remote_browser_task_crosses_policy_action_feedback_and_audit_boundaries
     element = _RecordingElement()
     driver = SimpleNamespace(
         title="Scripted remote browser",
+        current_url="https://example.test/search/results",
         switch_to=SimpleNamespace(active_element=element),
     )
     webdriver = _FakeWebDriverModule(driver)
     reasoning_calls: list[dict[str, Any]] = []
 
     monkeypatch.setattr(agent_loop.config, "permission_tier", "interact")
-    monkeypatch.setattr(agent_loop.config, "max_loop_turns", 2)
+    monkeypatch.setattr(agent_loop.config, "max_loop_turns", 3)
     monkeypatch.setattr(agent_loop.config, "observation_max_chars", 128)
     monkeypatch.setattr(agent_loop.config, "selenium_remote_url", "http://selenium.test/wd/hub")
     monkeypatch.setattr(agent_loop.config, "supports_native_desktop", lambda: False)
     monkeypatch.setattr(agent_loop.config, "uses_remote_selenium", lambda: True)
+    contexts = iter(
+        (
+            (
+                object(),
+                "Remote browser | URL: https://example.test/search | Search input",
+            ),
+            (
+                object(),
+                "Remote browser | URL: https://example.test/search/results | "
+                "Private account record command-81f726",
+            ),
+            (
+                object(),
+                "Remote browser | URL: https://example.test/search/results | "
+                "Private account record command-81f726",
+            ),
+        )
+    )
     monkeypatch.setattr(
         agent_loop,
         "get_multimodal_context",
-        lambda: (object(), "remote browser DOM snapshot"),
+        lambda: next(contexts),
     )
     monkeypatch.setattr(
         agent_loop,
@@ -109,6 +128,8 @@ def test_remote_browser_task_crosses_policy_action_feedback_and_audit_boundaries
 
     monkeypatch.setattr(browser_tools, "SELENIUM_AVAILABLE", True)
     monkeypatch.setattr(browser_tools, "_driver", None)
+    monkeypatch.setattr(browser_tools, "require_safe_url", lambda _url: None)
+    monkeypatch.setattr(browser_tools, "validate_url_network_policy", lambda _url: None)
     monkeypatch.setattr(browser_tools, "webdriver", webdriver)
     monkeypatch.setattr(browser_tools, "WebDriverException", RuntimeError)
     monkeypatch.setattr(
@@ -142,7 +163,15 @@ def test_remote_browser_task_crosses_policy_action_feedback_and_audit_boundaries
                     "press_enter": True,
                 },
             ),
-            _ScriptedFunctionCall("finish_task", {"summary": "browser form submitted"}),
+            _ScriptedFunctionCall("browser_get_current_url", {}),
+            _ScriptedFunctionCall(
+                "finish_task",
+                {
+                    "outcome": "completed",
+                    "summary": "account record search results opened",
+                    "evidence": "Current URL: https://example.test/search/results",
+                },
+            ),
         )
     )
 
@@ -162,8 +191,8 @@ def test_remote_browser_task_crosses_policy_action_feedback_and_audit_boundaries
         status_callback=lambda _message: None,
     )
 
-    assert result == "SUCCESS: Task completed"
-    assert len(reasoning_calls) == 2
+    assert result == "SUCCESS: account record search results opened"
+    assert len(reasoning_calls) == 3
     assert "browser_find_and_type" in reasoning_calls[0]["tool_names"]
     assert "run_shell_command" not in reasoning_calls[0]["tool_names"]
     assert "take_screenshot" not in reasoning_calls[0]["tool_names"]
@@ -177,7 +206,7 @@ def test_remote_browser_task_crosses_policy_action_feedback_and_audit_boundaries
         ("send_keys", enter_key),
     ]
     assert any(
-        entry == "OBSERVATION: Pressed Enter in the active browser element."
+        "RESULT success: Pressed Enter in the active browser element." in entry
         for entry in reasoning_calls[1]["history"]
     )
     assert private_text not in "\n".join(reasoning_calls[1]["history"])
@@ -188,9 +217,18 @@ def test_remote_browser_task_crosses_policy_action_feedback_and_audit_boundaries
     assert [event["event_type"] for event in audit_events] == [
         "task_started",
         "turn_started",
+        "perception_captured",
+        "reasoning_decision",
         "tool_dispatched",
         "tool_result",
         "turn_started",
+        "perception_captured",
+        "reasoning_decision",
+        "tool_dispatched",
+        "tool_result",
+        "turn_started",
+        "perception_captured",
+        "reasoning_decision",
         "tool_dispatched",
         "task_completed",
         "task_succeeded",
@@ -202,7 +240,7 @@ def test_remote_browser_task_crosses_policy_action_feedback_and_audit_boundaries
     for private_value in (private_command, private_query, private_text):
         assert private_value not in serialized_audit
 
-    browser_dispatch = audit_events[2]["payload"]
+    browser_dispatch = audit_events[4]["payload"]
     assert browser_dispatch["tool_name"] == "browser_find_and_type"
     assert browser_dispatch["tool_arg_names"] == ["press_enter", "query", "text"]
     assert browser_dispatch["tool_arg_lengths"] == {

@@ -219,20 +219,20 @@ def get_latest_ui_snapshot() -> list[dict[str, Any]]:
 
 def get_multimodal_context() -> tuple[Image.Image, str]:
     """
-    Capture both visual and structural information about the current UI state.
+    Capture visual and structural information for the active runtime.
 
-    This is the main perception function that provides multimodal context:
-    1. Visual: A screenshot of the current screen
-    2. Structural: A text representation of UI elements
-
-    The function attempts to use the UIA backend first (for modern Windows apps),
-    then falls back to Win32 backend (for legacy apps) if needed.
+    Remote Selenium uses its viewport screenshot and a bounded browser snapshot.
+    Native desktop runtimes use pyautogui plus UI Automation with a Win32 fallback.
 
     Returns:
-        tuple[Image.Image, str]: A tuple containing:
-            - PIL Image object of the screenshot
-            - String representation of the UI element tree
+        tuple[Image.Image, str]: Screenshot and structural context text.
     """
+    if config.uses_remote_selenium():
+        from src.action.browser_tools import capture_browser_context
+
+        screenshot, browser_context = capture_browser_context()
+        return _downscale_for_perception(screenshot), browser_context
+
     if not HAS_PYAUTOGUI:
         logger.warning("pyautogui is unavailable; returning a blank screenshot")
         screenshot = Image.new("RGB", (1280, 720), color="black")
@@ -247,7 +247,6 @@ def get_multimodal_context() -> tuple[Image.Image, str]:
 
     global LAST_UI_SNAPSHOT
 
-    # Step 2: Capture the structural UI information with fallback mechanisms
     ui_tree_text = ""
 
     try:
@@ -304,7 +303,7 @@ class ScreenCapture:
     - Capturing full screen screenshots
     - Capturing multimodal context (screenshot + UI tree)
     - Processing and optimizing images
-    - Converting images to formats suitable for Gemini API
+    - Converting images to formats suitable for local vision models
     """
 
     def __init__(self):
@@ -334,16 +333,7 @@ class ScreenCapture:
             return Image.new("RGB", (1280, 720), color="black")
         return cast(Image.Image, pyautogui.screenshot())
 
-    def prepare_for_gemini(self, image: Image.Image) -> Image.Image:
-        """
-        Prepare an image for sending to Gemini API.
+    def prepare_for_local_model(self, image: Image.Image) -> Image.Image:
+        """Return an image suitable for the configured local vision model."""
 
-        Args:
-            image: The image to prepare.
-
-        Returns:
-            Image.Image: The prepared image in a format suitable for Gemini API.
-        """
-        # For now, return the image as-is
-        # In future steps, we might add optimization like resizing or compression
         return image

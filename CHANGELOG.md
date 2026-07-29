@@ -2,6 +2,25 @@
 
 This file records user-visible and release-engineering changes to DjenisAiAgent.
 
+## Unreleased
+
+### Added
+
+- Host-enforced completion evidence, distinct `completed` and `blocked` outcomes,
+  strict tool-argument validation, and a repeated-action stagnation guard.
+- Remote Selenium navigation and multimodal browser perception for container runtimes.
+
+### Changed
+
+- Move reasoning to pre-provisioned local Ollama or OpenAI-compatible models, with no
+  hosted-provider credential, remote fallback, or automatic runtime download.
+- Send agent policy as a system instruction and require exactly one manually dispatched
+  function call.
+- Preserve the newest execution evidence when prompt history is truncated.
+- Keep desktop element lookup side-effect free and remove the incomplete coordinate
+  mouse protocol from the model-visible capability set.
+- Run the complete unit suite in release gates and align local quality tooling with CI.
+
 ## 0.2.2 - 2026-07-20
 
 ### Fixed

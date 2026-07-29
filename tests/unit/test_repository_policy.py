@@ -6,6 +6,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import yaml
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHECKOUT_ACTION = "uses: actions/checkout@"
 HARDENED_CHECKOUT_PATTERN = re.compile(
@@ -111,3 +113,200 @@ def test_websocket_minimum_matches_uvicorn_sansio_runtime() -> None:
     assert tuple(map(int, locked_websockets[0]["version"].split("."))) >= (13, 0)
 
     assert "websockets>=13.0" in docker_requirements
+
+
+def test_release_quality_gate_runs_the_complete_unit_suite() -> None:
+    workflow = yaml.safe_load(
+        (PROJECT_ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    )
+    verify_commands = "\n".join(
+        str(step["run"]) for step in workflow["jobs"]["verify"]["steps"] if "run" in step
+    )
+
+    complete_suite_commands = re.findall(
+        r"^\s*uv run --frozen --no-sync pytest tests/unit\s*$",
+        verify_commands,
+        flags=re.MULTILINE,
+    )
+    assert len(complete_suite_commands) == 1
+    assert "tests/unit/test_" not in verify_commands
+    assert "verify-windows" in workflow["jobs"]
+    assert workflow["jobs"]["candidate"]["needs"] == [
+        "verify",
+        "verify-windows",
+        "release-preflight",
+    ]
+    windows_commands = "\n".join(
+        str(step["run"]) for step in workflow["jobs"]["verify-windows"]["steps"] if "run" in step
+    )
+    assert "uv run --frozen --no-sync pytest tests/unit" in windows_commands
+
+
+def test_portable_matrix_does_not_use_a_manual_test_allowlist() -> None:
+    workflow = yaml.safe_load(
+        (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    commands = "\n".join(
+        str(step["run"]) for step in workflow["jobs"]["portable-tests"]["steps"] if "run" in step
+    )
+
+    assert "uv run --frozen --no-sync pytest tests/unit" in commands
+    assert "tests/unit/test_" not in commands
+
+
+def test_pre_commit_quality_hooks_match_the_locked_toolchain() -> None:
+    configuration = yaml.safe_load(
+        (PROJECT_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    )
+    with (PROJECT_ROOT / "uv.lock").open("rb") as lock_file:
+        lock = tomllib.load(lock_file)
+
+    locked_versions = {package["name"]: package["version"] for package in lock["package"]}
+    repositories = {repository["repo"]: repository for repository in configuration["repos"]}
+
+    ruff = repositories["https://github.com/astral-sh/ruff-pre-commit"]
+    assert ruff["rev"] == f"v{locked_versions['ruff']}"
+    ruff_hooks = {hook["id"]: hook for hook in ruff["hooks"]}
+    assert set(ruff_hooks) == {"ruff-check", "ruff-format"}
+    assert ruff_hooks["ruff-check"].get("args") == ["--fix"]
+    for hook in ruff_hooks.values():
+        assert "files" not in hook
+        assert "exclude" not in hook
+
+    mypy = repositories["https://github.com/pre-commit/mirrors-mypy"]
+    assert mypy["rev"] == f"v{locked_versions['mypy']}"
+    mypy_hooks = {hook["id"]: hook for hook in mypy["hooks"]}
+    assert set(mypy_hooks) == {"mypy"}
+    mypy_hook = mypy_hooks["mypy"]
+    assert mypy_hook.get("additional_dependencies") == [
+        f"types-Pillow=={locked_versions['types-pillow']}"
+    ]
+    assert mypy_hook.get("args") == ["src", "scripts"]
+    assert mypy_hook.get("pass_filenames") is False
+    assert "files" not in mypy_hook
+    assert "exclude" not in mypy_hook
+
+
+def test_make_quality_targets_cover_the_ci_python_scope() -> None:
+    makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert re.search(r"^PYTHON_PATHS\s*:=\s*src tests scripts main\.py$", makefile, re.MULTILINE)
+    assert re.search(r"^MYPY_PATHS\s*:=\s*src scripts$", makefile, re.MULTILINE)
+    assert re.search(r"^SECURITY_PATHS\s*:=\s*src scripts main\.py$", makefile, re.MULTILINE)
+    assert "\t$(RUFF) check $(PYTHON_PATHS)" in makefile
+    assert "\t$(RUFF) format $(PYTHON_PATHS)" in makefile
+    assert "\t$(RUFF) format --check $(PYTHON_PATHS)" in makefile
+    assert "\t$(MYPY) $(MYPY_PATHS)" in makefile
+    assert "\t$(BANDIT) -r $(SECURITY_PATHS)" in makefile
+
+
+def test_make_python_tools_use_the_frozen_locked_environment() -> None:
+    makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert re.search(r"^UV_RUN\s*:=\s*\$\(UV\) run --frozen --no-sync$", makefile, re.MULTILINE)
+    for variable, command in (
+        ("PYTHON", "python"),
+        ("PYTEST", "pytest"),
+        ("RUFF", "ruff"),
+        ("MYPY", "mypy"),
+        ("BANDIT", "bandit"),
+        ("PIP_AUDIT", "pip-audit"),
+    ):
+        assert re.search(rf"^{variable}\s*:=\s*\$\(UV_RUN\) {command}$", makefile, re.MULTILINE)
+
+    assert "\t$(UV) sync --frozen --extra web --extra browser" in makefile
+    assert "\t$(UV) sync --frozen --extra full --extra dev" in makefile
+    assert "\t$(UV_RUN) pre-commit install" in makefile
+
+
+def test_local_ci_runs_lock_and_repository_contract_validators() -> None:
+    makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert re.search(r"^ci-local:\s+validate check security test-ci\b", makefile, re.MULTILINE)
+    assert "\t$(UV) lock --check" in makefile
+    assert "\t$(PYTHON) scripts/validate_site.py" in makefile
+    assert "\t$(PYTHON) scripts/validate_release.py" in makefile
+    assert re.search(
+        r"^validate:\s+lock-check validate-site validate-release\b", makefile, re.MULTILINE
+    )
+
+
+def test_compose_exposes_only_the_hardened_loopback_gateway() -> None:
+    compose = yaml.safe_load((PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    networks = compose["networks"]
+
+    agent = services["djenis-agent"]
+    assert "ports" not in agent
+    assert set(agent["networks"]) == {"djenis-control"}
+    assert networks["djenis-control"]["internal"] is True
+
+    gateway = services["gateway"]
+    assert gateway["image"] == (
+        "nginxinc/nginx-unprivileged:1.30.0-alpine@sha256:"
+        "808f7846d21a9c94cf53833e8807a00a33fd0b65cc47fb05b79efe366c2d201f"
+    )
+    assert gateway["read_only"] is True
+    assert gateway["cap_drop"] == ["ALL"]
+    assert gateway["security_opt"] == ["no-new-privileges:true"]
+    assert gateway["ports"] == ["127.0.0.1:8008:8080"]
+    assert set(gateway["networks"]) == {"djenis-control", "console-ingress"}
+    assert "./deploy/nginx.conf:/etc/nginx/nginx.conf:ro" in gateway["volumes"]
+
+    host_facing_services = {name for name, service in services.items() if "ports" in service}
+    assert host_facing_services == {"gateway"}
+
+
+def test_compose_pins_ollama_and_the_effective_context_contract() -> None:
+    compose = yaml.safe_load((PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    ollama_image = (
+        "ollama/ollama:0.32.4@sha256:"
+        "10c13eb515db310990527d36ca14a136da4bcc0fbf2bf3b15e9c1f111e9d3cd4"
+    )
+
+    assert services["ollama"]["image"] == ollama_image
+    assert services["ollama-provision"]["image"] == ollama_image
+    assert services["ollama"]["environment"]["OLLAMA_NO_CLOUD"] == "1"
+    assert services["djenis-agent"]["environment"]["DJENIS_LOCAL_LLM_CONTEXT_TOKENS"] == (
+        "${DJENIS_LOCAL_LLM_CONTEXT_TOKENS:-65536}"
+    )
+
+
+def test_gateway_nginx_routes_each_transport_with_bounded_buffering() -> None:
+    configuration_path = PROJECT_ROOT / "deploy" / "nginx.conf"
+    assert configuration_path.is_file()
+    configuration = configuration_path.read_text(encoding="utf-8")
+
+    def location(selector: str) -> str:
+        match = re.search(
+            rf"^        location {re.escape(selector)} \{{\n(?P<body>.*?)^        \}}$",
+            configuration,
+            re.MULTILINE | re.DOTALL,
+        )
+        assert match is not None, f"missing Nginx location: {selector}"
+        return match.group("body")
+
+    root = location("/")
+    websocket = location("= /ws")
+    stream = location("= /stream")
+    transcription = location("= /api/transcribe")
+
+    assert "client_max_body_size 6m;" in configuration
+    assert "proxy_pass http://djenis_agent;" in root
+    assert 'proxy_set_header Upgrade "";' in root
+    assert 'proxy_set_header Connection "";' in root
+
+    assert "proxy_pass http://djenis_agent;" in websocket
+    assert "proxy_set_header Upgrade $http_upgrade;" in websocket
+    assert "proxy_set_header Connection $connection_upgrade;" in websocket
+    assert "proxy_buffering off;" in websocket
+
+    assert "proxy_pass http://djenis_agent;" in stream
+    assert "proxy_buffering off;" in stream
+    assert "proxy_cache off;" in stream
+    assert "gzip off;" in stream
+
+    assert "proxy_pass http://djenis_agent;" in transcription
+    assert "proxy_request_buffering off;" in transcription
+    assert "proxy_buffering off;" in transcription

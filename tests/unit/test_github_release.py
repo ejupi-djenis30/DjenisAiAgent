@@ -32,6 +32,26 @@ def _expected(*, draft: bool = False, digest: str = DIGEST) -> dict[str, object]
     )
 
 
+def test_release_notes_expose_complete_local_stack_and_context_contract() -> None:
+    body = publisher.release_body(
+        image=IMAGE,
+        version="0.2.1",
+        digest=DIGEST,
+        target_commit=COMMIT,
+    )
+
+    assert "mkdir -p djenis-ai-agent-release/deploy" in body
+    assert (
+        f"https://raw.githubusercontent.com/ejupi-djenis30/DjenisAiAgent/{COMMIT}/deploy/nginx.conf"
+        in body
+    )
+    assert "--output deploy/nginx.conf" in body
+    assert 'export DJENIS_LOCAL_LLM_CONTEXT_TOKENS="65536"' in body
+    assert "CLI startup and web readiness fail closed" in body
+    assert "at least the configured 65,536-token context window" in body
+    assert "`/health` endpoint remains a process-liveness probe" in body
+
+
 def _actual(
     expected: Mapping[str, object],
     *,

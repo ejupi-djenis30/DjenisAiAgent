@@ -129,6 +129,9 @@ logs/
 # Temporary helper scripts
 _extract_prompt.py
 
+# Local coding-agent state
+.serena/
+
 # Pyre type checker
 .pyre/
 

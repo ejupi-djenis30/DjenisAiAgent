@@ -9,7 +9,7 @@ const demoSteps = [
   },
   {
     kind: "Structured function call",
-    html: '<pre><code>{\n  <span>"name"</span>: "press_keys",\n  <span>"args"</span>: { "keys": ["12", "*", "8", "="] }\n}</code></pre><p>The model can select only from tools exposed by the active permission tier and runtime.</p>',
+    html: '<pre><code>{\n  <span>"name"</span>: "press_keys",\n  <span>"args"</span>: { "keys": ["12", "*", "8", "="] }\n}</code></pre><p>The local model can select only from tools exposed by the active permission tier and runtime. The host validates the call before dispatch.</p>',
   },
   {
     kind: "Verified outcome",

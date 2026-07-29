@@ -93,3 +93,17 @@ def bounded_text(value: Any, max_chars: int) -> str:
         return marker[:max_chars]
     keep = max(0, max_chars - len(marker))
     return text[:keep] + marker
+
+
+def bounded_tail_text(value: Any, max_chars: int) -> str:
+    """Return the newest text within a hard bound and fingerprint omitted history."""
+
+    text = str(value)
+    if len(text) <= max_chars:
+        return text
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
+    marker = f"[older history truncated; original chars={len(text)} sha256:{digest}]\n…\n"
+    if len(marker) >= max_chars:
+        return marker[:max_chars]
+    keep = max(0, max_chars - len(marker))
+    return marker + text[-keep:]

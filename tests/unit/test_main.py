@@ -7,6 +7,7 @@ import importlib
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -83,6 +84,47 @@ def test_health_and_root_endpoints(main_module: object) -> None:
     assert health.json()["agent_state"] == "running"
     assert root.status_code == 200
     assert "DjenisAiAgent" in root.text
+
+
+def test_readiness_reports_validated_local_runtime(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_info = SimpleNamespace(
+        backend="ollama",
+        model="qwen3-vl:8b",
+        runtime_version="0.30.0",
+        context_tokens=65_536,
+    )
+    monkeypatch.setattr(main_module, "validate_local_runtime", lambda: runtime_info)
+
+    with TestClient(main_module.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "version": main_module.VERSION,
+        "backend": "ollama",
+        "model": "qwen3-vl:8b",
+        "runtime_version": "0.30.0",
+        "context_tokens": 65_536,
+    }
+
+
+def test_readiness_fails_closed_without_leaking_runtime_error(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable() -> object:
+        raise main_module.LocalLLMRequestError("secret daemon detail")
+
+    monkeypatch.setattr(main_module, "validate_local_runtime", unavailable)
+
+    with TestClient(main_module.app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["reason"] == "local_model_unavailable"
+    assert "secret daemon detail" not in response.text
 
 
 def test_websocket_rejects_invalid_payload(main_module: object) -> None:
@@ -481,6 +523,93 @@ async def test_video_stream_rejects_unsupported_runtime_and_releases_capacity(
 
 
 @pytest.mark.asyncio
+async def test_video_stream_stops_after_session_revocation(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module.config, "supports_native_desktop", lambda: True)
+    monkeypatch.setattr(main_module.config, "stream_resize_factor", 1.0)
+    monkeypatch.setattr(main_module.config, "stream_max_fps", 60)
+    monkeypatch.setattr(main_module, "HAS_PYAUTOGUI", True)
+    captures = 0
+
+    def capture_screen() -> Image.Image:
+        nonlocal captures
+        captures += 1
+        return Image.new("RGB", (20, 20), "white")
+
+    monkeypatch.setattr(main_module.pyautogui, "screenshot", capture_screen)
+    session_id = main_module.web_security.create_session()
+    stream_request = SimpleNamespace(
+        client=None,
+        headers={},
+        cookies={main_module.SESSION_COOKIE: session_id},
+    )
+    logout_request = SimpleNamespace(
+        client=None,
+        headers={"origin": "http://testserver", "host": "testserver"},
+        cookies={main_module.SESSION_COOKIE: session_id},
+    )
+
+    response = await main_module.video_stream(stream_request)
+    iterator = response.body_iterator
+    first_frame = await iterator.__anext__()
+    logout_response = await main_module.delete_web_session(logout_request)
+
+    with pytest.raises(StopAsyncIteration):
+        await iterator.__anext__()
+
+    assert logout_response.status_code == 204
+    assert first_frame.startswith(b"--frame\r\nContent-Type: image/jpeg")
+    assert captures == 1
+    assert main_module.runtime.active_streams == 0
+
+
+@pytest.mark.asyncio
+async def test_video_stream_stops_after_session_expiry(
+    main_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    security_module = importlib.import_module("src.web_security")
+    clock = {"now": 100.0}
+    monkeypatch.setattr(
+        security_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock["now"]),
+    )
+    monkeypatch.setattr(main_module.config, "web_session_ttl", 5)
+    monkeypatch.setattr(main_module.config, "supports_native_desktop", lambda: True)
+    monkeypatch.setattr(main_module.config, "stream_resize_factor", 1.0)
+    monkeypatch.setattr(main_module.config, "stream_max_fps", 60)
+    monkeypatch.setattr(main_module, "HAS_PYAUTOGUI", True)
+    captures = 0
+
+    def capture_screen() -> Image.Image:
+        nonlocal captures
+        captures += 1
+        return Image.new("RGB", (20, 20), "white")
+
+    monkeypatch.setattr(main_module.pyautogui, "screenshot", capture_screen)
+    session_id = main_module.web_security.create_session()
+    request = SimpleNamespace(
+        client=None,
+        headers={},
+        cookies={main_module.SESSION_COOKIE: session_id},
+    )
+
+    response = await main_module.video_stream(request)
+    iterator = response.body_iterator
+    first_frame = await iterator.__anext__()
+    clock["now"] = 106.0
+
+    with pytest.raises(StopAsyncIteration):
+        await iterator.__anext__()
+
+    assert first_frame.startswith(b"--frame\r\nContent-Type: image/jpeg")
+    assert captures == 1
+    assert main_module.web_security.session_is_valid(session_id) is False
+    assert main_module.runtime.active_streams == 0
+
+
+@pytest.mark.asyncio
 async def test_web_runtime_cancels_workers_when_server_stops(
     main_module: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -500,8 +629,15 @@ async def test_web_runtime_cancels_workers_when_server_stops(
         finally:
             worker_stopped.set()
 
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    runtime_info = SimpleNamespace(
+        backend="ollama",
+        model="qwen3-vl:8b",
+        runtime_version="0.30.0",
+        model_digest="a" * 64,
+        context_tokens=65_536,
+    )
     monkeypatch.setattr(main_module.config, "validate_web", lambda: True)
+    monkeypatch.setattr(main_module, "validate_local_runtime", lambda: runtime_info)
     monkeypatch.setattr(main_module.uvicorn, "Config", lambda *args, **kwargs: object())
     monkeypatch.setattr(main_module.uvicorn, "Server", lambda _config: fake_server)
     monkeypatch.setattr(main_module, "agent_loop", worker)

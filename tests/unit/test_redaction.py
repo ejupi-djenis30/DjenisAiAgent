@@ -7,17 +7,17 @@ import json
 import logging
 
 from src.audit import AuditLogger
-from src.redaction import RedactingFormatter, bounded_text, redact, safe_preview
+from src.redaction import RedactingFormatter, bounded_tail_text, bounded_text, redact, safe_preview
 
 
 def test_redact_hides_sensitive_keys_and_known_token_shapes() -> None:
     # Assemble the sample at runtime so repository secret scanners do not mistake it
     # for a live credential while the redactor still receives a realistic shape.
-    fake_google_key = "AI" + "za" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+    fake_provider_key = "AI" + "za" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
     value = {
         "authorization": "Bearer this-is-a-secret-bearer-value",
-        "nested": {"api_key": fake_google_key},
-        "message": f"key={fake_google_key}",
+        "nested": {"api_key": fake_provider_key},
+        "message": f"key={fake_provider_key}",
         "url": "https://example.test/callback?token=private-query-value&mode=read",
     }
 
@@ -25,7 +25,7 @@ def test_redact_hides_sensitive_keys_and_known_token_shapes() -> None:
 
     assert result["authorization"] == "***redacted***"
     assert result["nested"]["api_key"] == "***redacted***"
-    assert fake_google_key not in result["message"]
+    assert fake_provider_key not in result["message"]
     assert "private-query-value" not in result["url"]
 
 
@@ -45,6 +45,19 @@ def test_audit_logger_writes_only_redacted_payload(tmp_path) -> None:
     event = json.loads(target.read_text(encoding="utf-8"))
     assert event["event_type"] == "request"
     assert event["payload"]["token"] == "***redacted***"
+
+
+def test_audit_events_have_versioned_unique_envelopes(tmp_path) -> None:
+    target = tmp_path / "audit.jsonl"
+    audit = AuditLogger(enabled=True, file_path=str(target))
+
+    audit.record_event("first")
+    audit.record_event("second")
+
+    events = [json.loads(line) for line in target.read_text(encoding="utf-8").splitlines()]
+    assert {event["schema_version"] for event in events} == {1}
+    assert all(len(event["event_id"]) == 32 for event in events)
+    assert events[0]["event_id"] != events[1]["event_id"]
 
 
 def test_audit_logger_rotates_before_the_configured_size_limit(tmp_path) -> None:
@@ -99,3 +112,14 @@ def test_bounded_text_never_exceeds_requested_context_limit() -> None:
     assert len(bounded) == 120
     assert "truncated" in bounded
     assert len(bounded_text("short", 120)) == 5
+
+
+def test_bounded_tail_text_preserves_latest_execution_evidence() -> None:
+    value = "old-state\n" + ("x" * 200) + "\nLATEST: status saved"
+
+    result = bounded_tail_text(value, 96)
+
+    assert len(result) <= 96
+    assert "older history truncated" in result
+    assert result.endswith("LATEST: status saved")
+    assert "old-state" not in result

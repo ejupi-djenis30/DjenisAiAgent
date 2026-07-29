@@ -11,9 +11,9 @@ from src.exceptions import (
     ConfigurationError,
     DjenisError,
     ElementNotFoundError,
-    GeminiAPIError,
+    InvalidModelResponseError,
     InvalidToolCallError,
-    MissingApiKeyError,
+    LocalModelUnavailableError,
     PerceptionError,
     ReasoningError,
     ScreenCaptureError,
@@ -29,12 +29,12 @@ class TestExceptionHierarchy:
     def test_all_exceptions_inherit_from_djenis_error(self) -> None:
         leaf_exceptions = [
             ConfigurationError("c"),
-            MissingApiKeyError("m"),
+            LocalModelUnavailableError("m"),
             PerceptionError("p"),
             ScreenCaptureError("s"),
             UISnapshotError("u"),
             ReasoningError("r"),
-            GeminiAPIError("g"),
+            InvalidModelResponseError("model"),
             InvalidToolCallError("i"),
             ToolExecutionError("tool", "reason"),
             ElementNotFoundError("query"),
@@ -50,7 +50,7 @@ class TestExceptionHierarchy:
             assert isinstance(exc, DjenisError), f"{type(exc).__name__} is not a DjenisError"
 
     def test_configuration_errors_hierarchy(self) -> None:
-        assert issubclass(MissingApiKeyError, ConfigurationError)
+        assert issubclass(LocalModelUnavailableError, ConfigurationError)
         assert issubclass(ConfigurationError, DjenisError)
 
     def test_perception_errors_hierarchy(self) -> None:
@@ -59,7 +59,7 @@ class TestExceptionHierarchy:
         assert issubclass(PerceptionError, DjenisError)
 
     def test_reasoning_errors_hierarchy(self) -> None:
-        assert issubclass(GeminiAPIError, ReasoningError)
+        assert issubclass(InvalidModelResponseError, ReasoningError)
         assert issubclass(InvalidToolCallError, ReasoningError)
         assert issubclass(ReasoningError, DjenisError)
 
