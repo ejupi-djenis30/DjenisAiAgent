@@ -174,11 +174,22 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      - name: Extract local OCI layout for scanning
+        id: extract-rehearsal-oci
+        shell: bash
+        run: |
+          install -d "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci"
+          tar --extract \
+            --file "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci.tar" \
+            --directory "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci"
+          test -f "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci/index.json"
+          test -f "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci/oci-layout"
+
       - name: Scan local rehearsal archive
         id: rehearsal-scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          input: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar
+          scan-ref: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci
           format: table
           exit-code: "1"
           ignore-unfixed: true

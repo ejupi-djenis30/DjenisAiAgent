@@ -556,6 +556,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         _validate_checkout(steps, "rehearsal", errors)
         bind = _workflow_step(steps, "bind-rehearsal-source", "rehearsal", errors)
         build = _workflow_step(steps, "rehearsal-build", "rehearsal", errors)
+        extract_oci = _workflow_step(steps, "extract-rehearsal-oci", "rehearsal", errors)
         scan = _workflow_step(steps, "rehearsal-scan", "rehearsal", errors)
         verify_oci = _workflow_step(steps, "verify-rehearsal-oci", "rehearsal", errors)
         render = _workflow_step(steps, "render-rehearsal-evidence", "rehearsal", errors)
@@ -600,15 +601,30 @@ def validate_workflow_text(workflow: str) -> list[str]:
                     "rehearsal must build an offline OCI archive with SBOM and provenance"
                 )
 
+        if extract_oci is not None:
+            command = _normalized_shell(extract_oci)
+            extract_required = (
+                'tar --extract --file "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci.tar"',
+                '--directory "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci"',
+                'test -f "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci/index.json"',
+                'test -f "${RUNNER_TEMP}/djenis-ai-agent-rehearsal.oci/oci-layout"',
+            )
+            if any(token not in command for token in extract_required) or extract_oci.get(
+                "continue-on-error"
+            ) not in (None, False):
+                errors.append(
+                    "rehearsal must extract and validate the local OCI layout before scanning"
+                )
+
         if scan is not None:
             settings = _mapping(scan.get("with"))
             if (
                 not str(scan.get("uses", "")).startswith("aquasecurity/trivy-action@")
                 or settings is None
-                or settings.get("input") != "${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar"
+                or settings.get("scan-ref") != "${{ runner.temp }}/djenis-ai-agent-rehearsal.oci"
                 or settings.get("exit-code") != "1"
             ):
-                errors.append("rehearsal Trivy scan must fail closed over the local OCI archive")
+                errors.append("rehearsal Trivy scan must fail closed over the local OCI layout")
 
         if verify_oci is not None:
             command = _normalized_shell(verify_oci)
@@ -668,6 +684,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         ordered = (
             "bind-rehearsal-source",
             "rehearsal-build",
+            "extract-rehearsal-oci",
             "rehearsal-scan",
             "verify-rehearsal-oci",
             "render-rehearsal-evidence",
@@ -676,7 +693,7 @@ def validate_workflow_text(workflow: str) -> list[str]:
         indices = [_step_index(steps, step_id) for step_id in ordered]
         if any(index is None for index in indices) or indices != sorted(cast(list[int], indices)):
             errors.append(
-                "rehearsal order must bind source, build, scan, verify, render, then summarize"
+                "rehearsal order must bind source, build, extract, scan, verify, render, then summarize"
             )
         forbidden_actions = (
             "docker/login-action@",
