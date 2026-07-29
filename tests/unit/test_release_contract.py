@@ -423,8 +423,8 @@ def test_rehearsal_is_offline_fail_closed_and_source_bound() -> None:
         1,
     )
     wrong_scan_target = workflow.replace(
-        "          scan-ref: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci\n",
-        "          scan-ref: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar\n",
+        "          input: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci\n",
+        "          input: ${{ runner.temp }}/djenis-ai-agent-rehearsal.oci.tar\n",
         1,
     )
 
