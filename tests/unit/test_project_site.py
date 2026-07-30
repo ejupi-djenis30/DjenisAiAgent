@@ -14,11 +14,14 @@ from scripts.publish_github_release import load_release_notes, release_body
 from scripts.validate_site import (
     EXPECTED_ROBOTS,
     EXPECTED_SOCIAL_IMAGE_SIZE,
+    GHCR_PACKAGE_URL,
+    RELEASE_URL,
     SECURITY_CONTACT_URL,
     SECURITY_POLICY_URL,
     SECURITY_URL,
     SITE_URL,
     SITEMAP_NAMESPACE,
+    WINDOWS_SETUP_URL,
     _png_dimensions,
     validate_site,
 )
@@ -63,12 +66,35 @@ def test_social_preview_has_declared_dimensions() -> None:
     assert _png_dimensions(preview) == EXPECTED_SOCIAL_IMAGE_SIZE
 
 
-def test_setup_cta_targets_the_existing_readme_section() -> None:
+def test_install_ctas_target_the_asset_free_container_release() -> None:
     site_html = (SITE_ROOT / "index.html").read_text(encoding="utf-8")
-    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "## Quick start: Windows" in readme
-    assert "DjenisAiAgent#quick-start-windows" in site_html
+    assert site_html.count(f'href="{RELEASE_URL}"') >= 3
+    assert f'href="{GHCR_PACKAGE_URL}"' in site_html
+    assert f'href="{WINDOWS_SETUP_URL}"' in site_html
+    assert "There is no desktop installer or downloadable release archive." in site_html
+    assert "/releases/download/" not in site_html
+    assert '<section class="build" id="install"' in site_html
+    assert "git clone --branch v0.3.0 --depth 1" in site_html
+
+
+def test_site_validator_rejects_a_fake_release_download() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        site_copy = Path(folder) / "site"
+        shutil.copytree(SITE_ROOT, site_copy)
+        index_path = site_copy / "index.html"
+        index_path.write_text(
+            index_path.read_text(encoding="utf-8").replace(
+                RELEASE_URL,
+                "https://github.com/ejupi-djenis30/DjenisAiAgent/releases/download/"
+                "v0.3.0/setup.exe",
+            ),
+            encoding="utf-8",
+        )
+
+        errors = validate_site(site_copy)
+
+    assert "the asset-free release must not advertise downloadable release files" in errors
 
 
 def test_release_body_uses_the_pinned_local_only_compose_stack() -> None:
@@ -166,11 +192,24 @@ def test_project_site_keeps_small_controls_readable_and_touch_accessible() -> No
 
     console_rule = re.search(r"\.console-bar\s*\{(?P<body>[^}]*)\}", styles)
     control_rule = re.search(r"\.demo-control\s*\{(?P<body>[^}]*)\}", styles)
+    install_rule = re.search(r"\.nav-install\s*\{(?P<body>[^}]*)\}", styles)
+    header_brand_rule = re.search(r"\.site-header \.brand\s*\{(?P<body>[^}]*)\}", styles)
+    text_link_rule = re.search(
+        r"^\.text-link\s*\{(?P<body>[^}]*)\}",
+        styles,
+        re.MULTILINE,
+    )
 
     assert console_rule is not None
     assert "color: var(--muted)" in console_rule.group("body")
     assert control_rule is not None
     assert "min-height: 44px" in control_rule.group("body")
+    assert install_rule is not None
+    assert "min-height: 44px" in install_rule.group("body")
+    assert header_brand_rule is not None
+    assert "min-height: 44px" in header_brand_rule.group("body")
+    assert text_link_rule is not None
+    assert "min-height: 44px" in text_link_rule.group("body")
 
 
 def test_project_site_keeps_secondary_labels_above_wcag_aa_contrast() -> None:

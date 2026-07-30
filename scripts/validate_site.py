@@ -16,6 +16,13 @@ SECURITY_URL = f"{SITE_URL}.well-known/security.txt"
 SECURITY_CONTACT_URL = "https://github.com/ejupi-djenis30/DjenisAiAgent/security/advisories/new"
 SECURITY_POLICY_URL = "https://github.com/ejupi-djenis30/DjenisAiAgent/security/policy"
 SOCIAL_IMAGE_URL = f"{SITE_ORIGIN}{SITE_PREFIX}media/djenis-ai-agent-social-preview.png"
+RELEASE_URL = "https://github.com/ejupi-djenis30/DjenisAiAgent/releases/tag/v0.3.0"
+GHCR_PACKAGE_URL = (
+    "https://github.com/users/ejupi-djenis30/packages/container/package/djenis-ai-agent"
+)
+WINDOWS_SETUP_URL = (
+    "https://github.com/ejupi-djenis30/DjenisAiAgent/tree/v0.3.0#quick-start-windows"
+)
 EXPECTED_SOCIAL_IMAGE_SIZE = (1200, 675)
 SITEMAP_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9"
 PUBLIC_DISCOVERY_FILES = (
@@ -63,6 +70,7 @@ class SiteDocument(HTMLParser):
         self.meta: dict[str, str] = {}
         self.canonical_url = ""
         self.local_assets: set[str] = set()
+        self.links: set[str] = set()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {key: value or "" for key, value in attrs}
@@ -78,6 +86,8 @@ class SiteDocument(HTMLParser):
                 self.meta[http_equiv.lower()] = attributes.get("content", "")
         elif tag == "link" and "canonical" in attributes.get("rel", "").split():
             self.canonical_url = attributes.get("href", "")
+        elif tag == "a":
+            self.links.add(attributes.get("href", ""))
         for attribute in ("href", "src"):
             value = attributes.get(attribute, "")
             if value.startswith("./"):
@@ -199,6 +209,18 @@ def validate_site(site_root: Path, *, now: datetime | None = None) -> list[str]:
         errors.append('the referrer policy must be "no-referrer"')
     if document.canonical_url != SITE_URL:
         errors.append(f"canonical URL must be {SITE_URL!r}")
+    if RELEASE_URL not in document.links:
+        errors.append(f"the install path must link to the canonical release {RELEASE_URL!r}")
+    if GHCR_PACKAGE_URL not in document.links:
+        errors.append(f"the install path must link to the public GHCR package {GHCR_PACKAGE_URL!r}")
+    if WINDOWS_SETUP_URL not in document.links:
+        errors.append(
+            "the install path must distinguish the Windows-native source setup from Compose"
+        )
+    if any("/releases/download/" in link for link in document.links):
+        errors.append("the asset-free release must not advertise downloadable release files")
+    if "There is no desktop installer or downloadable release archive." not in html_source:
+        errors.append("the install path must state that v0.3.0 has no downloadable installer")
 
     for token in (
         'role="tablist"',
@@ -269,9 +291,11 @@ def validate_site(site_root: Path, *, now: datetime | None = None) -> list[str]:
             ".brand:focus-visible",
             ".site-header nav a:focus-visible",
             ".button:focus-visible",
+            ".nav-install:focus-visible",
             ".demo-steps button:focus-visible",
             ".demo-control:focus-visible",
             ".demo-stage:focus-visible",
+            ".text-link:focus-visible",
         )
         for selector in required_focus_controls:
             if selector not in styles:

@@ -22,9 +22,11 @@ button { font: inherit; }
 .brand:focus-visible,
 .site-header nav a:focus-visible,
 .button:focus-visible,
+.nav-install:focus-visible,
 .demo-steps button:focus-visible,
 .demo-control:focus-visible,
 .demo-stage:focus-visible,
+.text-link:focus-visible,
 .skip-link:focus-visible {
   outline: 3px solid var(--acid);
   outline-offset: 4px;
@@ -35,11 +37,13 @@ button { font: inherit; }
 .site-header, main > section, footer { width: min(1500px, calc(100% - var(--page-inset))); margin-inline: auto; }
 .site-header { min-height: 94px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .brand { display: inline-flex; align-items: center; gap: 12px; font-weight: 800; text-decoration: none; letter-spacing: -.02em; }
+.site-header .brand { min-height: 44px; }
 .brand-mark { display: grid; width: 34px; height: 34px; place-items: center; color: var(--acid-dark); background: var(--acid); border-radius: 8px; }
 nav { display: flex; align-items: center; gap: clamp(18px, 3vw, 44px); font-size: .9rem; }
 nav a { color: var(--muted); text-decoration: none; }
 nav a:hover { color: var(--ink); }
 .nav-source { padding: 11px 14px; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; }
+.nav-install { display: inline-flex; min-height: 44px; align-items: center; padding: 11px 14px; color: var(--acid-dark); font-weight: 800; background: var(--acid); border-radius: 8px; }
 
 .hero { min-height: calc(100vh - 94px); display: grid; grid-template-columns: 1.05fr .95fr; column-gap: clamp(40px, 6vw, 100px); align-content: center; padding-block: clamp(80px, 11vw, 170px) 48px; }
 .kicker, .section-index { color: var(--acid); font-size: .72rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
@@ -139,7 +143,19 @@ em { color: var(--acid); font-style: normal; }
 .build-grid > div { min-width: 0; }
 .build-grid > div:last-child { align-self: end; }
 .build-grid p { color: var(--muted); line-height: 1.7; }
-.text-link { display: inline-block; margin-top: 18px; padding-bottom: 5px; text-decoration: none; border-bottom: 1px solid var(--acid); }
+.release-label { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; margin-bottom: 24px; padding: 18px 0; border-block: 1px solid var(--line); }
+.release-label span { color: var(--muted); font-size: .75rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.release-label strong { color: var(--acid); font: 1rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.install-steps { margin: 34px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.install-steps li { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 14px; padding: 20px 0; border-bottom: 1px solid var(--line); }
+.install-steps li > span { padding-top: 4px; color: var(--acid); font: .72rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.install-steps p { margin-bottom: 0; }
+.install-steps strong { color: var(--ink); }
+.install-steps code { color: var(--ink); font: .9em ui-monospace, SFMono-Regular, Consolas, monospace; }
+.install-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 18px 24px; margin-top: 30px; }
+.install-actions .text-link { margin-top: 0; }
+.install-note { margin: 26px 0 0; padding-left: 15px; border-left: 2px solid var(--acid); font-size: .9rem; }
+.text-link { display: inline-flex; min-height: 44px; align-items: center; margin-top: 18px; padding-bottom: 5px; text-decoration: none; border-bottom: 1px solid var(--acid); }
 
 footer { min-height: 160px; display: grid; grid-template-columns: 1fr 1fr auto; align-items: center; gap: 30px; color: var(--muted); border-top: 1px solid var(--line); }
 footer p { margin-bottom: 0; text-align: center; }
@@ -159,7 +175,9 @@ footer > div:last-child { display: flex; gap: 22px; }
 
 @media (max-width: 680px) {
   .site-header { min-height: 76px; }
-  nav > a:not(.nav-source) { display: none; }
+  .site-header nav { gap: 0; }
+  .site-header nav > a:not(.nav-install) { display: none; }
+  .nav-install { padding: 11px 12px; font-size: .78rem; }
   .brand > span:last-child { font-size: .86rem; }
   h1 { font-size: clamp(3.7rem, 18vw, var(--hero-title-bridge)); }
   .hero { padding-top: 70px; }
@@ -181,6 +199,8 @@ footer > div:last-child { display: flex; gap: 22px; }
   .matrix-row > * { padding: 16px 14px; }
   .matrix-row small { display: block; margin-bottom: 8px; color: #8b958f; font: .62rem ui-monospace, monospace; text-transform: uppercase; letter-spacing: .08em; }
   .build pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .install-actions { align-items: stretch; }
+  .install-actions .button { width: 100%; justify-content: center; text-align: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
