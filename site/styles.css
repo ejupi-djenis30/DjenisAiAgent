@@ -31,7 +31,7 @@ button { font: inherit; }
   outline: 3px solid var(--acid);
   outline-offset: 4px;
 }
-.skip-link { position: fixed; z-index: 20; top: 8px; left: 8px; padding: 10px 14px; color: var(--acid-dark); background: var(--acid); transform: translateY(-150%); }
+.skip-link { position: fixed; z-index: 20; top: 8px; left: 8px; display: inline-flex; min-height: 44px; align-items: center; padding: 10px 14px; color: var(--acid-dark); background: var(--acid); transform: translateY(-150%); }
 .skip-link:focus { transform: none; }
 
 .site-header, main > section, footer { width: min(1500px, calc(100% - var(--page-inset))); margin-inline: auto; }
@@ -160,6 +160,7 @@ em { color: var(--acid); font-style: normal; }
 footer { min-height: 160px; display: grid; grid-template-columns: 1fr 1fr auto; align-items: center; gap: 30px; color: var(--muted); border-top: 1px solid var(--line); }
 footer p { margin-bottom: 0; text-align: center; }
 footer > div:last-child { display: flex; gap: 22px; }
+footer > div:last-child a { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
 
 @media (max-width: 900px) {
   .hero, .statement, .security, .build-grid { grid-template-columns: 1fr; }
