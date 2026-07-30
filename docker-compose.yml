@@ -19,7 +19,7 @@ services:
     environment:
       DJENIS_WEB_AUTH_TOKEN: ${DJENIS_WEB_AUTH_TOKEN:?Set DJENIS_WEB_AUTH_TOKEN in .env}
       DJENIS_RUNTIME_MODE: docker
-      DJENIS_PERMISSION_TIER: ${DJENIS_PERMISSION_TIER:-interact}
+      DJENIS_PERMISSION_TIER: ${DJENIS_PERMISSION_TIER:-observe}
 
       # Local inference only. The endpoint is on the internal control network.
       DJENIS_LOCAL_LLM_BACKEND: ollama

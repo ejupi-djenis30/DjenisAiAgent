@@ -271,13 +271,15 @@ sidecar, a dedicated Selenium Chromium container, and an unprivileged NGINX gate
 does **not** expose the agent or Ollama directly and does **not** provide Windows UI
 Automation or host display capture.
 
-1. Create `.env` and set only the web operator secret:
+1. Create `.env`, set a unique web operator secret, and keep the permission tier at
+   its safe default:
 
    ```env
    DJENIS_WEB_AUTH_TOKEN="a-random-value-with-at-least-24-characters"
    DJENIS_LOCAL_LLM_MODEL="qwen3-vl:8b"
    DJENIS_LOCAL_LLM_EXPECTED_DIGEST=""
    DJENIS_LOCAL_LLM_CONTEXT_TOKENS="65536"
+   DJENIS_PERMISSION_TIER="observe"
    ```
 
 2. Populate the named model volume with the opt-in provisioning profile:
@@ -293,15 +295,98 @@ Automation or host display capture.
 3. Start the runtime:
 
    ```powershell
-   docker compose up --build
+   docker compose up --build -d
+   Invoke-RestMethod http://127.0.0.1:8008/ready
    ```
 
 The console is at `http://127.0.0.1:8008`. That loopback port belongs only to the
 digest-pinned `nginxinc/nginx-unprivileged:1.30.0-alpine` gateway. It forwards HTTP,
 WebSocket commands, the multipart screen stream, and bounded transcription uploads to
 the agent across `djenis-control`; the agent itself has no published port. Compose
-defaults to `interact` so remote browser tools are available; system tools remain
-locked.
+starts at `observe`, matching the image, `.env.example`, and the application default.
+At that tier the agent can inspect approved state but cannot click, type, or navigate.
+
+Elevate only when a browser task needs clicks, typing, or navigation, and only after
+`/ready` reports `status: ready`. Keep `interact` out of `.env`: the recreated
+container retains its tier across agent, Docker daemon, and host restarts until you
+explicitly reset it. First verify that Compose still resolves the safe default, then
+recreate only the agent:
+
+```powershell
+if (Test-Path Env:DJENIS_PERMISSION_TIER) {
+    throw "Clear DJENIS_PERMISSION_TIER from this shell before changing the tier."
+}
+$composeJson = docker compose config --format json
+if ($LASTEXITCODE -ne 0) {
+    throw "Docker Compose could not resolve the deployment."
+}
+$tierLine = @($composeJson | Select-String -Pattern '^\s*"DJENIS_PERMISSION_TIER":\s*"(?<tier>[^"]+)"[,]?\s*$')
+if ($tierLine.Count -ne 1 -or $tierLine[0].Matches[0].Groups["tier"].Value -ne "observe") {
+    throw "Keep DJENIS_PERMISSION_TIER absent or set to observe in .env."
+}
+$env:DJENIS_PERMISSION_TIER = "interact"
+try {
+    docker compose up -d --no-deps --force-recreate --wait --wait-timeout 120 djenis-agent
+    if ($LASTEXITCODE -ne 0) {
+        throw "The interact container was not recreated successfully."
+    }
+    $containerJson = docker inspect --format "{{json .Config.Env}}" djenis-agent
+    if ($LASTEXITCODE -ne 0) {
+        throw "The recreated agent container could not be inspected."
+    }
+    $containerTier = ($containerJson | ConvertFrom-Json |
+        Where-Object { $_ -like "DJENIS_PERMISSION_TIER=*" })
+    if ($containerTier -ne "DJENIS_PERMISSION_TIER=interact") {
+        throw "The recreated agent is not running at the requested interact tier."
+    }
+    $readiness = Invoke-RestMethod http://127.0.0.1:8008/ready
+    if ($readiness.status -ne "ready") {
+        throw "The recreated interact agent is not ready."
+    }
+} finally {
+    Remove-Item Env:DJENIS_PERMISSION_TIER
+}
+```
+
+This enables the existing `interact` tools; it does not unlock `system` tools.
+Readiness is checked after the new agent starts, not against the previous process.
+If any command after `docker compose up` fails, assume that the `interact` container
+is still active and run the reset block below before continuing.
+When the browser task is finished, reset immediately and verify both the recreated
+agent and the default that future Compose runs will use:
+
+```powershell
+$env:DJENIS_PERMISSION_TIER = "observe"
+try {
+    docker compose up -d --no-deps --force-recreate --wait --wait-timeout 120 djenis-agent
+    if ($LASTEXITCODE -ne 0) {
+        throw "The observe container was not recreated successfully; treat the runtime as elevated."
+    }
+    $containerJson = docker inspect --format "{{json .Config.Env}}" djenis-agent
+    if ($LASTEXITCODE -ne 0) {
+        throw "The recreated agent container could not be inspected."
+    }
+    $containerTier = ($containerJson | ConvertFrom-Json |
+        Where-Object { $_ -like "DJENIS_PERMISSION_TIER=*" })
+    if ($containerTier -ne "DJENIS_PERMISSION_TIER=observe") {
+        throw "The recreated agent is not running at the safe observe tier."
+    }
+    $readiness = Invoke-RestMethod http://127.0.0.1:8008/ready
+    if ($readiness.status -ne "ready") {
+        throw "The recreated observe agent is not ready."
+    }
+} finally {
+    Remove-Item Env:DJENIS_PERMISSION_TIER
+}
+$composeJson = docker compose config --format json
+if ($LASTEXITCODE -ne 0) {
+    throw "Docker Compose could not resolve the deployment after the reset."
+}
+$tierLine = @($composeJson | Select-String -Pattern '^\s*"DJENIS_PERMISSION_TIER":\s*"(?<tier>[^"]+)"[,]?\s*$')
+if ($tierLine.Count -ne 1 -or $tierLine[0].Matches[0].Groups["tier"].Value -ne "observe") {
+    throw "Correct DJENIS_PERMISSION_TIER in .env before the next Compose run."
+}
+```
 
 `docker compose up` never starts the provisioning service. Long-running Ollama has
 `OLLAMA_NO_CLOUD=1`, no published port, and no egress-capable network. If the selected

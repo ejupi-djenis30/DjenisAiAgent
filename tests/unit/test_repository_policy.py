@@ -19,6 +19,7 @@ PUBLIC_ATTRIBUTION_FILES = (
     Path("README.md"),
     Path("site/index.html"),
 )
+SAFE_PERMISSION_TIER = "observe"
 
 
 def test_dependabot_updates_the_canonical_uv_lockfile() -> None:
@@ -255,6 +256,79 @@ def test_compose_exposes_only_the_hardened_loopback_gateway() -> None:
 
     host_facing_services = {name for name, service in services.items() if "ports" in service}
     assert host_facing_services == {"gateway"}
+
+
+def test_permission_tier_defaults_and_operator_documentation_stay_safe() -> None:
+    env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    compose = yaml.safe_load((PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+    env_defaults = re.findall(
+        r'^DJENIS_PERMISSION_TIER="(?P<tier>[^"]+)"$',
+        env_example,
+        flags=re.MULTILINE,
+    )
+    image_defaults = re.findall(
+        r"^\s*DJENIS_PERMISSION_TIER=(?P<tier>[^\s\\]+)\s*\\?$",
+        dockerfile,
+        flags=re.MULTILINE,
+    )
+    documentation_defaults = re.findall(
+        r"^\| `DJENIS_PERMISSION_TIER` \| `(?P<tier>[^`]+)` \|",
+        readme,
+        flags=re.MULTILINE,
+    )
+
+    assert env_defaults == [SAFE_PERMISSION_TIER]
+    assert image_defaults == [SAFE_PERMISSION_TIER]
+    assert documentation_defaults == [SAFE_PERMISSION_TIER]
+
+    defaults = {
+        ".env.example": env_defaults[0],
+        "Dockerfile": image_defaults[0],
+        "docker-compose.yml": compose["services"]["djenis-agent"]["environment"][
+            "DJENIS_PERMISSION_TIER"
+        ],
+        "README.md": documentation_defaults[0],
+    }
+    assert defaults == {
+        ".env.example": SAFE_PERMISSION_TIER,
+        "Dockerfile": SAFE_PERMISSION_TIER,
+        "docker-compose.yml": "${DJENIS_PERMISSION_TIER:-observe}",
+        "README.md": SAFE_PERMISSION_TIER,
+    }
+
+    readiness_check = "Invoke-RestMethod http://127.0.0.1:8008/ready"
+    compose_json = "docker compose config --format json"
+    exact_default_pattern = (
+        r"""Select-String -Pattern '^\s*"DJENIS_PERMISSION_TIER":\s*"""
+        r""""(?<tier>[^"]+)"[,]?\s*$'"""
+    )
+    inspect_container = 'docker inspect --format "{{json .Config.Env}}" djenis-agent'
+    elevation = '$env:DJENIS_PERMISSION_TIER = "interact"'
+    reset = '$env:DJENIS_PERMISSION_TIER = "observe"'
+    recreate = (
+        "docker compose up -d --no-deps --force-recreate --wait --wait-timeout 120 djenis-agent"
+    )
+    assert readme.index(readiness_check) < readme.index(compose_json)
+    assert readme.index(compose_json) < readme.index(elevation)
+    assert readme.index(elevation) < readme.index(reset)
+    assert readme.count(recreate) == 2
+    assert readme.count(readiness_check) == 3
+    assert readme.count(compose_json) == 2
+    assert readme.count(exact_default_pattern) == 2
+    assert "ConvertFrom-Json -AsHashtable" not in readme
+    assert readme.count(inspect_container) == 2
+    assert readme.count("$LASTEXITCODE -ne 0") >= 6
+    assert readme.count('$containerTier -ne "DJENIS_PERMISSION_TIER=') == 2
+    assert "Select-String -SimpleMatch" not in readme
+    assert readme.count("Remove-Item Env:DJENIS_PERMISSION_TIER") == 2
+    assert "retains its tier across agent, Docker daemon, and host restarts" in readme
+    assert "Readiness is checked after the new agent starts" in readme
+    assert "assume that the `interact` container\nis still active and run the reset block" in readme
+    assert "one-session" not in readme
+    assert "defaults to `interact`" not in readme
 
 
 def test_compose_pins_ollama_and_the_effective_context_contract() -> None:
