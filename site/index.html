@@ -24,7 +24,7 @@
   <title>DjenisAiAgent — Observable computer automation</title>
   <link rel="canonical" href="https://ejupi-djenis30.github.io/DjenisAiAgent/">
   <link rel="icon" href="./mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20260723-1">
+  <link rel="stylesheet" href="./styles.css?v=20260730-1">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -38,6 +38,7 @@
       <a href="#demo">Demo</a>
       <a href="#security">Security</a>
       <a class="nav-source" href="https://github.com/ejupi-djenis30/DjenisAiAgent">View source <span aria-hidden="true">↗</span></a>
+      <a class="nav-install" href="https://github.com/ejupi-djenis30/DjenisAiAgent/releases/tag/v0.3.0">Install v0.3.0 <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
 
@@ -48,8 +49,8 @@
         <h1>Computer automation you can inspect.</h1>
         <p class="hero-lede">DjenisAiAgent reads the current interface, asks a model running on your machine for one bounded action, and checks the result before moving on. No provider key, remote-model fallback, or hidden runtime download.</p>
         <div class="hero-actions">
-          <a class="button button-primary" href="#demo">Run the walkthrough</a>
-          <a class="button button-secondary" href="https://github.com/ejupi-djenis30/DjenisAiAgent#quick-start-windows">Read the setup guide</a>
+          <a class="button button-primary" href="https://github.com/ejupi-djenis30/DjenisAiAgent/releases/tag/v0.3.0">Install v0.3.0</a>
+          <a class="button button-secondary" href="#demo">Run the walkthrough</a>
         </div>
       </div>
       <div class="hero-console" aria-label="Agent execution example">
@@ -146,20 +147,26 @@
       </div>
     </section>
 
-    <section class="build" aria-labelledby="build-title">
-      <p class="section-index">04 / Build it locally</p>
+    <section class="build" id="install" aria-labelledby="build-title">
+      <p class="section-index">04 / Install v0.3.0</p>
       <div class="build-grid">
         <div>
-          <h2 id="build-title">Read the code.<br>Set the boundaries.<br><em>Then run it.</em></h2>
+          <h2 id="build-title">One release.<br>One verified image.<br><em>The local web stack.</em></h2>
         </div>
-        <div>
-          <pre><code><span>ollama pull</span> qwen3-vl:8b
-<span>git clone</span> https://github.com/ejupi-djenis30/DjenisAiAgent.git
-<span>cd</span> DjenisAiAgent
-<span>uv sync</span> --frozen --extra dev --extra full
-<span>uv run</span> --frozen --no-sync djenis</code></pre>
-          <p>The model is provisioned explicitly and never pulled at agent startup. Review the local inference and security boundaries before enabling interaction or system access.</p>
-          <a class="text-link" href="https://github.com/ejupi-djenis30/DjenisAiAgent">Open the repository <span aria-hidden="true">↗</span></a>
+        <div class="install-copy">
+          <div class="release-label"><span>Current release</span><strong>v0.3.0</strong></div>
+          <p>The v0.3.0 web and remote-browser runtime is distributed as a container image through GHCR. There is no desktop installer or downloadable release archive. The canonical release guide provides the source-bound Compose files, immutable image digest, and explicit model-provisioning command.</p>
+          <ol class="install-steps">
+            <li><span>01</span><p><strong>Check the host.</strong> You need Docker Compose and enough local capacity for the model and its configured context window.</p></li>
+            <li><span>02</span><p><strong>Follow the exact release guide.</strong> Fetch the Compose definition from its authorized source commit and select the verified GHCR digest.</p></li>
+            <li><span>03</span><p><strong>Provision, then start.</strong> Pull the model through the one-time provisioning profile, launch the full stack, and wait for <code>/ready</code> before enabling interaction.</p></li>
+          </ol>
+          <div class="install-actions">
+            <a class="button button-primary" href="https://github.com/ejupi-djenis30/DjenisAiAgent/releases/tag/v0.3.0">Open the v0.3.0 install guide <span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="https://github.com/users/ejupi-djenis30/packages/container/package/djenis-ai-agent">Inspect the GHCR image <span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="https://github.com/ejupi-djenis30/DjenisAiAgent/tree/v0.3.0#quick-start-windows">Inspect the v0.3.0 Windows source <span aria-hidden="true">↗</span></a>
+          </div>
+          <p class="install-note">The walkthrough above explains the orchestration contract. Use the Compose stack for the authenticated web console and remote browser. For Windows-native desktop control, clone the exact release with <code>git clone --branch v0.3.0 --depth 1 https://github.com/ejupi-djenis30/DjenisAiAgent.git</code>, then follow its Windows quick start.</p>
         </div>
       </div>
     </section>
