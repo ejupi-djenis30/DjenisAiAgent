@@ -199,6 +199,16 @@ def test_project_site_keeps_small_controls_readable_and_touch_accessible() -> No
         styles,
         re.MULTILINE,
     )
+    skip_link_rule = re.search(
+        r"^\.skip-link\s*\{(?P<body>[^}]*)\}",
+        styles,
+        re.MULTILINE,
+    )
+    footer_link_rule = re.search(
+        r"^footer > div:last-child a\s*\{(?P<body>[^}]*)\}",
+        styles,
+        re.MULTILINE,
+    )
 
     assert console_rule is not None
     assert "color: var(--muted)" in console_rule.group("body")
@@ -210,6 +220,11 @@ def test_project_site_keeps_small_controls_readable_and_touch_accessible() -> No
     assert "min-height: 44px" in header_brand_rule.group("body")
     assert text_link_rule is not None
     assert "min-height: 44px" in text_link_rule.group("body")
+    assert skip_link_rule is not None
+    assert "min-height: 44px" in skip_link_rule.group("body")
+    assert footer_link_rule is not None
+    assert "min-width: 44px" in footer_link_rule.group("body")
+    assert "min-height: 44px" in footer_link_rule.group("body")
 
 
 def test_project_site_keeps_secondary_labels_above_wcag_aa_contrast() -> None:
