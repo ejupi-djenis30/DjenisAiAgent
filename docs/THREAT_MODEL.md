@@ -79,7 +79,9 @@ personal data can never reach application logs.
   immediate socket revocation.
 - **Resource exhaustion:** reasoning has a total deadline, retry cap, response/image
   byte limits, and bounded model context. Agent turns, task time, tool output, and
-  concurrency are separately limited. The 65,536-token default improves evidence
+  concurrency are separately limited. WAV size, frame integrity, source/output sample
+  rates and clip duration are checked before resampling or Vosk loading; bounding
+  upload bytes alone would not bound decoded audio. The 65,536-token default improves evidence
   retention but increases local KV-cache memory; operators may explicitly lower it for
   constrained hardware, accepting the corresponding precision/context tradeoff.
 

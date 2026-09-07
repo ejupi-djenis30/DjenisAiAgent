@@ -4,6 +4,13 @@ This file records user-visible and release-engineering changes to DjenisAiAgent.
 
 ## Unreleased
 
+- Bound WAV duration and sample rates before resampling or Vosk loading, reject
+  truncated PCM frames, and report malformed uploads as client errors. Clip duration
+  defaults to 120 seconds and is configurable within 1–600 seconds.
+- Update the development environment's locked pip to 26.2 to address PYSEC-2026-3721.
+- Refresh both Docker stages to the same pinned Python 3.12.14 Debian Trixie image,
+  including the OpenSSL 3.5.7 and util-linux 2.41.5 security fixes.
+
 ## 0.3.0 - 2026-07-29
 
 ### Added

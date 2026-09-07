@@ -299,6 +299,9 @@ class AgentConfig:
     transcription_sample_rate: int = field(
         default_factory=lambda: _env_int("DJENIS_TRANSCRIPTION_SAMPLE_RATE", 16000)
     )
+    transcription_max_duration_seconds: int = field(
+        default_factory=lambda: _env_int("DJENIS_TRANSCRIPTION_MAX_DURATION_SECONDS", 120)
+    )
 
     # Shell command timeout (seconds)
     shell_timeout: int = field(default_factory=lambda: _env_int("DJENIS_SHELL_TIMEOUT", 60))
@@ -509,6 +512,11 @@ class AgentConfig:
             raise ValueError(
                 "DJENIS_VOSK_MODEL_PATH must be set when DJENIS_LOCAL_TRANSCRIPTION is enabled"
             )
+
+        if not 8_000 <= self.transcription_sample_rate <= 48_000:
+            raise ValueError("DJENIS_TRANSCRIPTION_SAMPLE_RATE must be between 8000 and 48000")
+        if not 1 <= self.transcription_max_duration_seconds <= 600:
+            raise ValueError("DJENIS_TRANSCRIPTION_MAX_DURATION_SECONDS must be between 1 and 600")
 
         if self.shell_timeout <= 0:
             raise ValueError("DJENIS_SHELL_TIMEOUT must be greater than 0")

@@ -447,6 +447,38 @@ class TestAgentConfigValidation:
         with pytest.raises(ValueError, match="VOSK_MODEL_PATH"):
             cfg.validate()
 
+    @pytest.mark.parametrize(
+        "attribute,value,environment_name",
+        [
+            ("transcription_sample_rate", 7_999, "DJENIS_TRANSCRIPTION_SAMPLE_RATE"),
+            ("transcription_sample_rate", 48_001, "DJENIS_TRANSCRIPTION_SAMPLE_RATE"),
+            ("transcription_max_duration_seconds", 0, "DJENIS_TRANSCRIPTION_MAX_DURATION_SECONDS"),
+            (
+                "transcription_max_duration_seconds",
+                601,
+                "DJENIS_TRANSCRIPTION_MAX_DURATION_SECONDS",
+            ),
+        ],
+    )
+    def test_transcription_resource_limits_are_validated(
+        self, fake_env: None, attribute: str, value: int, environment_name: str
+    ) -> None:
+        cfg = load_config()
+        setattr(cfg, attribute, value)
+        with pytest.raises(ValueError, match=environment_name):
+            cfg.validate()
+
+    @pytest.mark.parametrize("sample_rate,duration", [(8_000, 1), (48_000, 600)])
+    def test_transcription_resource_limit_endpoints_are_accepted(
+        self, fake_env: None, monkeypatch: pytest.MonkeyPatch, sample_rate: int, duration: int
+    ) -> None:
+        monkeypatch.setenv("DJENIS_TRANSCRIPTION_SAMPLE_RATE", str(sample_rate))
+        monkeypatch.setenv("DJENIS_TRANSCRIPTION_MAX_DURATION_SECONDS", str(duration))
+        cfg = load_config()
+        assert cfg.transcription_sample_rate == sample_rate
+        assert cfg.transcription_max_duration_seconds == duration
+        assert cfg.validate()
+
     def test_zero_browser_debugging_port_raises(self, fake_env: None) -> None:
         cfg = load_config()
         cfg.browser_debugging_port = 0
