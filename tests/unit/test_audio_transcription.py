@@ -97,6 +97,80 @@ class TestEnsureModel:
 
 
 class TestPrepareAudio:
+    @pytest.mark.parametrize(
+        "wav_bytes",
+        [
+            b"not a wav",
+            b"RIFF",
+            b"RIFF\x00\x00\x00\x00WAVE",
+            b"RIFF\x0c\x00\x00\x00WAVEJUNK\xff\xff\xff\x7f",
+        ],
+    )
+    def test_malformed_wav_raises_a_controlled_error(self, wav_bytes: bytes) -> None:
+        with pytest.raises(audio_module.TranscriptionError, match="PCM WAV"):
+            audio_module._prepare_audio(wav_bytes, 16_000)
+
+    @pytest.mark.parametrize("sample_rate", [1, 7_999, 192_001])
+    def test_unsupported_input_rate_is_rejected_before_resampling(
+        self, monkeypatch: pytest.MonkeyPatch, sample_rate: int
+    ) -> None:
+        fake_audioop = MagicMock()
+        monkeypatch.setattr(audio_module, "audioop", fake_audioop)
+        with pytest.raises(audio_module.TranscriptionError, match="Audio sample rate"):
+            audio_module._prepare_audio(_make_wav_bytes(sample_rate=sample_rate), 16_000)
+        fake_audioop.ratecv.assert_not_called()
+
+    @pytest.mark.parametrize("target_rate", [0, 7_999, 48_001, 2**32])
+    def test_unsupported_output_rate_is_rejected(self, target_rate: int) -> None:
+        with pytest.raises(audio_module.TranscriptionError, match="transcription sample rate"):
+            audio_module._prepare_audio(_make_wav_bytes(), target_rate)
+
+    def test_duration_is_rejected_before_reading_or_resampling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(audio_module.config, "transcription_max_duration_seconds", 1)
+        fake_audioop = MagicMock()
+        monkeypatch.setattr(audio_module, "audioop", fake_audioop)
+        wav_bytes = _make_wav_bytes(sample_rate=8_000, frames=b"\x00\x00" * 8_001)
+        readframes = MagicMock(side_effect=AssertionError("frames must not be read"))
+        monkeypatch.setattr(wave.Wave_read, "readframes", readframes)
+        with pytest.raises(audio_module.TranscriptionError, match="duration limit"):
+            audio_module._prepare_audio(wav_bytes, 16_000)
+        readframes.assert_not_called()
+        fake_audioop.ratecv.assert_not_called()
+
+    @pytest.mark.parametrize("channels,sample_rate", [(1, 8_000), (2, 44_100), (1, 192_000)])
+    def test_exact_duration_limit_remains_valid(
+        self, monkeypatch: pytest.MonkeyPatch, channels: int, sample_rate: int
+    ) -> None:
+        monkeypatch.setattr(audio_module.config, "transcription_max_duration_seconds", 1)
+        wav_bytes = _make_wav_bytes(
+            channels=channels, sample_rate=sample_rate, frames=b"\x00\x00" * sample_rate * channels
+        )
+        processed, rate = audio_module._prepare_audio(wav_bytes, 16_000)
+        assert rate == 16_000
+        assert 0 < len(processed) <= 2 * rate
+
+    @pytest.mark.parametrize("channels,frames", [(1, b"\x00" * 33), (2, b"\x00" * 7)])
+    def test_incomplete_frames_are_rejected(self, channels: int, frames: bytes) -> None:
+        with pytest.raises(audio_module.TranscriptionError, match="truncated or incomplete"):
+            audio_module._prepare_audio(_make_wav_bytes(channels=channels, frames=frames), 16_000)
+
+    def test_truncated_pcm_is_rejected(self) -> None:
+        with pytest.raises(audio_module.TranscriptionError, match="truncated or incomplete"):
+            audio_module._prepare_audio(_make_wav_bytes()[:-2], 16_000)
+
+    def test_empty_pcm_is_rejected(self) -> None:
+        with pytest.raises(audio_module.TranscriptionError, match="no complete frames"):
+            audio_module._prepare_audio(_make_wav_bytes(frames=b""), 16_000)
+
+    def test_direct_calls_preserve_the_upload_byte_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(audio_module.config, "web_upload_max_bytes", 20)
+        with pytest.raises(audio_module.TranscriptionError, match="payload exceeds"):
+            audio_module._prepare_audio(_make_wav_bytes(), 16_000)
+
     def test_invalid_sample_width_raises(self) -> None:
         wav_bytes = _make_wav_bytes(sample_width=1)
 

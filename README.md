@@ -240,6 +240,13 @@ Open `http://127.0.0.1:8000`. The page exchanges the operator token for a short-
 opaque HttpOnly cookie. WebSocket commands, the screen stream, and audio uploads require
 that session. Logout revokes live sockets immediately.
 
+Optional Vosk transcription accepts complete mono or stereo 16-bit PCM WAV files at
+8–192 kHz. Clips are limited to 120 seconds by default through
+`DJENIS_TRANSCRIPTION_MAX_DURATION_SECONDS` (1–600); the output sample rate is limited
+to 8–48 kHz. Duration, frame integrity and upload size are checked before resampling
+or loading the model, so a small WAV cannot request unbounded decoded audio. Invalid
+clips return a client error and release the worker slot.
+
 Two unauthenticated probe endpoints have deliberately different meanings:
 
 - `GET /health` is process liveness. It does not contact or load the model.

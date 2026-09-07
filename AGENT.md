@@ -77,6 +77,10 @@ or runtime model downloads.
   objectives, arguments, observations, or completion evidence.
 - Web sessions, sockets, queues, uploads, workers, prompt history, observations, local
   response bodies, and audit-log growth all have explicit limits.
+- WAV transcription checks byte size, complete frames, 8–192 kHz source rate and the
+  configured clip duration before reading PCM or resampling. Keep the 8–48 kHz output
+  rate and 1–600 second duration bounds so decoding cannot amplify a small upload
+  without limit. Malformed audio is a client error, before any Vosk model is loaded.
 - Remote Selenium perception comes from its own screenshot and DOM snapshot, not a
   blank host-desktop frame.
 

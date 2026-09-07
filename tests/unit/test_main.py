@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -400,6 +401,39 @@ def test_transcribe_audio_endpoint_handles_disabled_empty_and_invalid_audio(
     assert empty.status_code == 400
     assert invalid.status_code == 400
     assert invalid.json()["detail"] == "bad wav"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"not a wav",
+        b"RIFF",
+        b"RIFF\x00\x00\x00\x00WAVE",
+        b"RIFF\x0c\x00\x00\x00WAVEJUNK\xff\xff\xff\x7f",
+    ],
+)
+def test_malformed_wav_returns_client_error_without_loading_a_model(
+    main_module: object, monkeypatch: pytest.MonkeyPatch, payload: bytes
+) -> None:
+    from src.perception import audio_transcription
+
+    monkeypatch.setattr(main_module.config, "enable_local_transcription", True)
+    model_loader = MagicMock(side_effect=AssertionError("invalid audio must not load a model"))
+    monkeypatch.setattr(audio_transcription, "_ensure_model", model_loader)
+    with TestClient(main_module.app) as client:
+        authenticate(client)
+        response = client.post(
+            "/api/transcribe",
+            headers={"Origin": "http://testserver"},
+            files={"file": ("clip.wav", payload, "audio/wav")},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Invalid audio: expected a complete, uncompressed PCM WAV file."
+    )
+    model_loader.assert_not_called()
+    assert main_module.runtime.reserve_transcription_slot(1)
+    main_module.runtime.release_transcription_slot()
 
 
 def test_transcribe_rejects_unauthenticated_unsupported_and_large_uploads(

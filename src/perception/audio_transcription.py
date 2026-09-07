@@ -77,17 +77,49 @@ def _ensure_model() -> object:
 def _prepare_audio(wav_bytes: bytes, target_sample_rate: int) -> tuple[bytes, int]:
     """Validate raw WAV data, convert to mono 16-bit PCM and target sample rate."""
 
-    with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
-        channels = wav_file.getnchannels()
-        sample_width = wav_file.getsampwidth()
-        sample_rate = wav_file.getframerate()
-        frames = wav_file.readframes(wav_file.getnframes())
+    if len(wav_bytes) > config.web_upload_max_bytes:
+        raise TranscriptionError("Audio payload exceeds the configured limit.")
+    if not 8_000 <= target_sample_rate <= 48_000:
+        raise TranscriptionError("The transcription sample rate must be between 8000 and 48000 Hz.")
+    max_duration = config.transcription_max_duration_seconds
+    if not 1 <= max_duration <= 600:
+        raise TranscriptionError(
+            "The transcription duration limit must be between 1 and 600 seconds."
+        )
 
-    if sample_width != 2:
-        raise TranscriptionError("Audio must use 16-bit PCM (sample width = 2).")
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+            frame_count = wav_file.getnframes()
 
-    if channels not in (1, 2):
-        raise TranscriptionError("Only mono or stereo audio is supported.")
+            if sample_width != 2:
+                raise TranscriptionError("Audio must use 16-bit PCM (sample width = 2).")
+            if channels not in (1, 2):
+                raise TranscriptionError("Only mono or stereo audio is supported.")
+            if not 8_000 <= sample_rate <= 192_000:
+                raise TranscriptionError("Audio sample rate must be between 8000 and 192000 Hz.")
+            if frame_count == 0:
+                raise TranscriptionError("Invalid audio: the WAV contains no complete frames.")
+            # Validate duration before reading or resampling. A byte-limited upload can
+            # still expand dramatically when an untrusted header declares a low rate.
+            if frame_count > sample_rate * max_duration:
+                raise TranscriptionError(f"Audio exceeds the {max_duration}-second duration limit.")
+            expected_bytes = frame_count * channels * sample_width
+            if expected_bytes > config.web_upload_max_bytes:
+                raise TranscriptionError("Audio frames exceed the configured payload limit.")
+            # Read one extra frame so a partial trailing sample is rejected as well.
+            frames = wav_file.readframes(frame_count + 1)
+            if len(frames) != expected_bytes:
+                raise TranscriptionError("Invalid audio: WAV frames are truncated or incomplete.")
+    except TranscriptionError:
+        raise
+    except (wave.Error, EOFError, RuntimeError) as exc:
+        # wave._Chunk.seek raises RuntimeError when a chunk points outside RIFF.
+        raise TranscriptionError(
+            "Invalid audio: expected a complete, uncompressed PCM WAV file."
+        ) from exc
 
     if audioop is None:
         raise TranscriptionError(
