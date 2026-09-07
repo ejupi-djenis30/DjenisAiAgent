@@ -47,7 +47,7 @@ windows = [
 # Web server mode
 web = [
     # Optional WebSocket transport extras used by the local operator console.
-    "websockets>=13.0",
+    "websockets>=17.0",
 ]
 # Browser automation
 browser = [
@@ -64,7 +64,7 @@ full = [
     "pyperclip>=1.11.0",
     "fastapi>=0.140.0",
     "uvicorn[standard]>=0.52.0",
-    "websockets>=13.0",
+    "websockets>=17.0",
     "python-multipart>=0.0.26",
     "pydantic>=2.12.5",
     "selenium>=4.21.0",
