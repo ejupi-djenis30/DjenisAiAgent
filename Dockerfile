@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: builder — install dependencies into a virtual environment
 # =============================================================================
-FROM python:3.12-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS builder
+FROM python:3.12-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
 
 WORKDIR /build
 
@@ -13,7 +13,7 @@ RUN python -m venv /opt/venv && \
 # =============================================================================
 # Stage 2: runtime — slim production image
 # =============================================================================
-FROM python:3.12-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS runtime
+FROM python:3.12-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
